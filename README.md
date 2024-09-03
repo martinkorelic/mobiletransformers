@@ -135,6 +135,7 @@ TODOs:
 
 - Add command line arguments for the scripts
 - Compatibility of creating the inference model for GenAI framework for on device inference
+- Testing inference with Android NNAPI in ONNX Runtime
 - Optimizations
     - PyTorch optimizations in the model before export
     - [Advanced ONNX training](https://onnxruntime.ai/docs/api/python/on_device_training/training_artifacts.html#advanced-usage)
