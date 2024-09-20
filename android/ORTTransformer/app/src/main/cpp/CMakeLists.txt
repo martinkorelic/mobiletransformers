@@ -33,9 +33,7 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         native-lib.cpp)
 
 add_library(onnxruntime SHARED IMPORTED)
-#add_library(onnxruntime-genai SHARED IMPORTED)
 set_target_properties(onnxruntime PROPERTIES IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/lib/libonnxruntime.so)
-#set_target_properties(onnxruntime-genai PROPERTIES IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/lib/libonnxruntime-genai.so)
 target_include_directories(orttransformer PRIVATE ${CMAKE_SOURCE_DIR}/include/onnxruntime)
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE ${PROJECT_SOURCE_DIR}/../jniLibs/${CMAKE_ANDROID_ARCH_ABI})
 
@@ -47,5 +45,5 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         android
         log
         onnxruntime
-        #onnxruntime-genai
+        onnxruntime-genai
 )

@@ -1,5 +1,5 @@
 //
-// Created by bmeswani on 2/17/2023.
+// Created by martinkorelic on 19/9/2024.
 //
 
 #ifndef ORT_PERSONALIZE_INFERENCE_H
@@ -11,6 +11,9 @@
 #include "session_cache.h"
 
 namespace inference {
+
+    // Function that runs a single GenAI inference step
+    std::string genAiInferenceStep(GenAISessionCache *sessionCache);
 
     // Runs the inference graph and returns:
     //   - predicted next token based on sampling method

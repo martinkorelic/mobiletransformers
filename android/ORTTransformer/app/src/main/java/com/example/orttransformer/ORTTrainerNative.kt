@@ -29,7 +29,7 @@ class ORTTrainerNative(artifactDir : String, private var tokenizer: ORTTokenizer
 
     }
 
-    fun performTrainStep(trainData : Array<String>) : Float {
+    fun performTrainStep(trainData : List<String>) : Float {
         if (model == 0L) {
             Log.e(LOG_TAG, "No native training model has been created.")
             return 0F
@@ -47,10 +47,14 @@ class ORTTrainerNative(artifactDir : String, private var tokenizer: ORTTokenizer
         }
 
         val flatInputIds: LongArray = paddedExamples.flatten().map { it.toLong() }.toLongArray()
-
         val loss = performTraining(model, flatInputIds, batchSize, maxSequenceLength)
-
+        Log.d(LOG_TAG, loss.toString())
         return loss
+    }
+
+    fun destroySession() {
+        Log.d(LOG_TAG, "Destroying training session and saving checkpoint...")
+        releaseTrainingSession(model, saveCheckpoint = true)
     }
 
     /**
@@ -68,6 +72,8 @@ class ORTTrainerNative(artifactDir : String, private var tokenizer: ORTTokenizer
 
         return performTraining(model, inputIds, batchSize, sequenceLength)
     }
+
+    external fun releaseTrainingSession(session: Long, saveCheckpoint : Boolean)
 
     external fun createTrainingSession(checkpointPath:String, trainModelPath: String, evalModelPath: String,
                                        optimizerModelPath: String, cacheDirPath: String, requiresGrad: Array<String>) : Long

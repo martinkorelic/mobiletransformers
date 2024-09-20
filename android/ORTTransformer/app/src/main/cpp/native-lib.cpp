@@ -9,6 +9,7 @@
 #include "inference.h"
 #include "utils.h"
 #include "train.h"
+#include "onnxruntime-genai/ort_genai.h"
 #include <android/log.h>
 
 #define LOG_TAG "ORTTransformer"
@@ -52,6 +53,9 @@ Ort::Value CreateNewParameter(Ort::Value& parameter) {
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
             element_size = sizeof(ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
             break;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
+            element_size = sizeof(ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8);
+            break;
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:
             element_size = sizeof(ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8);
             break;
@@ -84,6 +88,29 @@ Ort::Value CreateNewParameter(Ort::Value& parameter) {
     return user_managed_tensor;
 }
 
+/**
+ * Loads the weights to the inference session addInitializer function.
+ *
+ * @param session
+ * @param checkpoint_state
+ * @param layer_names
+ */
+void LoadWeightsToMemory(const std::unique_ptr<WeightSessionCache>& weight_cache, Ort::CheckpointState& checkpoint_state, const std::vector<std::string>& layer_names) {
+
+    for (const auto& layer : layer_names) {
+        auto parameter = checkpoint_state.GetParameter(layer);
+        auto user_parameter = CreateNewParameter(parameter);
+
+        // Ensure the weight values are not null and is a tensor
+        if (user_parameter.IsTensor()) {
+            weight_cache->weights.emplace(layer, std::move(user_parameter));
+
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Loaded %s weights into the memory.", layer.c_str());
+        } else {
+            __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "ERROR: Could not load %s weights into the memory!", layer.c_str());
+        }
+    }
+}
 
 /**
  * Loads the weights to the inference session addInitializer function.
@@ -132,6 +159,36 @@ void TransferWeightsFromCheckpoint(const std::unique_ptr<InferenceSessionCache>&
     Ort::CheckpointState checkpoint_state = Ort::CheckpointState::LoadCheckpoint(checkpoint_path);
     // Extract and load the current weights from the checkpoint to the session options
     LoadWeightsToInferenceSession(session, checkpoint_state, layer_names);
+}
+
+void ReleaseTrainingSession(jlong session, jboolean saveCheckpoint) {
+    auto *session_cache = reinterpret_cast<TrainingSessionCache *>(session);
+
+    if (saveCheckpoint) {
+        // Include optimizer state?
+        Ort::CheckpointState::SaveCheckpoint(session_cache->checkpoint_state, session_cache->artifact_paths.checkpoint_path, true);
+    }
+
+    delete session_cache;
+    session_cache = nullptr;
+}
+
+void ReleaseWeightSession(jlong session) {
+    auto *session_cache = reinterpret_cast<WeightSessionCache *>(session);
+
+    delete session_cache;
+    session_cache = nullptr;
+}
+
+void ReleaseGenAISession(jlong session) {
+    auto *session_cache = reinterpret_cast<GenAISessionCache *>(session);
+    OgaDestroyGenerator(session_cache->generator.get());
+    OgaDestroyGeneratorParams(session_cache->generatorParams.get());
+    OgaDestroyModel(session_cache->model.get());
+    OgaDestroyTokenizer(session_cache->tokenizer.get());
+    OgaDestroyTokenizerStream(session_cache->tokenizer_stream.get());
+    delete session_cache;
+    session_cache = nullptr;
 }
 
 extern "C"
@@ -238,6 +295,75 @@ Java_com_example_orttransformer_ORTTrainerNative_createTrainingSession(JNIEnv *e
 
 extern "C" JNIEXPORT jlong JNICALL
 /**
+ * Caches the trainable layer weights from training session for later use. Releases the training session.
+ *
+ * @param env
+ * @param inference_model_path
+ * @return
+ */
+Java_com_example_orttransformer_ORTGenAINative_cacheSessionWeights(
+        JNIEnv *env, jobject /* this */,
+        jlong train_session,
+        jobjectArray requires_grad
+) {
+
+    auto *train_session_cache = reinterpret_cast<TrainingSessionCache *>(train_session);
+
+    // Get the size of the input array
+    jsize arrayLength = env->GetArrayLength(requires_grad);
+
+    std::vector<std::string> requires_grad_names;
+    for (jsize i = 0; i < arrayLength; ++i) {
+        auto jstr = (jstring) (env->GetObjectArrayElement(requires_grad, i));
+        const char *cstr = env->GetStringUTFChars(jstr, nullptr);
+        requires_grad_names.emplace_back(cstr);
+
+        // Release the string
+        env->ReleaseStringUTFChars(jstr, cstr);
+        env->DeleteLocalRef(jstr);
+    }
+
+    std::unique_ptr<WeightSessionCache> weight_session_cache = std::make_unique<WeightSessionCache>();
+
+    // Load the extracted weights into the inference session
+    LoadWeightsToMemory(weight_session_cache, train_session_cache->checkpoint_state, requires_grad_names);
+
+    // Release the current training session, save the checkpoints
+    ReleaseTrainingSession(train_session, true);
+    train_session_cache = nullptr;
+
+    return reinterpret_cast<long>(weight_session_cache.release());
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+/**
+ * Creates the GenAI session from the cached weights.
+ *
+ * @param env
+ * @param inference_model_path
+ * @return
+ */
+Java_com_example_orttransformer_ORTGenAINative_createGenAISession(
+        JNIEnv *env, jobject /* this */,
+        jlong weight_cache,
+        jstring genai_path
+) {
+
+    auto *weight_session_cache = reinterpret_cast<WeightSessionCache *>(weight_cache);
+
+    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Loading grad weight inputs...");
+
+    std::unique_ptr<GenAISessionCache> genai_session_cache = std::make_unique<GenAISessionCache>(
+            weight_session_cache,
+            utils::JString2String(env, genai_path)
+            );
+    __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, "Preloaded grad weight inputs.");
+
+    return reinterpret_cast<long>(genai_session_cache.release());
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+/**
  * Creates normal inference session from the given inference model path.
  *
  * @param env
@@ -259,10 +385,6 @@ extern "C" JNIEXPORT jlong JNICALL
 /***
  * Function for creating an inference session from the given checkpoint state.
  * This assumes that the training session was not created beforehand.
- *
- * This will allow to perform inference on the other model which is compatible with ONNX GenAI API.
- * TODO: However, there is no option to add the initializers to the session option before creating the model in ONNX GenAI.
- * https://github.com/microsoft/onnxruntime-genai/issues/859
  *
  *  TODO: An inference session with Android NNAPI could be added.
  *
@@ -325,32 +447,31 @@ Java_com_example_orttransformer_ORTGeneratorNative_releaseInferenceSession(
     session_cache = nullptr;
 }
 
-void ReleaseTrainingSession(jlong session, jboolean saveCheckpoint) {
-    auto *session_cache = reinterpret_cast<TrainingSessionCache *>(session);
-
-    if (saveCheckpoint) {
-        // Include optimizer state?
-        Ort::CheckpointState::SaveCheckpoint(session_cache->checkpoint_state, session_cache->artifact_paths.checkpoint_path, true);
-    }
-
-    delete session_cache;
-    session_cache = nullptr;
-}
-
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_orttransformer_ORTGeneratorNative_releaseTrainingSession(
+Java_com_example_orttransformer_ORTTrainerNative_releaseTrainingSession(
         JNIEnv *env, jobject,
         jlong session, jboolean saveCheckpoint) {
     ReleaseTrainingSession(session, saveCheckpoint);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_orttransformer_ORTGenAINative_releaseWeightSession(
+        JNIEnv *env, jobject,
+        jlong weight_session) {
+    ReleaseWeightSession(weight_session);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_orttransformer_ORTGenAINative_releaseGenAISession(
+        JNIEnv *env, jobject,
+        jlong genai_session) {
+    ReleaseGenAISession(genai_session);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
 /***
  * Function for creating an inference session from the current training session without exporting from inference.
  * This will allow to perform inference on the other model which is compatible with ONNX GenAI API.
- *
- * TODO: However, there is no option to add the initializers to the session option before creating the model in ONNX GenAI.
- * https://github.com/microsoft/onnxruntime-genai/issues/859
  *
  *  TODO: An inference session with Android NNAPI could be added.
  *
@@ -368,7 +489,6 @@ Java_com_example_orttransformer_ORTGeneratorNative_createInferenceSessionFromTra
         jlong train_session
 ) {
     auto *train_session_cache = reinterpret_cast<TrainingSessionCache *>(train_session);
-
 
     // Create the inference session
     std::unique_ptr<InferenceSessionCache> inference_session_cache = std::make_unique<InferenceSessionCache>(
@@ -441,10 +561,63 @@ Java_com_example_orttransformer_ORTTrainerNative_exportModelForInference(JNIEnv 
 }
 
 extern "C"
+JNIEXPORT void JNICALL
+/**
+ * Initializes the GenAI inference with a new prompt.
+ * Uses KV caching and generation configuration provided from the file.
+ *
+ * @param env
+ * @param thiz
+ * @param genai_session - GenAI cached session
+ * @param prompt - New prompt
+ */
+Java_com_example_orttransformer_ORTGenAINative_initializeGenAIInference(JNIEnv *env, jobject thiz,
+                                                                        jlong genai_session, jstring prompt) {
+    auto *session_cache = reinterpret_cast<GenAISessionCache *>(genai_session);
+
+    auto sequences = OgaSequences::Create();
+    session_cache->tokenizer->Encode(utils::JString2String(env, prompt).c_str(), *sequences);
+    session_cache->generatorParams->SetInputSequences(*sequences);
+    session_cache->generator = OgaGenerator::Create(*session_cache->model, *session_cache->generatorParams);
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+/**
+ * Performs the inference step using the exported model for GenAI inference.
+ *
+ * @param env
+ * @param thiz
+ * @param session
+ * @param input_ids
+ * @param attention_mask
+ * @param position_ids
+ * @param sequence_length
+ * @param vocab_size
+ *
+ * @return Next token string
+ */
+Java_com_example_orttransformer_ORTGenAINative_performGenAIInferenceStep(JNIEnv *env, jobject thiz,
+                                                                        jlong genai_session) {
+    auto *session_cache = reinterpret_cast<GenAISessionCache *>(genai_session);
+
+    if (session_cache->generator->IsDone()) {
+        // TODO : Release generator after each session?
+        //OgaDestroyGenerator(session_cache->generator.get());
+        return env->NewStringUTF("[STOP]");
+    }
+
+    auto next_token = inference::genAiInferenceStep(session_cache);
+
+    return env->NewStringUTF(next_token.c_str());
+}
+
+extern "C"
 JNIEXPORT jint JNICALL
 /**
  * Performs the inference step using the exported model for inference.
  * TODO: Uses only greedy sampling, new sampling methods could be added.
+ * No KV caching is used, inference time increases with sequence length.
  *
  * @param env
  * @param thiz

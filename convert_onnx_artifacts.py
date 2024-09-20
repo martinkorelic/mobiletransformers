@@ -166,7 +166,6 @@ def gen_artifacts(train_dir,
         else:
             frozen_params.append(param.name)
     
-    
     del onnx_model
     gc.collect()
 
@@ -180,8 +179,16 @@ def gen_artifacts(train_dir,
                                 #loss = CausalLMCE(),
                                 optimizer = artifacts.OptimType.AdamW,
                                 artifact_directory = artifact_dir)
+    
+    with open(f'{artifact_dir}/{train_cfg}', "w", encoding="utf-8") as f:
+        json.dump({
+            "requires_grad": requires_grad,
+            "frozen_params": frozen_params
+        }, f, ensure_ascii=False)
 
-def onnx_checktrain(model_dir="onnx_tinyllama_int8",
+    print("Generated training artifacts.")
+
+def onnx_checktrain(model_dir,
                     export_inference=True,
                     test_inference=False,
                     test_evaluate=False,
@@ -196,7 +203,7 @@ def onnx_checktrain(model_dir="onnx_tinyllama_int8",
    - `test_inference` - runs the model through an example prompt
    - `test_evaluate` - tests the model evaluation
    - `transfer_weights` - instead of exporting for inference, we only copy the subset of updated weights to an already created inference model after training
-   - `inference_model_path` - model path of an already existing inference model
+   - `inference_model_path` - model path of an already existing inference model or one to create
    - `max_sequence_length` - length of text generation sequence
     """
 
@@ -253,7 +260,7 @@ def onnx_checktrain(model_dir="onnx_tinyllama_int8",
         gc.collect()
     elif export_inference:
         # Model inference: we want to get only logits and hidden states for decoding
-        model.export_model_for_inferencing(f"{model_dir}/inference_model.onnx", [ out_name for out_name in model.output_names() if out_name not in exclude_nodes])
+        model.export_model_for_inferencing(f"{model_dir}/{inference_model_path}", [ out_name for out_name in model.output_names() if out_name not in exclude_nodes])
 
         del model
         del state
@@ -262,7 +269,7 @@ def onnx_checktrain(model_dir="onnx_tinyllama_int8",
 
     # Load and test inference if needed
     if test_inference:
-        onnx_infer(f"{model_dir}/inference.onnx", with_past=False, max_length=max_sequence_length)
+        onnx_infer(f"{model_dir}/{inference_model_path}", with_past=False, max_length=max_sequence_length)
     
 def onnx_export_dummy_model(model_output="tokenizer.onnx"):
     """
@@ -368,6 +375,65 @@ def onnx_transfer_trained_weights(state : CheckpointState, inference_model):
     onnx.save(onnx_inference_model)
     del onnx_inference_model
     gc.collect()
+
+def gen_genai(model_path, training_config, new_model_path, large_model=False):
+    """
+    Creates a GenAI compatible ONNX graph.
+
+    - `training_config` - training configuration json
+    - `new_model_path` - path to new inference model
+    - `large_model` - if model is larger than 2GB
+    """
+
+    model = onnx.load(model_path)
+
+    with open(f'{training_config}', 'r') as f:
+        requires_grad_layers = json.load(f)["requires_grad"]
+    
+    # Extract initializers from the model
+    initializers = {init.name: init for init in model.graph.initializer}
+    
+    # Create new input nodes for the specified initializers
+    new_inputs = []
+    for name in requires_grad_layers:
+        if name in initializers:
+            initializer = initializers[name]
+            # Create a new input node
+            new_input = helper.make_tensor_value_info(name, initializer.data_type, initializer.dims)
+            new_inputs.append(new_input)
+
+            # Remove initializer since it becomes the input
+            model.graph.initializer.remove(initializer)
+    
+    # Create a new list of inputs (existing inputs + new inputs for specified initializers)
+    new_graph_inputs = list(model.graph.input) + new_inputs
+    
+    # Remove the specified initializers from the model
+    new_initializers = [init for init in model.graph.initializer if init.name not in requires_grad_layers]
+    
+    # Create a new graph with updated inputs and removed initializers
+    new_graph = helper.make_graph(
+        nodes=model.graph.node,
+        name=model.graph.name,
+        inputs=new_graph_inputs,
+        outputs=model.graph.output,
+        initializer=new_initializers
+    )
+    
+    # Create a new model with the modified graph
+    new_model = helper.make_model(new_graph)
+
+    # Check the model
+    if not large_model:
+        onnx.checker.check_model(new_model, full_check=True)
+    
+    # Save the new ONNX model
+    onnx.save(new_model, new_model_path)
+
+    if large_model:
+        onnx.checker.check_model(new_model_path, full_check=True)
+
+    print("Saved GenAI inference model.")
 
 def get_layers_with_grad(model):
     """
@@ -528,15 +594,56 @@ class OnnxCausalLM(torch.nn.Module):
         return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
 
 
+def convert_pipeline():
+    """
+    ONNX conversion for training and inference artifacts.
+    Creates a build folder with train and inference subfolders each with models needed for tasks.
+    
+    """
+
+    train_dir = "opt_tinyllama_train_int16"
+    inference_dir = "opt_tinyllama_inference_int16"
+    build_dir = "build"
+    model_name = "quant_model.onnx"
+
+    generate_genai = True
+    check_train = True
+    large_model = False
+
+    try:
+        # Create the base directory if it doesn't exist
+        if not os.path.exists(build_dir):
+            os.makedirs(build_dir)
+        
+        train_path = os.path.join(build_dir, 'train')
+        inference_path = os.path.join(build_dir, 'inference')
+        
+        os.makedirs(train_path, exist_ok=True)
+        os.makedirs(inference_path, exist_ok=True)
+    
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    
+    gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=model_name)
+
+    if check_train and not generate_genai:
+        onnx_checktrain(model_dir=build_dir, export_inference=True)
+    
+    if generate_genai:
+        gen_genai(model_path=f'{inference_dir}/{model_name}', training_config=f'{train_dir}/training_config.json', new_model_path=f'{build_dir}/inference/genai_inference.onnx', large_model=large_model)
+        print("Generated the GenAI inference model graph. Make sure to generate the configuration for GenAI as well.")
+
 if __name__ == "__main__":
 
+    convert_pipeline()
     
-    gen_artifacts(train_dir="opt_tinyllama_train_int16", model_name="quant_model.onnx", train_cfg="training_config.json")
+    #gen_artifacts(train_dir="opt_tinyllama_train_int16", model_name="quant_model.onnx", train_cfg="training_config.json")
     #onnx_segment_weights("opt_tinyllama_inference/model.onnx", "opt_tinyllama_train/model.onnx")
     # Get the supported opset version
     #onnx_infer(model_path="inference.onnx")
     #view_model("onnx_tinyllama_int8/training_model.onnx")
-    onnx_checktrain("artifacts", test_inference=True, export_inference=False, transfer_weights=False)
+    #onnx_checktrain("artifacts", test_inference=False, export_inference=True, transfer_weights=False)
+    #gen_genai("onnx_model/quant_model.onnx", "opt_tinyllama_artifacts/training_config.json", "input_inference.onnx")
     #convert_onnx()
     #convert_onnx_genai()
     #onnx_export_dummy_model("tokenizer.onnx")

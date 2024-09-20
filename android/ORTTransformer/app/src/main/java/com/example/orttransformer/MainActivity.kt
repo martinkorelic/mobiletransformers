@@ -1,11 +1,41 @@
 package com.example.orttransformer
 
-import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
 import android.util.Log
-import com.example.orttransformer.databinding.ActivityMainBinding
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
 
-class MainActivity : AppCompatActivity() {
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import com.example.orttransformer.databinding.ActivityMainBinding
+import com.example.orttransformer.repository.InferenceRepository
+import com.example.orttransformer.repository.LLMRepository
+import com.example.orttransformer.repository.TrainingRepository
+import com.example.orttransformer.ui.theme.ORTTransformerTheme
+import com.example.orttransformer.viewmodels.InferenceViewModel
+import com.example.orttransformer.viewmodels.TrainingViewModel
+import com.example.orttransformer.views.InferenceScreen
+import com.example.orttransformer.views.TrainingScreen
+
+class MainActivity : ComponentActivity() {
 
     private val LOG_TAG = "MainActivity"
 
@@ -14,30 +44,72 @@ class MainActivity : AppCompatActivity() {
     private var ortGeneratorNative: ORTGeneratorNative? = null
     private var ortTrainerNative : ORTTrainerNative? = null
     private var ortTokenizer : ORTTokenizer? = null
+    private var ortGenAiNative : ORTGenAINative? = null
 
-    private var artifactDir : String = "/data/local/tmp/artifacts"
-    private var genAiConfigPath : String = "/data/local/tmp/genaitest"
+    private var artifactTrainDir : String = "/data/local/tmp/tinyllama_int16/train"
+    private var tokenizerConfigPath : String = "/data/local/tmp/genaitest"
+    private var genAiConfigPath : String = "/data/local/tmp/tinyllama_int16/inference"
 
     private var inferenceModelPath : String = ""
+
+    private var llmRepository = LLMRepository(artifactTrainDir,
+        ""
+    )
+    private var inferenceRepository = InferenceRepository(llmRepository)
+    private var trainingRepository = TrainingRepository(llmRepository)
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        enableEdgeToEdge()
 
-        ortTokenizer = ORTTokenizer(genAiConfigPath)
+        //ortTokenizer = ORTTokenizer(tokenizerConfigPath)
 
-        inferenceModelPath = "${applicationContext.cacheDir}/inference_model.onnx"
+        //inferenceModelPath = "${applicationContext.cacheDir}/inference_model.onnx"
 
         // Test training
-        ortTrainerNative = makeOrtTrainer()
+        //ortTrainerNative = makeOrtTrainer()
         //performTestTraining()
 
+        // Test GenAI
+        //ortGenAiNative = makeOrtGenAI()
+
+        //var prompt = "Is there an answer to the end of the universe? Will it ever end and what will"
+
+        //ortGenAiNative?.generate(prompt)
+
+        //prompt = "Hello, this is a message for the world. How is your day?"
+        //ortGenAiNative?.generate(prompt)
+
         // Test inference
-        ortGeneratorNative = makeOrtInference()
-        performTestInference()
+        //ortGeneratorNative = makeOrtInference()
+        //performTestInference()
+        setContent {
+            ORTTransformerTheme {
+                Surface (
+                    modifier = Modifier.fillMaxSize().padding(WindowInsets.systemBars.asPaddingValues()),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    MainApp()
+                }
+            }
+        }
+
+
+    }
+
+
+    private fun makeOrtGenAI() : ORTGenAINative? {
+        if (ortTrainerNative == null) {
+            Log.e(LOG_TAG, "Could not find the train model. Make sure it is initialized before GenAI inference.")
+            return null
+        }
+
+        val genAiNative = ORTGenAINative(artifactTrainDir, genAiConfigPath)
+        genAiNative.createGenAISessionFromTraining(ortTrainerNative!!.model)
+
+        return genAiNative
     }
 
     private fun makeOrtTrainer() : ORTTrainerNative? {
@@ -47,7 +119,7 @@ class MainActivity : AppCompatActivity() {
             return null
         }
 
-        return ORTTrainerNative(artifactDir, ortTokenizer!!, applicationContext.cacheDir.toString())
+        return ORTTrainerNative(artifactTrainDir, ortTokenizer!!, applicationContext.cacheDir.toString())
     }
 
     private fun makeOrtInference() : ORTGeneratorNative? {
@@ -65,7 +137,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             // If ORTTrainer instance does not exist, we load the inference model along with the data from the checkpoint
             Log.d(LOG_TAG, "Loading the model from checkpoint for inference...")
-            ortGeneratorNative?.createInferenceModelFromCheckpoint(inferenceModelPath, "$artifactDir/checkpoint", "$artifactDir/training_config.json")
+            ortGeneratorNative?.createInferenceModelFromCheckpoint(inferenceModelPath, "$artifactTrainDir/checkpoint", "$artifactTrainDir/training_config.json")
         }
 
         return ortGeneratorNative
@@ -97,7 +169,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val trainData = arrayOf("Hello, this is a message for the world. How is your day?", "I am fine thank you.", "Today is a wonderful day.", "Hello to world and anyone!")
+        val trainData = listOf("Hello, this is a message for the world. How is your day?", "I am fine thank you.", "Today is a wonderful day.", "Hello to world and anyone!")
 
         // Profiling
         val runtime = Runtime.getRuntime()
@@ -117,12 +189,6 @@ class MainActivity : AppCompatActivity() {
     }
 
 
-    /**
-     * A native method that is implemented by the 'orttransformer' native library,
-     * which is packaged with this application.
-    */
-    external fun stringFromJNI(): String
-
     companion object {
         // Used to load the 'orttransformer' library on application startup.
         init {
@@ -130,5 +196,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @Composable
+    fun MainApp() {
+        var selectedTab by remember { mutableStateOf(0) }
+        val tabs = listOf("Inference", "Training")
 
+        Column(modifier = Modifier.fillMaxSize().padding(top = 16.dp)) {
+            TabRow(selectedTabIndex = selectedTab) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTab == index,
+                        onClick = { selectedTab = index },
+                        text = { Text(title) }
+                    )
+                }
+            }
+            when (selectedTab) {
+                0 -> InferenceScreen(viewModel = InferenceViewModel(inferenceRepository = inferenceRepository))
+                1 -> TrainingScreen(viewModel = TrainingViewModel(trainingRepository = trainingRepository))
+            }
+        }
+    }
 }

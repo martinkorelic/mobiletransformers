@@ -1,5 +1,5 @@
 //
-// Created by martin on 1. 09. 24.
+// Created by martinkorelic on 01/09/2024.
 //
 
 #include "inference.h"
@@ -12,6 +12,16 @@
 #define LOG_TAG "ORTTransformer"
 
 namespace inference {
+
+    std::string genAiInferenceStep(GenAISessionCache* session_cache) {
+
+        session_cache->generator->ComputeLogits();
+        session_cache->generator->GenerateNextToken();
+
+        const auto num_tokens = session_cache->generator->GetSequenceCount(0);
+        const auto new_token = session_cache->generator->GetSequenceData(0)[num_tokens - 1];
+        return session_cache->tokenizer_stream->Decode(new_token);
+    }
 
     std::vector<std::vector<float>> getLastTokenLogits(const float* logits, int batch_size, int sequence_length, int vocab_size, float temperature) {
 

@@ -336,7 +336,7 @@ def optimum_hf_export(model_id, model_output="onnx_model", training_mode = False
 
     # TODO: Before exporting
     # Training mode + comment out training option in transformers implementation if needed
-    export(my_model, ocl, onnx_path, 14, do_constant_folding=False)
+    export(my_model, ocl, onnx_path, 18, do_constant_folding=False)
 
     # Save gradient layer names
     if training_mode:
@@ -383,7 +383,7 @@ def onnx_dynamic_quantization(onnx_model_path, onnx_model_quant_output, weight_t
 
 if __name__ == "__main__":
 
-    #optimum_hf_export(model_id=model_id, training_mode=False)
-    inspect_weights("artifacts/inference_model.onnx")
+    optimum_hf_export(model_id=model_id, training_mode=True)
+    #inspect_weights("artifacts/inference_model.onnx")
     #compare_weights("artifacts/inference_model.onnx", "opt_tinyllama_inference_int16/quant_model.onnx")
     #trim_initializers("onnx_tinyllama_exported_inf/model.onnx")

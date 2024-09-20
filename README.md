@@ -52,6 +52,18 @@ Time per token generation: ~1-2 seconds (increases with sequence length)
 
 ![](docs/inference_memory_tinyllama.png)
 
+### Inference with KV caching (ONNX GenAI)
+Inference generation KV caching
+
+Memory usage: ~2.6GB
+
+Time per token generation: ~0.3-0.8 seconds (does not increase with sequence length)
+
+### Saving the model checkpoint and transferring weights
+This step involves loading the modified weights into memory and saving the rest of the updated weights to the checkpoint.
+
+Memory usage: ~5.2GB
+
 ## Interesting findings and issues
 
 ### Incorrect generation with ONNX GenAI after transfering weights
@@ -112,7 +124,10 @@ Request open for this feature:
 https://github.com/microsoft/onnxruntime-genai/issues/859#issuecomment-2325923159
 
 If not, then another option would be to save the model somehow from the created inference session with updated weights loaded in.
-This is currently only possible to achieve in Python but not in Android as no option to save or export model is explicitly defined in Java or C++.
+This is currently only possible to achieve in Python but not in Android Java/C++ as no option to save or export model is explicitly defined in Java or C++.
+
+**This was solved**: I created a different kind of inference graph and saved it separately to the device, which has inputs set to accept updated weights from the checkpoint state memory. However, this creates more memory overhead as the weights need to be also copied to memory before they are transferred to GenAI inference graph, while the other frozen weights are discarded before to preserve memory.
+> Is there a more efficient way to save the model checkpoint?
 
 - No separate tokenizer for ONNX GenAI
 
@@ -134,7 +149,7 @@ This could be avoided by already having an inference model and then transfering 
 TODOs:
 
 - Add command line arguments for the scripts
-- Compatibility of creating the inference model for GenAI framework for on device inference
+- ~~Compatibility of creating the inference model for GenAI framework for on device inference~~
 - Testing inference with Android NNAPI in ONNX Runtime
 - Optimizations
     - PyTorch optimizations in the model before export
@@ -176,7 +191,6 @@ Follow the instructions on their website.
 Make sure to have adb connected and ready for emulator test.
 ```
 ./build.sh --parallel --build_java --android --android_home=$ANDROID_HOME --android_ndk_path=$ANDROID_NDK --android_api=24 --ort_home=/path/to/onnxruntime-android-1.18.0 --android_run_emulator
-
 ```
 Add `--android_abi=x86_64` or `--android_abi=arm64-v8a` depending on the device architecture
 
