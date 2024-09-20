@@ -182,11 +182,11 @@ void ReleaseWeightSession(jlong session) {
 
 void ReleaseGenAISession(jlong session) {
     auto *session_cache = reinterpret_cast<GenAISessionCache *>(session);
-    OgaDestroyGenerator(session_cache->generator.get());
-    OgaDestroyGeneratorParams(session_cache->generatorParams.get());
-    OgaDestroyModel(session_cache->model.get());
-    OgaDestroyTokenizer(session_cache->tokenizer.get());
-    OgaDestroyTokenizerStream(session_cache->tokenizer_stream.get());
+    //OgaDestroyGenerator(session_cache->generator.get());
+    //OgaDestroyGeneratorParams(session_cache->generatorParams.get());
+    //OgaDestroyModel(session_cache->model.get());
+    //OgaDestroyTokenizer(session_cache->tokenizer.get());
+    //OgaDestroyTokenizerStream(session_cache->tokenizer_stream.get());
     delete session_cache;
     session_cache = nullptr;
 }

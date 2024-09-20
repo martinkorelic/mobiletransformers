@@ -1,9 +1,11 @@
 package com.example.orttransformer.viewmodels
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.example.orttransformer.repository.ChatMessage
 import com.example.orttransformer.repository.InferenceRepository
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 class InferenceViewModel(private val inferenceRepository: InferenceRepository) : ViewModel() {
     val chatHistory: StateFlow<List<ChatMessage>> = inferenceRepository.chatHistory
@@ -11,6 +13,8 @@ class InferenceViewModel(private val inferenceRepository: InferenceRepository) :
     val isStreaming : StateFlow<Boolean> = inferenceRepository.isStreaming
 
     fun sendMessage(message: String) {
-        inferenceRepository.sendMessage(message)
+        viewModelScope.launch {
+            inferenceRepository.sendMessage(message)
+        }
     }
 }

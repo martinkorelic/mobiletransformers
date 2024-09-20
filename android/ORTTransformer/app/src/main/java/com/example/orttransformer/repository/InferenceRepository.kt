@@ -22,7 +22,7 @@ class InferenceRepository(private val llmRepository: LLMRepository) {
 
     init {
         // Observe token generation flow
-        CoroutineScope(Dispatchers.Main).launch {
+        CoroutineScope(Dispatchers.IO).launch {
             llmRepository.tokenFlow.collect { token ->
                 // Append new token to chat stream
                 when (token) {
@@ -43,12 +43,15 @@ class InferenceRepository(private val llmRepository: LLMRepository) {
         }
     }
 
-    fun sendMessage(userMessage: String) {
+    suspend fun sendMessage(userMessage: String) {
         // Append user message to chat history
         _chatHistory.value += ChatMessage(message = userMessage, isUserMessage = true)
-
+        _isStreaming.value = true
         // Prepare generation
-        llmRepository.prepareGeneration()
+        if (llmRepository.llmState != LLMState.ReadyGenerate) {
+            val job = llmRepository.prepareGeneration()
+            job.join()
+        }
 
         // Start inference
         llmRepository.runInferenceStream(userMessage)

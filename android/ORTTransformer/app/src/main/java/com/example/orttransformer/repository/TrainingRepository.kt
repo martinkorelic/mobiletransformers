@@ -5,30 +5,38 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
+enum class TrainingUiState {
+    Training,
+    FinishedTraining,
+    ReadyTrain
+}
 
 class TrainingRepository(private val llmRepository: LLMRepository) {
-    private val _isTraining = MutableStateFlow(false)
-    val isTraining: MutableStateFlow<Boolean> = _isTraining
+    private val _isTraining = MutableStateFlow(TrainingUiState.ReadyTrain)
+    val isTraining: MutableStateFlow<TrainingUiState> = _isTraining
 
     private val _loss = MutableStateFlow<Float>(-1.0F)
     val loss: MutableStateFlow<Float> = _loss
 
     init {
-        CoroutineScope(Dispatchers.Main).launch {
+        CoroutineScope(Dispatchers.IO).launch {
             llmRepository.lossFlow.collect { loss ->
                 _loss.value = loss
             }
         }
     }
 
-    fun performTraining(trainData: List<String>) {
-        _isTraining.value = true
+    suspend fun performTraining(trainData: List<String>) {
+        _isTraining.value = TrainingUiState.Training
 
-        llmRepository.prepareTraining()
+        if (llmRepository.llmState != LLMState.Training && llmRepository.llmState != LLMState.ReadyTrain) {
+            val job = llmRepository.prepareTraining()
+            job.join()
+        }
 
-        val trainLoss = llmRepository.runTraining(trainData)
+        val job = llmRepository.runTraining(trainData)
+        job?.join()
 
-        _isTraining.value = false
-        _loss.value = trainLoss
+        _isTraining.value = TrainingUiState.FinishedTraining
     }
 }

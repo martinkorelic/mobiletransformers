@@ -18,6 +18,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -32,6 +33,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
+import com.example.orttransformer.repository.TrainingUiState
 import com.example.orttransformer.ui.theme.ORTTransformerTheme
 import com.example.orttransformer.viewmodels.TrainingViewModel
 
@@ -44,8 +47,10 @@ fun TrainingScreen(viewModel : TrainingViewModel) {
 
     val keyboardController = LocalSoftwareKeyboardController.current
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        TrainingStatusModal(isTraining = isTraining)
+    Column(modifier = Modifier
+        .fillMaxSize()
+        .padding(16.dp)) {
+        TrainingStatusModal(isTraining = isTraining, viewModel)
         LazyColumn(
             modifier = Modifier.weight(1f),
             contentPadding = PaddingValues(bottom = 16.dp)
@@ -71,14 +76,14 @@ fun TrainingScreen(viewModel : TrainingViewModel) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextField(
-                enabled = !isTraining,
+                enabled = isTraining != TrainingUiState.Training,
                 value = newTrainingInput,
                 onValueChange = { newTrainingInput = it },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Enter training data") }
             )
             Button(
-                enabled = !isTraining,
+                enabled = isTraining != TrainingUiState.Training,
                 onClick = {
                     if (newTrainingInput.text.isNotEmpty()) {
                         viewModel.addTrainingData(newTrainingInput.text)
@@ -95,7 +100,7 @@ fun TrainingScreen(viewModel : TrainingViewModel) {
         Spacer(modifier = Modifier.height(16.dp))
 
         Button(
-            enabled = !isTraining,
+            enabled = isTraining != TrainingUiState.Training,
             onClick = {
                 viewModel.startTraining()
             },
@@ -107,18 +112,32 @@ fun TrainingScreen(viewModel : TrainingViewModel) {
 }
 
 @Composable
-fun TrainingStatusModal(isTraining: Boolean) {
-    if (isTraining) {
+fun TrainingStatusModal(isTraining: TrainingUiState, viewModel : TrainingViewModel) {
+    if (TrainingUiState.Training == isTraining) {
         // Show training modal
         AlertDialog(
             onDismissRequest = { /* Do nothing on dismiss */ },
             title = { Text("Training in progress") },
             text = { Text("Training... Please wait.") },
-            confirmButton = {
-                Button(onClick = { /* Handle button click */ }) {
-                    Text("OK")
-                }
-            }
+            confirmButton = {},
+            properties = DialogProperties(
+                dismissOnBackPress = false,
+                dismissOnClickOutside = false
+            )
+
+        )
+    } else if (TrainingUiState.FinishedTraining == isTraining) {
+        val loss by viewModel.trainLoss.collectAsState()
+        AlertDialog(
+            onDismissRequest = {
+                viewModel.readyForTraining()
+            },
+
+            title = { Text("Training is finished.") },
+            text = { Text("Loss: $loss") },
+            confirmButton = { TextButton(onClick = { viewModel.readyForTraining() }) {
+                Text(text = "OK")
+            } },
         )
     }
 }
