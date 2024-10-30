@@ -43,18 +43,18 @@ class InferenceRepository(private val llmRepository: LLMRepository) {
         }
     }
 
-    suspend fun sendMessage(userMessage: String) {
+    suspend fun sendMessage(userMessage: String, generationConfig : Map<String, String>?) {
         // Append user message to chat history
         _chatHistory.value += ChatMessage(message = userMessage, isUserMessage = true)
         _isStreaming.value = true
         // Prepare generation
         if (llmRepository.llmState != LLMState.ReadyGenerate) {
-            val job = llmRepository.prepareGeneration()
+            val job = llmRepository.prepareGeneration(generationConfig)
             job.join()
         }
 
         // Start inference
-        llmRepository.runInferenceStream(userMessage)
+        llmRepository.runGenerationStream(userMessage)
     }
 
 }

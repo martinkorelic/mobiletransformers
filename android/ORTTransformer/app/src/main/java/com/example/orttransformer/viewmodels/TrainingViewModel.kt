@@ -36,4 +36,10 @@ class TrainingViewModel(private val trainingRepository: TrainingRepository) : Vi
             _trainingData.value = listOf()
         }
     }
+
+    fun endTraining(saveModel : Boolean) {
+        viewModelScope.launch {
+            trainingRepository.endTraining(saveModel)
+        }
+    }
 }

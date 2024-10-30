@@ -52,9 +52,9 @@ class ORTTrainerNative(artifactDir : String, private var tokenizer: ORTTokenizer
         return loss
     }
 
-    fun destroySession() {
+    fun destroySession(saveCheckpoint: Boolean) {
         Log.d(LOG_TAG, "Destroying training session and saving checkpoint...")
-        releaseTrainingSession(model, saveCheckpoint = true)
+        releaseTrainingSession(model, saveCheckpoint = saveCheckpoint)
     }
 
     /**

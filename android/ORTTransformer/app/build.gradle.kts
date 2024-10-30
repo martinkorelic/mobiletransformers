@@ -76,7 +76,7 @@ dependencies {
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
     androidTestImplementation(libs.androidx.ui.test.junit4)
-    val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
+    val composeBom = platform("androidx.compose:compose-bom:2024.10.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)
     implementation(libs.androidx.activity.compose)

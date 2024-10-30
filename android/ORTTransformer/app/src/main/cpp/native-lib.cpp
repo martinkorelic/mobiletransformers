@@ -191,6 +191,19 @@ void ReleaseGenAISession(jlong session) {
     session_cache = nullptr;
 }
 
+Ort::SessionOptions CreateSessionOptions() {
+    // Create a SessionOptions instance
+    Ort::SessionOptions session_options;
+
+    // Disable memory pattern
+    session_options.DisableCpuMemArena();
+
+    // Disable CPU memory arena
+    session_options.DisableMemPattern();
+
+    return session_options;
+}
+
 extern "C"
 JNIEXPORT float JNICALL
 /**
@@ -241,6 +254,8 @@ Java_com_example_orttransformer_ORTTrainerNative_performTraining(
 
     utils::initialize_labels(input_ids_elements, labels.data(), batch_size, sequence_length);
 
+
+
     // Update the model parameters using this batch of inputs.
     return training::train_step(session_cache, input_ids_elements,
                                 attention_mask.data(), position_ids.data(), labels.data(), batch_size, sequence_length);
@@ -278,7 +293,9 @@ Java_com_example_orttransformer_ORTTrainerNative_createTrainingSession(JNIEnv *e
             utils::JString2String(env, train_model_path),
             utils::JString2String(env, eval_model_path),
             utils::JString2String(env, optimizer_model_path),
-            utils::JString2String(env, cache_dir_path));
+            utils::JString2String(env, cache_dir_path),
+            "low_mem",
+            true);
 
     for (jsize i = 0; i < arrayLength; ++i) {
         auto jstr = (jstring) (env->GetObjectArrayElement(requires_grad, i));
@@ -365,6 +382,7 @@ Java_com_example_orttransformer_ORTGenAINative_createGenAISession(
 extern "C" JNIEXPORT jlong JNICALL
 /**
  * Creates normal inference session from the given inference model path.
+ * This inference is a custom made inference which is ready to be used for generation with KV caching.
  *
  * @param env
  * @param inference_model_path
@@ -372,11 +390,12 @@ extern "C" JNIEXPORT jlong JNICALL
  */
 Java_com_example_orttransformer_ORTGeneratorNative_createInferenceSession(
         JNIEnv *env, jobject /* this */,
-        jstring inference_model_path
+        jstring inference_model_path,
+        jstring inference_model_name
         ) {
-    std::unique_ptr<InferenceSessionCache> session_cache = std::make_unique<InferenceSessionCache>(
-                utils::JString2String(env, inference_model_path)
-            );
+    std::unique_ptr<InferenceSessionCache> session_cache = std::make_unique<InferenceSessionCache>(utils::JString2String(env, inference_model_path), utils::JString2String(env, inference_model_name), "low_mem", true);
+
+    session_cache->initializeKVCache(1);
 
     return reinterpret_cast<long>(session_cache.release());
 }
@@ -398,6 +417,7 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_example_orttransformer_ORTGeneratorNative_createInferenceSessionFromCheckpoint(
         JNIEnv *env, jobject /* this */,
         jstring inference_model_path,
+        jstring inference_model_name,
         jstring checkpoint_path,
         jobjectArray requires_grad
 ) {
@@ -417,7 +437,10 @@ Java_com_example_orttransformer_ORTGeneratorNative_createInferenceSessionFromChe
     }
 
     std::unique_ptr<InferenceSessionCache> inference_session_cache = std::make_unique<InferenceSessionCache>(
-            utils::JString2String(env, inference_model_path)
+            utils::JString2String(env, inference_model_path),
+            utils::JString2String(env, inference_model_name),
+            "low_mem",
+            true
     );
 
     // Load the extracted weights into the inference session
@@ -486,13 +509,17 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_example_orttransformer_ORTGeneratorNative_createInferenceSessionFromTraining(
         JNIEnv *env, jobject /* this */,
         jstring inference_model_path,
+        jstring inference_model_name,
         jlong train_session
 ) {
     auto *train_session_cache = reinterpret_cast<TrainingSessionCache *>(train_session);
 
     // Create the inference session
     std::unique_ptr<InferenceSessionCache> inference_session_cache = std::make_unique<InferenceSessionCache>(
-            utils::JString2String(env, inference_model_path)
+            utils::JString2String(env, inference_model_path),
+            utils::JString2String(env, inference_model_path),
+            "low_mem",
+            true
     );
 
     // Load the extracted weights into the inference session
@@ -616,8 +643,6 @@ extern "C"
 JNIEXPORT jint JNICALL
 /**
  * Performs the inference step using the exported model for inference.
- * TODO: Uses only greedy sampling, new sampling methods could be added.
- * No KV caching is used, inference time increases with sequence length.
  *
  * @param env
  * @param thiz
@@ -626,6 +651,7 @@ JNIEXPORT jint JNICALL
  * @param attention_mask
  * @param position_ids
  * @param sequence_length
+ * @param past_sequence_length
  * @param vocab_size
  *
  * @return Next token id
@@ -637,27 +663,30 @@ Java_com_example_orttransformer_ORTGeneratorNative_performInferenceStep(JNIEnv *
                                                                   jlongArray position_ids,
                                                                   jint batch_size,
                                                                   jint sequence_length,
+                                                                  jint past_sequence_length,
                                                                   jint vocab_size
                                                                   ) {
     auto *session_cache = reinterpret_cast<InferenceSessionCache *>(session);
 
-    if (!session_cache->inference_session) {
-        // The inference session does not exist, so create a new one.
+    jlong* input_ids_elements = env->GetLongArrayElements(input_ids, nullptr);
+    jlong* attention_mask_elements = env->GetLongArrayElements(attention_mask, nullptr);
+    jlong* position_ids_elements = env->GetLongArrayElements(position_ids, nullptr);
 
-        session_cache->inference_session = std::make_unique<Ort::Session>(
-                session_cache->ort_env, session_cache->inference_model_path.c_str(),
-                session_cache->session_options).release();
-    }
+    // Forward pass
+    auto logits = inference::generateWithKVCache(session_cache,
+                                   input_ids_elements,
+                                   attention_mask_elements,
+                                   position_ids_elements,
+                                   batch_size,
+                                   sequence_length,
+                                   past_sequence_length);
 
-    auto next_token = inference::greedySampling(
-            session_cache,
-            env->GetLongArrayElements(input_ids, nullptr),
-            env->GetLongArrayElements(attention_mask, nullptr),
-            env->GetLongArrayElements(position_ids, nullptr),
-            batch_size,
-            sequence_length,
+    // TODO: Choose which sampling method to use, using greedy for now
+    int best_index = inference::argmax(
+            logits,
+            past_sequence_length,
             vocab_size
             );
 
-    return next_token;
+    return best_index;
 }

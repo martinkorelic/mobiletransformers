@@ -1,5 +1,6 @@
 package com.example.orttransformer.repository
 
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -8,7 +9,9 @@ import kotlinx.coroutines.launch
 enum class TrainingUiState {
     Training,
     FinishedTraining,
-    ReadyTrain
+    ReadyTrain,
+    SavingModel,
+    FinishedSavingModel
 }
 
 class TrainingRepository(private val llmRepository: LLMRepository) {
@@ -38,5 +41,16 @@ class TrainingRepository(private val llmRepository: LLMRepository) {
         job?.join()
 
         _isTraining.value = TrainingUiState.FinishedTraining
+    }
+
+    suspend fun endTraining(saveModel : Boolean) {
+        _isTraining.value = TrainingUiState.SavingModel
+
+        if (llmRepository.llmState != LLMState.Training) {
+            val job = llmRepository.saveTraining(saveModel)
+            job?.join()
+        }
+
+        _isTraining.value = TrainingUiState.FinishedSavingModel
     }
 }

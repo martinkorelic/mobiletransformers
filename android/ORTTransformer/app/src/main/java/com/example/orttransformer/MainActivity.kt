@@ -143,25 +143,6 @@ class MainActivity : ComponentActivity() {
         return ortGeneratorNative
     }
 
-    private fun performTestInference() {
-        if (ortTrainerNative == null) {
-            Log.e(LOG_TAG, "No inference model defined.")
-            return
-        }
-        val runtime = Runtime.getRuntime()
-        val usedMemBefore = runtime.totalMemory() - runtime.freeMemory()
-        val startTime = System.nanoTime()
-
-        Log.d(LOG_TAG, "Starting test inference generation...")
-        ortGeneratorNative?.generate("Hello, this is a message for the world.", 100)
-        val endTime = System.nanoTime()
-        val usedMemAfter = runtime.totalMemory() - runtime.freeMemory()
-        val durationInSeconds = (endTime - startTime) / 1_000_000_000.0
-        val memoryUsedInMB = (usedMemAfter - usedMemBefore) / (1024)
-
-        Log.d(LOG_TAG, "Time elapsed: $durationInSeconds s")
-        Log.d(LOG_TAG, "Memory used for training: $memoryUsedInMB")
-    }
 
     private fun performTestTraining() {
         if (ortTrainerNative == null) {

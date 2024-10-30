@@ -1,5 +1,8 @@
 import torch
-import os, json, gc
+import os, json, gc, time
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import numpy as np
 import netron
@@ -186,9 +189,8 @@ def gen_artifacts(train_dir,
             "frozen_params": frozen_params
         }, f, ensure_ascii=False)
 
-    print("Generated training artifacts.")
-
 def onnx_checktrain(model_dir,
+                    model_id,
                     export_inference=True,
                     test_inference=False,
                     test_evaluate=False,
@@ -206,7 +208,7 @@ def onnx_checktrain(model_dir,
    - `inference_model_path` - model path of an already existing inference model or one to create
    - `max_sequence_length` - length of text generation sequence
     """
-
+    
     state = CheckpointState.load_checkpoint(f"{model_dir}/checkpoint")
 
     model = Module(f"{model_dir}/training_model.onnx", state, f"{model_dir}/eval_model.onnx")
@@ -233,14 +235,15 @@ def onnx_checktrain(model_dir,
         "labels": labels
     }
 
+    start_train_time = time.time()
     model.train()
     forward = model(*inputs.values())
-
-    print("Training result:")
-    print(forward[0])
-    
     optimizer.step()
     model.lazy_reset_grad()
+    end_train_time = time.time()
+
+    print(f"[INFO] Training loss result: {forward[0]}")
+    print(f"[INFO] Training time: {end_train_time - start_train_time} s")
 
     # TODO: Doesn't work with inputs?
     if test_evaluate:
@@ -266,10 +269,9 @@ def onnx_checktrain(model_dir,
         del state
         del optimizer
         gc.collect()
-
-    # Load and test inference if needed
-    if test_inference:
-        onnx_infer(f"{model_dir}/{inference_model_path}", with_past=False, max_length=max_sequence_length)
+        # Load and test inference if needed
+        if test_inference:
+            onnx_infer(f"{model_dir}/{inference_model_path}", with_past=False, max_length=max_sequence_length)
     
 def onnx_export_dummy_model(model_output="tokenizer.onnx"):
     """
@@ -376,9 +378,18 @@ def onnx_transfer_trained_weights(state : CheckpointState, inference_model):
     del onnx_inference_model
     gc.collect()
 
-def gen_genai(model_path, training_config, new_model_path, large_model=False):
+def gen_genai(model_path,
+              training_config,
+              new_model_name,
+              new_model_path,
+              weight_input=True,
+              include_metadata=True,
+              large_model=False,
+              test_generation=False,
+              test_generation_config={},
+              opset_version=18):
     """
-    Creates a GenAI compatible ONNX graph.
+    Creates a GenAI compatible ONNX graph or a custom inference graph.
 
     - `training_config` - training configuration json
     - `new_model_path` - path to new inference model
@@ -386,54 +397,87 @@ def gen_genai(model_path, training_config, new_model_path, large_model=False):
     """
 
     model = onnx.load(model_path)
+    model_trainable_weights = {}
 
-    with open(f'{training_config}', 'r') as f:
-        requires_grad_layers = json.load(f)["requires_grad"]
-    
-    # Extract initializers from the model
-    initializers = {init.name: init for init in model.graph.initializer}
-    
-    # Create new input nodes for the specified initializers
-    new_inputs = []
-    for name in requires_grad_layers:
-        if name in initializers:
-            initializer = initializers[name]
-            # Create a new input node
-            new_input = helper.make_tensor_value_info(name, initializer.data_type, initializer.dims)
-            new_inputs.append(new_input)
+    new_model_namepath = f'{new_model_path}/{new_model_name}.onnx'
 
-            # Remove initializer since it becomes the input
-            model.graph.initializer.remove(initializer)
-    
-    # Create a new list of inputs (existing inputs + new inputs for specified initializers)
-    new_graph_inputs = list(model.graph.input) + new_inputs
-    
-    # Remove the specified initializers from the model
-    new_initializers = [init for init in model.graph.initializer if init.name not in requires_grad_layers]
-    
-    # Create a new graph with updated inputs and removed initializers
-    new_graph = helper.make_graph(
-        nodes=model.graph.node,
-        name=model.graph.name,
-        inputs=new_graph_inputs,
-        outputs=model.graph.output,
-        initializer=new_initializers
-    )
-    
-    # Create a new model with the modified graph
-    new_model = helper.make_model(new_graph)
+    if weight_input:
 
-    # Check the model
-    if not large_model:
-        onnx.checker.check_model(new_model, full_check=True)
+        with open(f'{training_config}', 'r') as f:
+            requires_grad_layers = json.load(f)["requires_grad"]
+        
+        # Extract initializers from the model
+        initializers = {init.name: init for init in model.graph.initializer}
+
+        # Create new input nodes for the specified initializers
+        new_inputs = []
+        for name in requires_grad_layers:
+            if name in initializers:
+                initializer = initializers[name]
+                # Create a new input node
+                new_input = helper.make_tensor_value_info(name, initializer.data_type, initializer.dims)
+                new_inputs.append(new_input)
+
+                # Store them for the testing generation input
+                model_trainable_weights[name] = numpy_helper.to_array(initializer)
+
+                # Remove initializer since it becomes the input
+                model.graph.initializer.remove(initializer)
+        
+        # Create a new list of inputs (existing inputs + new inputs for specified initializers)
+        new_graph_inputs = list(model.graph.input) + new_inputs
+        
+        # Remove the specified initializers from the model
+        new_initializers = [init for init in model.graph.initializer if init.name not in requires_grad_layers]
+        
+        # Create a new graph with updated inputs and removed initializers
+        new_graph = helper.make_graph(
+            nodes=model.graph.node,
+            name=model.graph.name,
+            inputs=new_graph_inputs,
+            outputs=model.graph.output,
+            initializer=new_initializers
+        )
+        
+        # Create a new model with the modified graph
+        model = helper.make_model(new_graph, opset_imports=[helper.make_operatorsetid("", opset_version)])
     
-    # Save the new ONNX model
-    onnx.save(new_model, new_model_path)
+    if include_metadata:
+
+        config = AutoConfig.from_pretrained(model_id)
+
+        num_kv_heads = config.num_key_value_heads if hasattr(config, "num_key_value_heads") else config.num_attention_heads
+        head_size = config.head_dim if hasattr(config, "head_dim") else config.hidden_size // config.num_attention_heads
+        num_layers = config.num_hidden_layers
+
+        # Add custom metadata
+        model.metadata_props.append(
+            onnx.StringStringEntryProto(key="head_dim", value=str(head_size))
+        )
+        model.metadata_props.append(
+            onnx.StringStringEntryProto(key="num_kv_heads", value=str(num_kv_heads))
+        )
+        model.metadata_props.append(
+            onnx.StringStringEntryProto(key="num_layers", value=str(num_layers))
+        )
+
+    onnx.save(model, new_model_namepath, save_as_external_data=True, location=f'{new_model_name}.onnx_data')
 
     if large_model:
-        onnx.checker.check_model(new_model_path, full_check=True)
+        # Wait so it finishes writing to disk
+        time.sleep(20)
+        print("[INFO] Writing large model to disk...")
+        onnx.checker.check_model(new_model_namepath, full_check=True)
+    else:
+        onnx.checker.check_model(model, full_check=True)
 
-    print("Saved GenAI inference model.")
+    print("[INFO] Saved GenAI inference model.")
+
+    if test_generation:
+        session = InferenceSession(new_model_namepath, providers=['CPUExecutionProvider'])
+        tokenizer = AutoTokenizer.from_pretrained(model_id, token=os.environ['HF_TOKEN'])
+        config = AutoConfig.from_pretrained(model_id)
+        generate_tokens_onnx(tokenizer, session, config, model_trainable_weights, with_past=True, with_weight_input=weight_input, **test_generation_config)
 
 def get_layers_with_grad(model):
     """
@@ -445,7 +489,19 @@ def get_layers_with_grad(model):
             layers_with_grad.append(name)
     return layers_with_grad
 
-def generate_tokens_onnx(prompt, tokenizer, model, config, with_past=False, output_name="logits", max_length=100, sampling="greedy", temperature=1.0, top_k=50):
+def generate_tokens_onnx(tokenizer,
+                         model,
+                         config,
+                         model_train_weights=[],
+                         with_past=False,
+                         with_weight_input=False,
+                         prompt="Hello, how is your day?",
+                         output_name="logits",
+                         max_length=100,
+                         sampling="greedy",
+                         temperature=1.0,
+                         top_k=50,
+                         decode_between=True):
     """
     Generates the tokens from the ONNX Inference sessions.
     Uses either "topk" or "greedy" sampling methods.
@@ -457,50 +513,59 @@ def generate_tokens_onnx(prompt, tokenizer, model, config, with_past=False, outp
     head_size = config.head_dim if hasattr(config, "head_dim") else config.hidden_size // config.num_attention_heads
 
     # Initialize the generated sequence with the prompt
-    generated_ids = input_ids["input_ids"]
-    attention_mask = input_ids["attention_mask"]
-    position_ids = np.cumsum(attention_mask, axis=1) - 1
-    position_ids = np.clip(position_ids, 0, None)
+    token_input_ids = input_ids["input_ids"]
+
+    attention_mask = np.ones((1, token_input_ids.shape[1]), dtype=np.int64)
+    position_ids = np.arange(token_input_ids.shape[1], dtype=np.int64).reshape(1, -1)
+    generated_ids = np.array(token_input_ids, dtype=np.int64)
 
     # If KV caching enabled:
     if with_past:
         past_key_values = {}
         for i in range(config.num_hidden_layers):
-            past_key_values[f"past_key_values.{i}.key"] = np.zeros(shape=(1, num_kv_heads, 0, head_size), dtype=np.float32)
-            past_key_values[f"past_key_values.{i}.value"] = np.zeros(shape=(1, num_kv_heads, 0, head_size), dtype=np.float32)
+            past_key_values[f"past_key_values.{i}.key"] = np.random.rand(*(1, num_kv_heads, 0, head_size)).astype(np.float32)
+            past_key_values[f"past_key_values.{i}.value"] = np.random.rand(*(1, num_kv_heads, 0, head_size)).astype(np.float32)
 
         present_keys = [pkv.replace("past_key_values", "present") for pkv in past_key_values.keys()]
 
+    start_time = time.time()
+    num_decode = 0
     for _ in range(max_length):
 
+        print(token_input_ids.shape)
+        print(token_input_ids)
+        print(attention_mask.shape)
+        print(position_ids)
+        print(position_ids.shape)
+
         model_inputs = {
-            "input_ids": generated_ids,
+            "input_ids": token_input_ids,
             "attention_mask": attention_mask,
             "position_ids": position_ids,
         }
 
         if with_past:
             model_inputs.update(past_key_values)
+        if with_weight_input:
+            model_inputs.update(model_train_weights)
 
         # Forward pass to get logits
         output = model.run([output_name] + (present_keys if with_past else []), model_inputs)
 
         logits = output[0]
 
-        # TODO: KV cache doesn't work (model always expects past_sequence_length to be 0)
-        #if with_past:
-        #new_shape = (1, 4, attention_mask.shape[-1]+1, 64)
-        #present_kv = {}
-        #for pkv, pkv_name in zip(output[1:], past_key_values.keys()):
-        #    extended_array = np.zeros(new_shape, dtype=np.float32)
-        #    extended_array[:, :, :attention_mask.shape[-1], :] = pkv
-        #    present_kv[pkv_name] = extended_array
-        #    print(pkv_name)
-        #    print(extended_array.shape)
-        #past_key_values = present_kv
+        print(logits.shape)
+
+        if with_past:
+            present_kv = {}
+            for pkv, pkv_name in zip(output[1:], past_key_values.keys()):
+                present_kv[pkv_name] = pkv
+            past_key_values = present_kv
         
         # Get the last token logits and apply temperature
         logits = logits[:, -1, :] / temperature
+
+        print(logits[:5])
 
         if sampling=="topk":
             # Apply top-k filtering
@@ -517,22 +582,29 @@ def generate_tokens_onnx(prompt, tokenizer, model, config, with_past=False, outp
 
         # Append the sampled token to the sequence
         generated_ids = np.concatenate([generated_ids, [[next_token_id]]], axis=1)
-        print(generated_ids)
+        token_input_ids = np.array([[next_token_id]], dtype=np.int64)
 
-        decoded = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-        print(decoded)
+        if decode_between:
+            decoded = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+            print(decoded)
+
+        num_decode += 1
 
         # Update the position_ids (increment by 1 for the new token)
         new_position_id = position_ids[0, -1] + 1
-        position_ids = np.concatenate([position_ids, [[new_position_id]]], axis=1)
+        position_ids = np.array([[new_position_id]], dtype=np.int64)
         
         # Update the attention_mask (add 1 for the new token)
-        attention_mask = np.concatenate([attention_mask, [[1]]], axis=1)
+        new_ones = np.ones((attention_mask.shape[0], 1), dtype=np.int64)
+        attention_mask = np.concatenate((attention_mask, new_ones), axis=-1)
 
-        
         # Stop if end-of-sequence token is generated
         if next_token_id == tokenizer.eos_token_id:
             break
+    
+    end_time = time.time()
+    print("\n")
+    print(f"[INFO] Generation time: {num_decode / (end_time - start_time)} token/s")
 
     # Decode the generated tokens
     return tokenizer.decode(generated_ids[0], skip_special_tokens=True)
@@ -598,17 +670,39 @@ def convert_pipeline():
     """
     ONNX conversion for training and inference artifacts.
     Creates a build folder with train and inference subfolders each with models needed for tasks.
-    
     """
+
+    model_id = "TinyLlama/TinyLlama_v1.1"
 
     train_dir = "opt_tinyllama_train_int16"
     inference_dir = "opt_tinyllama_inference_int16"
     build_dir = "build"
     model_name = "quant_model.onnx"
 
-    generate_genai = True
+    generate_artifacts = False
+    
     check_train = True
-    large_model = False
+    large_model = True
+
+    inference_export_config = {
+        "type": "genai", # "normal", "genai"
+        "weight_input" : False, # Whether to include trainable weights as model input
+        "test_inference": True, # Whether to perform inference / generation test on the inference exported model
+        "include_metadata": True, # Whether to include the model metadata
+        "inference_model_name": "genai_inference", # The new model name,
+        "opset_version": 18,
+
+        "test_generation_config": {
+            "prompt": "Hello, this is a message for the world. How is your day?", # Prompt for test generation
+            "decode_between": True, # Whether to decode the text while it's generating
+            "max_length" : 100, # Max length of test sequence to generate
+            "sampling": "greedy", # Sampling method
+            "temperature": 1.0, # Temperature for sampling
+            "top_k": 50, # Top K for sampling
+        }
+    }
+
+    test_evaluate = False
 
     try:
         # Create the base directory if it doesn't exist
@@ -624,26 +718,33 @@ def convert_pipeline():
     except Exception as e:
         print(f"An error occurred: {e}")
     
-    gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=model_name)
+    if generate_artifacts:
+        gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=model_name)
+        print("[INFO] Generated training artifacts.")
 
-    if check_train and not generate_genai:
-        onnx_checktrain(model_dir=build_dir, export_inference=True)
+    if check_train:
+        onnx_checktrain(model_dir=f'{build_dir}/train',
+                        model_id=model_id,
+                        export_inference=(inference_export_config["type"] == "normal"),
+                        test_evaluate=test_evaluate,
+                        test_inference=inference_export_config["test_inference"])
+        print("[INFO] Training check completed.")
     
-    if generate_genai:
-        gen_genai(model_path=f'{inference_dir}/{model_name}', training_config=f'{train_dir}/training_config.json', new_model_path=f'{build_dir}/inference/genai_inference.onnx', large_model=large_model)
-        print("Generated the GenAI inference model graph. Make sure to generate the configuration for GenAI as well.")
+    if inference_export_config["type"] == "genai":
+        gen_genai(model_path=f'{inference_dir}/{model_name}',
+                  training_config=f'{train_dir}/training_config.json',
+                  new_model_name=inference_export_config["inference_model_name"],
+                  new_model_path=f'{build_dir}/inference',
+                  large_model=large_model,
+                  test_generation=inference_export_config["test_inference"],
+                  weight_input=inference_export_config["weight_input"],
+                  include_metadata=inference_export_config["include_metadata"],
+                  opset_version=inference_export_config["opset_version"],
+                  test_generation_config=inference_export_config["test_generation_config"])
+        print("[INFO] Generated the inference model graph. Make sure to generate the configuration for GenAI if using for ONNX Generative AI.")
 
 if __name__ == "__main__":
 
+    # TODO: Argument parser
+
     convert_pipeline()
-    
-    #gen_artifacts(train_dir="opt_tinyllama_train_int16", model_name="quant_model.onnx", train_cfg="training_config.json")
-    #onnx_segment_weights("opt_tinyllama_inference/model.onnx", "opt_tinyllama_train/model.onnx")
-    # Get the supported opset version
-    #onnx_infer(model_path="inference.onnx")
-    #view_model("onnx_tinyllama_int8/training_model.onnx")
-    #onnx_checktrain("artifacts", test_inference=False, export_inference=True, transfer_weights=False)
-    #gen_genai("onnx_model/quant_model.onnx", "opt_tinyllama_artifacts/training_config.json", "input_inference.onnx")
-    #convert_onnx()
-    #convert_onnx_genai()
-    #onnx_export_dummy_model("tokenizer.onnx")

@@ -11,10 +11,11 @@ class InferenceViewModel(private val inferenceRepository: InferenceRepository) :
     val chatHistory: StateFlow<List<ChatMessage>> = inferenceRepository.chatHistory
     val chatStream : StateFlow<List<String>> = inferenceRepository.chatStream
     val isStreaming : StateFlow<Boolean> = inferenceRepository.isStreaming
+    val generationConfig : MutableMap<String, String> = mutableMapOf()
 
     fun sendMessage(message: String) {
         viewModelScope.launch {
-            inferenceRepository.sendMessage(message)
+            inferenceRepository.sendMessage(message, generationConfig)
         }
     }
 }

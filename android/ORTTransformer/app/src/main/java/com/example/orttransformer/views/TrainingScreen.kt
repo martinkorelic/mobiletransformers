@@ -108,6 +108,17 @@ fun TrainingScreen(viewModel : TrainingViewModel) {
         ) {
             Text("Train")
         }
+        Spacer(modifier = Modifier.height(16.dp))
+        Button(
+            enabled = isTraining != TrainingUiState.Training,
+            onClick = {
+                // Perhaps ask the user if we want to save the model or not
+                viewModel.endTraining(true)
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Save model")
+        }
     }
 }
 

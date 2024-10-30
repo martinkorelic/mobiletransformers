@@ -10,12 +10,14 @@ from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfi
 from optimum.onnxruntime import ORTQuantizer
 from optimum.onnxruntime.configuration import AutoQuantizationConfig, AutoCalibrationConfig
 from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
-from peft import PeftModel, LoraConfig
+from peft import PeftModel, LoraConfig, get_peft_model
 
 from onnxruntime.quantization import quantize_dynamic, QuantType
 
 # TODO: IMPORTANT! If training add training=torch.onnx.TrainingMode.PRESERVE, to the onnx_export function at the end L#586
 from optimum.exporters.onnx.convert import export_pytorch
+
+from optimization.lora_xs.initialization_utils import find_and_initialize
 
 model_id = "TinyLlama/TinyLlama_v1.1"#"TinyLlama/TinyLlama_v1.1"#"google/gemma-2b-it"#
 model_name = model_id.split("/")[1]
@@ -281,7 +283,7 @@ def preprocess_model(model : torch.nn.Module, epsilon_high=1e-8, epsilon_low=1e-
     
     return model
 
-def optimum_hf_export(model_id, model_output="onnx_model", training_mode = False, lora_target=["q_proj", "k_proj"], lora_rank=4, quantize=True, weight_type=QuantType.QInt16):
+def optimum_hf_export(model_id, model_output="onnx_model", training_mode = False, train_method = "lora", lora_target=["q_proj", "k_proj"], lora_rank=4, quantize=True, weight_type=QuantType.QInt16, opset=18):
     """
     Exports the model from Huggingface to an ONNX model representation.
     - `model_id` - model id of Huggingface model
@@ -289,14 +291,6 @@ def optimum_hf_export(model_id, model_output="onnx_model", training_mode = False
     - `training_mode`- create model for training or inference
     - `lora_target` - which layers to apply LoRA to
     - `quantize` - add dynamic quantization to layers which do not need gradient updates
-    
-    IMPORTANT:
-    Importantly, the optimum does not implement the training mode so in order to enable
-    torch.onnx export with training, go to the following module:
-
-    `from optimum.exporters.onnx.convert import export_pytorch`
-
-    add `training=torch.onnx.TrainingMode.PRESERVE`, to the `onnx_export` function at the end L#586.
     """
 
     model = AutoModelForCausalLM.from_pretrained(model_id)
@@ -313,13 +307,36 @@ def optimum_hf_export(model_id, model_output="onnx_model", training_mode = False
     onnx_path = Path(f"{model_output}/model.onnx")
 
     lora_config = LoraConfig(
-        r=lora_rank,
-        target_modules=lora_target,
-        task_type="CAUSAL_LM",
-    )
+            r=lora_rank,
+            target_modules=lora_target,
+            task_type="CAUSAL_LM",
+        )
 
-    # Apply LoRA to the model
-    lora_model = PeftModel(model, lora_config)
+    # TODO: Should make merged LoRA adapters for inference model
+
+    if train_method == "lora":
+        # Apply LoRA to the model
+        lora_model = PeftModel(model, lora_config)
+    elif train_method == "lora-xs":
+        lora_model = get_peft_model(model, lora_config)
+        adapter_name = "default"
+        peft_config_dict = {}
+        reconstruct_dict = {
+            'reconstruction_type': "svd",
+            'reconstr_mode': "separated",
+            'half_init_dec': False,
+            'replacement_module_random_init': False,
+            'r_squared': True,
+            'svd': {
+                'rank': lora_rank,
+                'n_iter': 10,
+                'random_state': 42
+            }
+        }
+        peft_config_dict[adapter_name] = lora_config
+        find_and_initialize(model, peft_config_dict, adapter_name, "svd", reconstruct_dict, None)
+    elif train_method == None:
+        lora_model = model
 
     if training_mode:
         my_model = OnnxTrainerWrapper(lora_model)
@@ -336,7 +353,7 @@ def optimum_hf_export(model_id, model_output="onnx_model", training_mode = False
 
     # TODO: Before exporting
     # Training mode + comment out training option in transformers implementation if needed
-    export(my_model, ocl, onnx_path, 18, do_constant_folding=False)
+    export(my_model, ocl, onnx_path, opset, do_constant_folding=False)
 
     # Save gradient layer names
     if training_mode:
@@ -383,7 +400,7 @@ def onnx_dynamic_quantization(onnx_model_path, onnx_model_quant_output, weight_t
 
 if __name__ == "__main__":
 
-    optimum_hf_export(model_id=model_id, training_mode=True)
+    optimum_hf_export(model_id=model_id, training_mode=False, train_method=None, lora_target=["q_proj", "k_proj", "v_proj", "o_proj"], lora_rank=4, quantize=False)
     #inspect_weights("artifacts/inference_model.onnx")
     #compare_weights("artifacts/inference_model.onnx", "opt_tinyllama_inference_int16/quant_model.onnx")
     #trim_initializers("onnx_tinyllama_exported_inf/model.onnx")

@@ -139,6 +139,8 @@ When exporting with optimum for training, no such option is added to the model k
 
 `from optimum.exporters.onnx.convert import export_pytorch`
 
+> NOTE: This is not needed as it is deprecated now, make sure only to set the module in train or evaluation mode beforehand.
+
 - Export model for inference is a memory bottleneck
 
 When the model is done training on device, we can use export model for inference to create a new model from the current training session, however it uses a lot of memory to export.
@@ -196,6 +198,12 @@ Add `--android_abi=x86_64` or `--android_abi=arm64-v8a` depending on the device 
 
 If recompiling, make sure to delete the build folder and re-run the command again.
 AAR package can be found in `"onnxruntime-genai/build/Android/RelWithDebInfo/src/java/build/android/outputs/aar/onnxruntime-genai-debug.aar"`.
+
+- Building ONNX Runtime with NNAPI support
+
+```
+./build.sh --parallel --build_java --android --android_ndk_path=$ANDROID_NDK --android_api=24 --android_run_emulator --use_nnapi --minimal_build extended --build_shared_lib --android_abi arm64-v8a --enable_training_apis
+```
 
 There is also an option to build for both platforms:
 

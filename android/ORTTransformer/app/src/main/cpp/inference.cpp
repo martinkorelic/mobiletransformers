@@ -46,6 +46,16 @@ namespace inference {
         return output;
     }
 
+
+    int argmax(float* logits, int sequence_length, int vocab_size) {
+        int last_token_start_index = (sequence_length - 1) * vocab_size;
+        float* last_token_logits = &logits[last_token_start_index];
+
+        // Find the max logit for the most probable token ID
+        int best_token_id = std::distance(last_token_logits, std::max_element(last_token_logits, last_token_logits + vocab_size));
+        return best_token_id;
+    }
+
     std::vector<float> Softmax(std::vector<float> logits, size_t num_logits) {
         std::vector<float> probabilities(num_logits, 0);
         float sum = 0;
@@ -63,23 +73,16 @@ namespace inference {
         return probabilities;
     }
 
-    size_t greedySampling(InferenceSessionCache* session_cache,
-                          int64_t* input_ids,
-                          int64_t* attention_mask,
-                          int64_t* position_ids,
+    size_t greedySampling(float* logits,
                           int64_t batch_size,
                           int64_t sequence_length,
                           size_t vocab_size) {
 
-        float *output = forward(session_cache, input_ids, attention_mask, position_ids, batch_size,
-                                sequence_length, vocab_size);
-
-        auto logits = getLastTokenLogits(output, batch_size, sequence_length, vocab_size, 1);
-
+        auto lastTokenLogits = getLastTokenLogits(logits, batch_size, sequence_length, vocab_size, 1);
 
         // Run softmax and get the probabilities of each class
         // TODO: Only works for one batch for now
-        std::vector<float> probabilities = Softmax(logits[0], vocab_size);
+        std::vector<float> probabilities = Softmax(lastTokenLogits[0], vocab_size);
         size_t best_index = std::distance(probabilities.begin(), std::max_element(probabilities.begin(), probabilities.end()));
         return best_index;
     }
@@ -129,6 +132,79 @@ namespace inference {
                                               input_count, output_names.data(), output_values.data(), output_count);
 
         float *output = output_values.front().GetTensorMutableData<float>();
+
+        return output;
+    }
+
+    // Forward pass with KV caching
+    float* generateWithKVCache(InferenceSessionCache* session_cache,
+                               int64_t* input_ids,
+                               int64_t* attention_mask,
+                               int64_t* position_ids,
+                               int64_t batch_size,
+                               int64_t sequence_length,
+                               int64_t past_sequence_length) {
+        Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
+        std::vector<const char *> input_names = session_cache->input_names;
+        size_t input_count = input_names.size();
+
+        std::vector<const char *> output_names = session_cache->output_names;
+        size_t output_count = output_names.size();
+
+        const std::vector<int64_t> input_ids_shape({batch_size, past_sequence_length});
+        const std::vector<int64_t> attention_mask_shape({batch_size, sequence_length});
+        const std::vector<int64_t> position_ids_shape({batch_size, past_sequence_length});
+
+        std::vector<Ort::Value> input_values;
+
+        // Input ids
+        input_values.emplace_back(Ort::Value::CreateTensor(memory_info, input_ids,
+                                                           batch_size * past_sequence_length * sizeof(int64_t),
+                                                           input_ids_shape.data(), input_ids_shape.size(),
+                                                           ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64));
+        // Attention mask
+        input_values.emplace_back(Ort::Value::CreateTensor(memory_info, attention_mask,
+                                                           batch_size * sequence_length * sizeof(int64_t),
+                                                           attention_mask_shape.data(), attention_mask_shape.size(),
+                                                           ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64));
+        // Position ids
+        input_values.emplace_back(Ort::Value::CreateTensor(memory_info, position_ids,
+                                                           batch_size * past_sequence_length * sizeof(int64_t),
+                                                           position_ids_shape.data(), position_ids_shape.size(),
+                                                           ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64));
+        std::vector<Ort::Value> output_values;
+
+        // Load and move past KV caches to the input
+        //int i = 0;
+        for (auto& kv : session_cache->past_key_values) {
+
+//            float* data = kv->GetTensorMutableData<float>(); // Assuming they are float tensors
+//            size_t count = kv->GetTensorTypeAndShapeInfo().GetElementCount();
+//            __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "Past key value i: %d", i);
+//
+//            for (size_t j = 0; j < 5; ++j) {
+//                __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "%f", data[j]);
+//            }
+//            i++;
+            input_values.emplace_back(std::move(*kv));
+            output_values.emplace_back(nullptr);
+        }
+
+        output_values.emplace_back(nullptr);
+
+        // Get the logits
+        session_cache->inference_session->Run(Ort::RunOptions(), input_names.data(), input_values.data(),
+                                              input_count, output_names.data(), output_values.data(), output_count);
+
+        float *output = output_values.front().GetTensorMutableData<float>();
+
+        if (!output_values.empty()) {
+            output_values.erase(output_values.begin());
+        }
+
+        // Update KV caches
+        session_cache->updatePastKeyValues(output_values);
 
         return output;
     }

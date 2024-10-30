@@ -2,6 +2,7 @@ package com.example.orttransformer.repository
 
 import android.util.Log
 import com.example.orttransformer.ORTGenAINative
+import com.example.orttransformer.ORTGeneratorNative
 import com.example.orttransformer.ORTTokenizer
 import com.example.orttransformer.ORTTrainerNative
 import kotlinx.coroutines.CoroutineScope
@@ -17,16 +18,25 @@ enum class LLMState {
     ReadyTrain,
     Training,
     ReadyGenerate,
-    Generating
+    Generating,
+    SavingModel
 }
 
 class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
 
     private val LOG_TAG = "LLMRepository"
 
+    private var generationConfig : MutableMap<String, String> = mutableMapOf(
+        "type" to "native",
+        "sampling" to "greedy",
+        "max_sequence_length" to "100"
+    )
+
     // Configuration paths
     private var artifactTrainDir : String = "/data/local/tmp/tinyllama_int16/train"
     private var genAiConfigPath : String = "/data/local/tmp/tinyllama_int16/inference"
+    private var artifactInferenceModelPath : String = "/data/local/tmp/tinyllama_int16/inference/"
+    private var artifactInferenceModelName : String = "genai_inference.onnx"
     private var tokenizerConfigPath : String = "/data/local/tmp/genaitest"
 
     // Training capabilities
@@ -35,6 +45,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
 
     // Inference capabilities
     private var ortGenAiNative : ORTGenAINative? = null
+    private var ortNativeInference : ORTGeneratorNative? = null
 
     // LLM state
     var llmState : LLMState = LLMState.NotInitialized
@@ -50,6 +61,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
 
     init {
         // In any case, first initialize the training session
+        // TODO: do not initialize training session beforehand, but only when needed
         ortTokenizer = ORTTokenizer(tokenizerConfigPath)
 
         ortTrainerNative = makeOrtTrainer()
@@ -78,21 +90,71 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
         return genAiNative
     }
 
+    private fun makeOrtNativeInference() : ORTGeneratorNative? {
+        if (ortTrainerNative == null) {
+            Log.e(LOG_TAG, "Could not find the train model. Make sure it is initialized before GenAI inference.")
+            return null
+        }
+
+        if (ortTokenizer == null) {
+            Log.e(LOG_TAG, "Could not find the tokenizer. Initializing tokenizer...")
+            ortTokenizer = ORTTokenizer(tokenizerConfigPath)
+        }
+
+        // Either we destroy or move session weights, depending on if the model was trained beforehand or not
+        // TODO: for now we destroy training session
+        ortTrainerNative?.destroySession(false)
+
+        val nativeInference = ORTGeneratorNative(ortTokenizer!!)
+        nativeInference.createInferenceModel(artifactInferenceModelPath, artifactInferenceModelName)
+        return nativeInference
+    }
+
+    /**
+     * Loads the native inference generation configuration from file.
+     */
+    fun loadGenerationConfig() {
+        // TODO
+    }
+
     /* Inference methods */
 
-    suspend fun prepareGeneration(): Job {
-
+    suspend fun prepareGeneration(inferenceConfig : Map<String, String>?): Job {
         // Clean up the tokenizer and destroy session if there was previous training
         // Takes less memory if we initialize the training session again with the checkpoint state
         if (llmState == LLMState.ReadyTrain) {
             ortTokenizer = null
         }
+
+        // If the model was in training state
         if (llmState == LLMState.Training) {
+
+            // Overwrite generation configuration
+            if (inferenceConfig != null) {
+                for ((key, value) in inferenceConfig) {
+                    generationConfig[key] = value
+                }
+            }
+
             coroutineScope.launch {
                 withContext(Dispatchers.Default) {
-                    ortTrainerNative?.destroySession()
-                    ortTrainerNative = makeOrtTrainer()
-                    ortTokenizer = null
+
+                    // Either we destroy or move session weights, depending on if the model was trained beforehand or not
+                    // TODO: for now we destroy training session with no saving of weights
+                    ortTrainerNative?.destroySession(false)
+                    //ortTrainerNative = makeOrtTrainer()
+
+                    when (generationConfig["type"]) {
+                        "gen_ai" -> {
+                            ortGenAiNative = makeOrtGenAI()
+                            ortTokenizer = null
+                        }
+                        "native" -> {
+                            // TODO: Create native inference model from weight transfer
+                            //ortNativeInference = makeOrtNativeInference()
+                        }
+                    }
+
                     llmState = LLMState.ReadyGenerate
                 }
             }.join()
@@ -101,43 +163,49 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
 
         return coroutineScope.launch {
             withContext(Dispatchers.Default) {
-                ortGenAiNative = makeOrtGenAI()
+                when (generationConfig["type"]) {
+                    "gen_ai" -> {
+                        ortGenAiNative = makeOrtGenAI()
+                    }
+                    "native" -> {
+                        ortNativeInference = makeOrtNativeInference()
+                    }
+                }
+
                 llmState = LLMState.ReadyGenerate
             }
         }
     }
 
-    suspend fun runInferenceStream(prompt: String) {
+    suspend fun runGenerationStream(prompt: String) {
         if (llmState != LLMState.ReadyGenerate) {
             Log.e(LOG_TAG, "Model has not been initialized and cached yet.")
             return
         }
 
-        ortGenAiNative?.initializeGenerateStream(prompt)
-
-        coroutineScope.launch {
-            var newToken = ""
-
-            while (true) {
-
-                // Thread pool?
-                newToken = withContext(Dispatchers.IO) {
-                    ortGenAiNative!!.generateStream()
-                }
-
-                _tokenFlow.emit(newToken)
-
-                // Check if the stream has ended
-                if (newToken == "[STOP]") {
-                    break
-                }
+        when (generationConfig["type"]) {
+            "genai" -> {
+                ortGenAiNative?.initializeGenerateStream(prompt)
+            }
+            "native" -> {
+                Log.d(LOG_TAG, "TODO: Initialize and prefill stage...")
             }
         }
 
+        coroutineScope.launch {
 
+            withContext(Dispatchers.IO) {
+                when (generationConfig["type"]) {
+                    "genai" -> ortGenAiNative!!.generateStream()
+                    "native" -> {
+                        ortNativeInference!!.generate(prompt, generationConfig, _tokenFlow)
+                    }
+                }
+            }
+        }
     }
 
-    fun runFullInference(prompt : String) : String {
+    fun runFullGenAi(prompt : String) : String {
         if (llmState != LLMState.ReadyGenerate) {
             Log.e(LOG_TAG, "Model has not been initialized and cached.")
             return "[ERROR]"
@@ -159,8 +227,6 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
             }.join()
 
         }
-
-        //Log.d(LOG_TAG, "Model has not been initialized for training. Initializing training model...")
 
         return coroutineScope.launch {
             withContext(Dispatchers.Default) {
@@ -185,6 +251,22 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
                 ortTrainerNative?.performTrainStep(trainData) ?: -1.0F
             }
             _lossFlow.emit(loss)
+            llmState = LLMState.ReadyTrain
+        }
+    }
+
+    suspend fun saveTraining(saveModel : Boolean) : Job? {
+        if (llmState != LLMState.ReadyTrain && llmState != LLMState.Training) {
+            Log.e(LOG_TAG, "Model is not ready to save.")
+            return null
+        }
+
+        llmState = LLMState.SavingModel
+
+        return coroutineScope.launch {
+            withContext(Dispatchers.IO) {
+                ortTrainerNative?.destroySession(saveModel)
+            }
         }
     }
 
