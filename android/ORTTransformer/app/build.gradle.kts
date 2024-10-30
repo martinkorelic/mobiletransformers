@@ -9,6 +9,12 @@ android {
     namespace = "com.example.orttransformer"
     compileSdk = 34
 
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("libs")
+        }
+    }
+
     defaultConfig {
 
         applicationId = "com.example.orttransformer"
@@ -69,6 +75,8 @@ android {
         }
     }
 
+
+
 }
 
 dependencies {
@@ -98,7 +106,7 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
-    implementation("com.microsoft.onnxruntime:onnxruntime-training-android:latest.release")
+    //implementation("com.microsoft.onnxruntime:onnxruntime-training-android:latest.release")
     debugImplementation(libs.androidx.ui.test.manifest)
     // ONNX Runtime training will not work with onnx runtime library
     //implementation("com.microsoft.onnxruntime:onnxruntime-android:latest.release")

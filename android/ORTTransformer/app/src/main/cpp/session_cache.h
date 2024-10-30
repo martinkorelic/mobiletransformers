@@ -8,6 +8,7 @@
 #include "onnxruntime_training_cxx_api.h"
 #include "onnxruntime-genai/ort_genai.h"
 #include "onnxruntime-genai/ort_genai_c.h"
+#include "nnapi_provider_factory.h"
 #include <android/log.h>
 
 struct ArtifactPaths {
@@ -59,19 +60,27 @@ struct InferenceSessionCache {
     int num_layers = 0;
     int num_kv_heads = 0;
 
+    // Allocator for profiling
+    Ort::AllocatorWithDefaultOptions allocator_;
+    bool enable_profiling;
+    std::string profiling_path;
+
+
     InferenceSessionCache(const std::string& inference_model_path, const std::string& inference_model_name,
                           const std::string& sessionOptionsId, const bool enable_profiling) :
             ort_env(ORT_LOGGING_LEVEL_WARNING, "ORTInference"),
             inference_model_path(inference_model_path),
             inference_model_name(inference_model_name),
+            enable_profiling(enable_profiling),
             inference_session(nullptr) {
 
         // TODO: Create and modify session options with new configurations
         // TODO: Import external initializers into the graph
+        const std::string full_path = inference_model_path + "/" + inference_model_name;
 
         inference_session = std::make_unique<Ort::Session>(
-                ort_env, inference_model_path.c_str(),
-                setSessionOptions(sessionOptionsId, enable_profiling, inference_model_path)).release();
+                ort_env, full_path.c_str(),
+                setSessionOptions(sessionOptionsId, inference_model_path)).release();
 
         loadModelMetadata();
         generateInputOutputNames();
@@ -130,9 +139,6 @@ void updatePastKeyValues(const std::vector<Ort::Value>& present_key_values) {
     // Get memory info
     Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
-    __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "Present size %zu", present_key_values.size());
-    __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "Past size %zu", past_key_values.size());
-
     // Copy present key-values to past key-values
     for (size_t i = 0; i < present_key_values.size(); i++) {
 
@@ -167,21 +173,94 @@ void updatePastKeyValues(const std::vector<Ort::Value>& present_key_values) {
     }
 }
 
+// End profiling and get the profile data
+std::string endProfiling() {
+    try {
+        // Use EndProfilingAllocated to get the profile path
+        //auto profile_path = inference_session->EndProfilingAllocated(allocator_);
+        auto ortApi = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+
+        char* profile_path = nullptr;
+        // End profiling and get the profile path
+        auto status = ortApi->SessionEndProfiling(*inference_session, allocator_, &profile_path);
+
+        if (!profile_path || status != nullptr) {
+            throw Ort::Exception("EndProfilingAllocated returned null", ORT_RUNTIME_EXCEPTION);
+        }
+
+        // Convert to string and free the allocated memory
+        std::string path_str(profile_path);
+
+        __android_log_print(ANDROID_LOG_INFO, "InferenceProfiler",
+                            "Profiling completed. Output saved to: %s", path_str.c_str());
+
+        return path_str;
+    } catch (const Ort::Exception& e) {
+        __android_log_print(ANDROID_LOG_ERROR, "InferenceProfiler",
+                            "Failed to end profiling: %s", e.what());
+        throw;
+    }
+}
+
+// Start profiling
+void startProfiling() {
+    __android_log_print(ANDROID_LOG_ERROR, "InferenceProfiler","Started profiling to: %s", profiling_path.c_str());
+    auto ortApi = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+
+    auto status = ortApi->EnableProfiling(session_options, profiling_path.c_str());
+
+    // Check the status
+    if (status != nullptr) {
+        // An error occurred, retrieve and log the error message
+        const char* error_message = ortApi->GetErrorMessage(status);
+        __android_log_print(ANDROID_LOG_ERROR, "Profiler", "Failed to enable profiling: %s", error_message);
+
+        // Release the status
+        ortApi->ReleaseStatus(status);
+        throw Ort::Exception(error_message, ORT_RUNTIME_EXCEPTION); // Optionally throw an exception
+    } else {
+        __android_log_print(ANDROID_LOG_INFO, "Profiler", "Profiling enabled successfully.");
+    }
+
+
+}
+
 private:
-    static Ort::SessionOptions setSessionOptions(const std::string& config_id, const bool enable_profiling, const std::string& artifact_path) {
+    Ort::SessionOptions setSessionOptions(const std::string& config_id, const std::string& artifact_path) {
         Ort::SessionOptions options;
 
         if (config_id == "low_mem") {
+            // This might cause memory issues
             options.DisableMemPattern();
             options.DisableCpuMemArena();
         } else if (config_id == "high_perf") {
             // Set options for high performance, if any.
             options.EnableMemPattern();
         }
-        // Additional configurations based on config_id can be added here.
+        // Set profile path file
         if (enable_profiling) {
-            auto profiling_file_path = artifact_path + "/profile.json";
-            options.EnableProfiling(profiling_file_path.c_str());
+            profiling_path = artifact_path + "inference_profile.json";
+            allocator_ = Ort::AllocatorWithDefaultOptions();
+        }
+
+        // TODO: Set based on configurations
+
+        uint32_t nnapi_flags = 0;
+        nnapi_flags |= NNAPI_FLAG_CPU_DISABLED;
+
+        auto status = OrtSessionOptionsAppendExecutionProvider_Nnapi(session_options, nnapi_flags);
+
+        if (status != nullptr) {
+            // Print or log the error message
+            const char* error_message = Ort::GetApi().GetErrorMessage(status);
+            __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "Error when setting NNAPI support: %s", error_message);
+
+            // Release the status object
+            Ort::GetApi().ReleaseStatus(status);
+
+            throw std::runtime_error("Error setting NNAPI execution provider.");
+        } else {
+            __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "NNAPI execution provider successfully set.");
         }
 
         return options;
@@ -266,6 +345,7 @@ private:
         past_key_values.clear();
     }
 
+
 };
 
 /**
@@ -304,7 +384,6 @@ private:
         // Additional configurations based on config_id can be added here.
         if (enable_profiling) {
             auto profiling_file_path = artifact_path + "/profile.json";
-            options.EnableProfiling(profiling_file_path.c_str());
         }
 
         return options;

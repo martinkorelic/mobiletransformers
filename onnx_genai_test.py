@@ -84,4 +84,4 @@ def test_genai_model_with_inputs(path, artifact_dir, weight_path, load_inference
 
 if __name__ == "__main__":
     #test_genai_model("onnx_genai_test")
-    test_genai_model_with_inputs("onnx_genai_test", "build/train", "opt_tinyllama_inference_int16/quant_model.onnx")
+    test_genai_model_with_inputs("onnx_genai_test", "build/train", "/onnx_models/opt_tinyllama_inference_int16/quant_model.onnx")

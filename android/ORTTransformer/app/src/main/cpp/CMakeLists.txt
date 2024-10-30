@@ -32,9 +32,9 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         inference.cpp
         native-lib.cpp)
 
-add_library(onnxruntime SHARED IMPORTED)
-set_target_properties(onnxruntime PROPERTIES IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/lib/libonnxruntime.so)
-target_include_directories(orttransformer PRIVATE ${CMAKE_SOURCE_DIR}/include/onnxruntime)
+#add_library(onnxruntime SHARED IMPORTED)
+#set_target_properties(onnxruntime PROPERTIES IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/lib/libonnxruntime.so)
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/include/onnxruntime)
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE ${PROJECT_SOURCE_DIR}/../jniLibs/${CMAKE_ANDROID_ARCH_ABI})
 
 # Specifies libraries CMake should link to your target library. You

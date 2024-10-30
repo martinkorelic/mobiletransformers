@@ -202,7 +202,7 @@ AAR package can be found in `"onnxruntime-genai/build/Android/RelWithDebInfo/src
 - Building ONNX Runtime with NNAPI support
 
 ```
-./build.sh --parallel --build_java --android --android_ndk_path=$ANDROID_NDK --android_api=24 --android_run_emulator --use_nnapi --minimal_build extended --build_shared_lib --android_abi arm64-v8a --enable_training_apis
+./build.sh --parallel --build_java --android --android_ndk_path=$ANDROID_NDK --android_api=24 --android_run_emulator --use_nnapi --build_shared_lib --android_abi arm64-v8a --enable_training_apis
 ```
 
 There is also an option to build for both platforms:

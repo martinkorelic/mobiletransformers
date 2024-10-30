@@ -3,7 +3,7 @@ package com.example.orttransformer.repository
 import android.util.Log
 import com.example.orttransformer.ORTGenAINative
 import com.example.orttransformer.ORTGeneratorNative
-import com.example.orttransformer.ORTTokenizer
+import com.example.orttransformer.ORTGenAiTokenizer
 import com.example.orttransformer.ORTTrainerNative
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,7 +29,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
     private var generationConfig : MutableMap<String, String> = mutableMapOf(
         "type" to "native",
         "sampling" to "greedy",
-        "max_sequence_length" to "100"
+        "max_sequence_length" to "30"
     )
 
     // Configuration paths
@@ -41,7 +41,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
 
     // Training capabilities
     private var ortTrainerNative : ORTTrainerNative? = null
-    private var ortTokenizer : ORTTokenizer? = null
+    private var ortTokenizer : ORTGenAiTokenizer? = null
 
     // Inference capabilities
     private var ortGenAiNative : ORTGenAINative? = null
@@ -62,7 +62,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
     init {
         // In any case, first initialize the training session
         // TODO: do not initialize training session beforehand, but only when needed
-        ortTokenizer = ORTTokenizer(tokenizerConfigPath)
+        //ortTokenizer = ORTGenAiTokenizer(tokenizerConfigPath)
 
         ortTrainerNative = makeOrtTrainer()
         llmState = LLMState.ReadyTrain
@@ -72,7 +72,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
 
         if (ortTokenizer == null) {
             Log.e(LOG_TAG, "Could not find the tokenizer. Initializing tokenizer...")
-            ortTokenizer = ORTTokenizer(tokenizerConfigPath)
+            ortTokenizer = ORTGenAiTokenizer(tokenizerConfigPath)
         }
 
         return ORTTrainerNative(artifactTrainDir, ortTokenizer!!, cacheDir)
@@ -98,7 +98,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
 
         if (ortTokenizer == null) {
             Log.e(LOG_TAG, "Could not find the tokenizer. Initializing tokenizer...")
-            ortTokenizer = ORTTokenizer(tokenizerConfigPath)
+            ortTokenizer = ORTGenAiTokenizer(tokenizerConfigPath)
         }
 
         // Either we destroy or move session weights, depending on if the model was trained beforehand or not
@@ -221,7 +221,12 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
         if (llmState == LLMState.ReadyGenerate) {
             coroutineScope.launch {
                 withContext(Dispatchers.Default) {
-                    ortGenAiNative?.destroySession()
+
+                    when (generationConfig["type"]) {
+                        "genai" -> ortGenAiNative?.destroySession()
+                        "native" -> ortNativeInference?.destroySession()
+                    }
+
                     llmState = LLMState.NotInitialized
                 }
             }.join()

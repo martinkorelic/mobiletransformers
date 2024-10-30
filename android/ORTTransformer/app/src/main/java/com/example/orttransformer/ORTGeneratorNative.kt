@@ -3,7 +3,7 @@ package com.example.orttransformer
 import android.util.Log
 import kotlinx.coroutines.flow.MutableSharedFlow
 
-class ORTGeneratorNative(private var tokenizer: ORTTokenizer) {
+class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer) {
 
     private var LOG_TAG = "ORTGeneratorNative"
 
@@ -61,7 +61,7 @@ class ORTGeneratorNative(private var tokenizer: ORTTokenizer) {
         var decoded = 0
         var start = System.nanoTime()
 
-        while (inputIds.size < generationConfig["max_sequence_length"]!!.toInt()) {
+        while (decoded < generationConfig["max_sequence_length"]!!.toInt()) {
 
             Log.d(LOG_TAG, inputIds.toString())
 
@@ -112,6 +112,10 @@ class ORTGeneratorNative(private var tokenizer: ORTTokenizer) {
         generationTime = decoded / ((end_time - start) / 1_000_000_000.0)
 
         return decodedText
+    }
+
+    fun destroySession() {
+        releaseInferenceSession(inferenceModel)
     }
 
     fun createModelInputs(inputIds: IntArray): Triple<MutableList<Long>, MutableList<Long>, MutableList<Long>> {

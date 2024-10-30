@@ -393,7 +393,7 @@ Java_com_example_orttransformer_ORTGeneratorNative_createInferenceSession(
         jstring inference_model_path,
         jstring inference_model_name
         ) {
-    std::unique_ptr<InferenceSessionCache> session_cache = std::make_unique<InferenceSessionCache>(utils::JString2String(env, inference_model_path), utils::JString2String(env, inference_model_name), "low_mem", true);
+    std::unique_ptr<InferenceSessionCache> session_cache = std::make_unique<InferenceSessionCache>(utils::JString2String(env, inference_model_path), utils::JString2String(env, inference_model_name), "high_perf", true);
 
     session_cache->initializeKVCache(1);
 
@@ -465,6 +465,7 @@ Java_com_example_orttransformer_ORTGeneratorNative_releaseInferenceSession(
         JNIEnv *env, jobject /* this */,
         jlong session) {
     auto *session_cache = reinterpret_cast<InferenceSessionCache *>(session);
+
     delete session_cache->inference_session;
     delete session_cache;
     session_cache = nullptr;
@@ -672,6 +673,10 @@ Java_com_example_orttransformer_ORTGeneratorNative_performInferenceStep(JNIEnv *
     jlong* attention_mask_elements = env->GetLongArrayElements(attention_mask, nullptr);
     jlong* position_ids_elements = env->GetLongArrayElements(position_ids, nullptr);
 
+    if (session_cache->enable_profiling) {
+        session_cache->startProfiling();
+    }
+
     // Forward pass
     auto logits = inference::generateWithKVCache(session_cache,
                                    input_ids_elements,
@@ -687,6 +692,12 @@ Java_com_example_orttransformer_ORTGeneratorNative_performInferenceStep(JNIEnv *
             past_sequence_length,
             vocab_size
             );
+
+    if (session_cache->enable_profiling) {
+        session_cache->endProfiling();
+        // TODO: Either enable for further forward pass but we would only enable for prefill phase
+        session_cache->enable_profiling = false;
+    }
 
     return best_index;
 }

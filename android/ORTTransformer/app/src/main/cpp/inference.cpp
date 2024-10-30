@@ -48,12 +48,19 @@ namespace inference {
 
 
     int argmax(float* logits, int sequence_length, int vocab_size) {
+
+        assert(logits != nullptr && "Logits pointer should not be null");
+        assert(sequence_length > 0 && "Sequence length should be positive");
+        assert(vocab_size > 0 && "Vocabulary size should be positive");
+
         int last_token_start_index = (sequence_length - 1) * vocab_size;
         float* last_token_logits = &logits[last_token_start_index];
 
-        // Find the max logit for the most probable token ID
-        int best_token_id = std::distance(last_token_logits, std::max_element(last_token_logits, last_token_logits + vocab_size));
-        return best_token_id;
+        // Find the max logit for the most probable token ID in the last token's logits
+        float* max_logit_ptr = std::max_element(last_token_logits, last_token_logits + vocab_size);
+
+        // Calculate and return the index of the maximum logit in the last token's logits
+        return std::distance(last_token_logits, max_logit_ptr);
     }
 
     std::vector<float> Softmax(std::vector<float> logits, size_t num_logits) {

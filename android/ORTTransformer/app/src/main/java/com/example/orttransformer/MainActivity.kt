@@ -23,7 +23,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.orttransformer.databinding.ActivityMainBinding
 import com.example.orttransformer.repository.InferenceRepository
@@ -43,7 +42,7 @@ class MainActivity : ComponentActivity() {
     //private var ortTrainer: ORTTrainer? = null
     private var ortGeneratorNative: ORTGeneratorNative? = null
     private var ortTrainerNative : ORTTrainerNative? = null
-    private var ortTokenizer : ORTTokenizer? = null
+    private var ortTokenizer : ORTGenAiTokenizer? = null
     private var ortGenAiNative : ORTGenAINative? = null
 
     private var artifactTrainDir : String = "/data/local/tmp/tinyllama_int16/train"
@@ -61,7 +60,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        Log.d(LOG_TAG, genAiConfigPath)
         enableEdgeToEdge()
 
         //ortTokenizer = ORTTokenizer(tokenizerConfigPath)
@@ -120,27 +119,6 @@ class MainActivity : ComponentActivity() {
         }
 
         return ORTTrainerNative(artifactTrainDir, ortTokenizer!!, applicationContext.cacheDir.toString())
-    }
-
-    private fun makeOrtInference() : ORTGeneratorNative? {
-        if (ortTokenizer == null) {
-            Log.e(LOG_TAG, "Could not find the tokenizer.")
-            return null
-        }
-
-        ortGeneratorNative = ORTGeneratorNative(ortTokenizer!!)
-
-        // If ORTTrainer instance already exists, we create a inference model from it
-        if (ortTrainerNative != null) {
-            Log.d(LOG_TAG, "Loading the model from training session for inference...")
-            ortGeneratorNative?.createInferenceModelFromTraining(ortTrainerNative!!.model, inferenceModelPath)
-        } else {
-            // If ORTTrainer instance does not exist, we load the inference model along with the data from the checkpoint
-            Log.d(LOG_TAG, "Loading the model from checkpoint for inference...")
-            ortGeneratorNative?.createInferenceModelFromCheckpoint(inferenceModelPath, "$artifactTrainDir/checkpoint", "$artifactTrainDir/training_config.json")
-        }
-
-        return ortGeneratorNative
     }
 
 

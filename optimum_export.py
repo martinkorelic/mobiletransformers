@@ -283,7 +283,7 @@ def preprocess_model(model : torch.nn.Module, epsilon_high=1e-8, epsilon_low=1e-
     
     return model
 
-def optimum_hf_export(model_id, model_output="onnx_model", training_mode = False, train_method = "lora", lora_target=["q_proj", "k_proj"], lora_rank=4, quantize=True, weight_type=QuantType.QInt16, opset=18):
+def optimum_hf_export(model_id, model_output="onnx_models", training_mode = False, train_method = "lora", lora_target=["q_proj", "k_proj"], lora_rank=4, quantize=True, weight_type=QuantType.QInt16, opset=18):
     """
     Exports the model from Huggingface to an ONNX model representation.
     - `model_id` - model id of Huggingface model
@@ -351,8 +351,6 @@ def optimum_hf_export(model_id, model_output="onnx_model", training_mode = False
     # Preprocessing methods
     my_model = preprocess_model(my_model)
 
-    # TODO: Before exporting
-    # Training mode + comment out training option in transformers implementation if needed
     export(my_model, ocl, onnx_path, opset, do_constant_folding=False)
 
     # Save gradient layer names
@@ -400,7 +398,7 @@ def onnx_dynamic_quantization(onnx_model_path, onnx_model_quant_output, weight_t
 
 if __name__ == "__main__":
 
-    optimum_hf_export(model_id=model_id, training_mode=False, train_method=None, lora_target=["q_proj", "k_proj", "v_proj", "o_proj"], lora_rank=4, quantize=False)
+    optimum_hf_export(model_id=model_id, training_mode=False, train_method=None, lora_target=["q_proj", "k_proj", "v_proj", "o_proj"], lora_rank=4, quantize=True, weight_type=QuantType.QUInt8)
     #inspect_weights("artifacts/inference_model.onnx")
     #compare_weights("artifacts/inference_model.onnx", "opt_tinyllama_inference_int16/quant_model.onnx")
     #trim_initializers("onnx_tinyllama_exported_inf/model.onnx")

@@ -674,8 +674,8 @@ def convert_pipeline():
 
     model_id = "TinyLlama/TinyLlama_v1.1"
 
-    train_dir = "opt_tinyllama_train_int16"
-    inference_dir = "opt_tinyllama_inference_int16"
+    train_dir = "onnx_models/opt_tinyllama_train_int16"
+    inference_dir = "onnx_models/"
     build_dir = "build"
     model_name = "quant_model.onnx"
 
