@@ -6,11 +6,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 data class ChatMessage(val message: String, val isUserMessage: Boolean)
 
 class InferenceRepository(private val llmRepository: LLMRepository) {
+
+    private val couroutineScope = CoroutineScope(Dispatchers.IO)
+
     private val _chatHistory = MutableStateFlow<List<ChatMessage>>(emptyList())
     val chatHistory: StateFlow<List<ChatMessage>> = _chatHistory
 
@@ -20,9 +24,19 @@ class InferenceRepository(private val llmRepository: LLMRepository) {
     private val _chatStream = MutableStateFlow<List<String>>(emptyList())
     val chatStream: StateFlow<List<String>> = _chatStream
 
+    // Time metrics
+    private val _ttlmStream = MutableStateFlow<Double>(0.0)
+    val ttlmStream: StateFlow<Double> = _ttlmStream
+
+    private val _prefillTimeStream = MutableStateFlow<Double>(0.0)
+    val prefillTimeStream: StateFlow<Double> = _prefillTimeStream
+
+    private val _generationTimeStream = MutableStateFlow<Double>(0.0)
+    val generationTimeStream: StateFlow<Double> = _generationTimeStream
+
     init {
         // Observe token generation flow
-        CoroutineScope(Dispatchers.IO).launch {
+        couroutineScope.launch {
             llmRepository.tokenFlow.collect { token ->
                 // Append new token to chat stream
                 when (token) {
@@ -41,6 +55,28 @@ class InferenceRepository(private val llmRepository: LLMRepository) {
                 }
             }
         }
+
+        if (llmRepository.trackMetrics) {
+
+            couroutineScope.launch {
+                launch {
+                    llmRepository.ttlmStream.collect { time ->
+                        _ttlmStream.value = time
+                    }
+                }
+                launch {
+                    llmRepository.prefillTimeStream.collect { time ->
+                        _prefillTimeStream.value = time
+                    }
+                }
+                launch {
+                    llmRepository.generationTimeStream.collect { time ->
+                        _generationTimeStream.value = time
+                    }
+                }
+            }
+        }
+
     }
 
     suspend fun sendMessage(userMessage: String, generationConfig : Map<String, String>?) {

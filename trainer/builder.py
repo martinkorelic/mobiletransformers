@@ -1,29 +1,36 @@
-import os, json, gc
+"""
+Script that fetches the Huggingface LLM model and converts it into a ONNX graph compatible for artifact training generation.
+"""
+
+import argparse, yaml
+import json, gc, os
+import textwrap
+from typing import Dict, List
 import torch
 from pathlib import Path
 import onnx
 import numpy as np
 from onnx import helper, TensorProto, numpy_helper
-from optimum.exporters.onnx import main_export, onnx_export_from_model, OnnxConfigWithLoss, export
-from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfig
+from optimum.exporters.onnx import OnnxConfigWithLoss, export
+from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfig, Phi3OnnxConfig
 
-from optimum.onnxruntime import ORTQuantizer
-from optimum.onnxruntime.configuration import AutoQuantizationConfig, AutoCalibrationConfig
-from transformers import AutoModelForCausalLM, AutoConfig, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoConfig
 from peft import PeftModel, LoraConfig, get_peft_model
 
-from onnxruntime.quantization import quantize_dynamic, QuantType
+from onnxruntime.quantization import quantize_dynamic, QuantType, QuantFormat
+from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer
 
-# TODO: IMPORTANT! If training add training=torch.onnx.TrainingMode.PRESERVE, to the onnx_export function at the end L#586
-from optimum.exporters.onnx.convert import export_pytorch
+from onnxruntime.transformers.onnx_model import OnnxModel
 
 from optimization.lora_xs.initialization_utils import find_and_initialize
 
-model_id = "TinyLlama/TinyLlama_v1.1"#"TinyLlama/TinyLlama_v1.1"#"google/gemma-2b-it"#
-model_name = model_id.split("/")[1]
+# All operators supported for training should be in https://onnx.ai/onnx/operators/index.html
+from onnxruntime.transformers.fusion_layernorm import FusionLayerNormalization
 
-# TODO: Add Huggingface token
-#os.environ["HF_TOKEN"] = "TODO"
+from dotenv import load_dotenv
+load_dotenv()
+
+from tools.parser_config import TRAIN_CONFIG
 
 def get_layers_with_grad(model):
     """
@@ -38,15 +45,6 @@ def get_layers_with_grad(model):
         else:
             layers_with_no_grad.append(name)
     return layers_with_grad, layers_with_no_grad
-
-def static_quantization(onnx_path):
-    """
-    TODO Static quantization if needed
-    """
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    ort_model = ORTQuantizer(onnx_path)
-    qconfig = AutoQuantizationConfig.arm64(is_static=True, per_channel=False)
-    
 
 def remap_graph(onnx_model_path):
     """
@@ -171,27 +169,6 @@ class OnnxTrainerWrapper(torch.nn.Module):
     def forward(self, input_ids, attention_mask, position_ids, labels):
         return self.backbone(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids, labels=labels)
 
-class OnnxPackagedWrapper(torch.nn.Module):
-    """
-    Model with conditional flow, with possibility of handling both training and inference.
-    It is not possible due to limitations of torch scripting.
-
-    TorchScript not a viable solution as it is not supported by transformers entirely.
-    scripted_model = torch.jit.script(my_model)
-    """
-
-    def __init__(self, model) -> None:
-        super().__init__()
-        self.backbone = model
-        self.config = model.config
-        
-    def forward(self, input_ids, attention_mask, position_ids, labels, past_key_values):
-        # Do inference if all the labels are zero
-        # This requires script based exporter with conditional flow.
-        if torch.all(labels == 0):
-            return self.backbone(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids, past_key_values=past_key_values, use_cache=True)
-        return self.backbone(input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids, labels=labels)
-
 def compare_weights(model_path1, model_path2):
     """
     Compares weights of two models based on their initializers.
@@ -269,13 +246,23 @@ def inspect_weights(model_path, only_trainable=False):
     for param in INTIALIZERS:
         print(f"Layer name: {param.name}")
 
+def postprocess_model(model):
+    """
+    TODO: Work in progress still if needed, avoid using this function.
+    Postprocessing of the model, adding fusion.
+    """
+    
+    onx_m = OnnxModel(model)
+    updated_model = FusionLayerNormalization(onx_m)
+    updated_model.apply()
+    return updated_model.model
+
 def preprocess_model(model : torch.nn.Module, epsilon_high=1e-8, epsilon_low=1e-10):
     """
     Add a really small epsilon to the model parameters if they are all zeroes.
     This is to prevent the ONNX from not saving the extra weights, as they need to be included as initializers. 
     """
-
-    for name, param in model.named_parameters():
+    for _, param in model.named_parameters():
         if torch.all(param.data == 0):
             random_values = torch.rand_like(param.data)
             random_values = (epsilon_high - epsilon_low) * random_values + epsilon_low
@@ -283,7 +270,19 @@ def preprocess_model(model : torch.nn.Module, epsilon_high=1e-8, epsilon_low=1e-
     
     return model
 
-def optimum_hf_export(model_id, model_output="onnx_models", training_mode = False, train_method = "lora", lora_target=["q_proj", "k_proj"], lora_rank=4, quantize=True, weight_type=QuantType.QInt16, opset=18):
+def optimum_hf_export(model_id,
+                      model_output="onnx_models",
+                      training_mode = False,
+                      train_method = "lora",
+                      lora_target=["q_proj", "k_proj"],
+                      lora_rank=4,
+                      quantize=True,
+                      weight_type=QuantType.QUInt4,
+                      peft_config={},
+                      specific_peft_config={},
+                      postprocess=False,
+                      exclude_extra_layers = ["embed_head"],
+                      opset=20):
     """
     Exports the model from Huggingface to an ONNX model representation.
     - `model_id` - model id of Huggingface model
@@ -293,13 +292,15 @@ def optimum_hf_export(model_id, model_output="onnx_models", training_mode = Fals
     - `quantize` - add dynamic quantization to layers which do not need gradient updates
     """
 
-    model = AutoModelForCausalLM.from_pretrained(model_id)
-    config = AutoConfig.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True, token=os.environ["HF_TOKEN"])
+    config = AutoConfig.from_pretrained(model_id, token=os.environ["HF_TOKEN"])
 
     if config.architectures[0] == "LlamaForCausalLM":
         ocl = LlamaOnnxConfig(config, task="text-generation", use_past=not training_mode, use_past_in_inputs=not training_mode)
     elif config.architectures[0] == "GemmaForCausalLM":
         ocl = GemmaOnnxConfig(config, task="text-generation", use_past=not training_mode, use_past_in_inputs=not training_mode)
+    elif config.architectures[0] == "Phi3ForCausalLM":
+        ocl = Phi3OnnxConfig(config, task="text-generation", use_past=not training_mode, use_past_in_inputs=not training_mode)
 
     if training_mode:
         ocl = OnnxConfigWithLoss(ocl)
@@ -310,14 +311,14 @@ def optimum_hf_export(model_id, model_output="onnx_models", training_mode = Fals
             r=lora_rank,
             target_modules=lora_target,
             task_type="CAUSAL_LM",
+            **peft_config
         )
-
-    # TODO: Should make merged LoRA adapters for inference model
 
     if train_method == "lora":
         # Apply LoRA to the model
         lora_model = PeftModel(model, lora_config)
     elif train_method == "lora-xs":
+        # TODO: Add specific PEFT config
         lora_model = get_peft_model(model, lora_config)
         adapter_name = "default"
         peft_config_dict = {}
@@ -335,7 +336,7 @@ def optimum_hf_export(model_id, model_output="onnx_models", training_mode = Fals
         }
         peft_config_dict[adapter_name] = lora_config
         find_and_initialize(model, peft_config_dict, adapter_name, "svd", reconstruct_dict, None)
-    elif train_method == None:
+    elif train_method == "nolora":
         lora_model = model
 
     if training_mode:
@@ -345,25 +346,59 @@ def optimum_hf_export(model_id, model_output="onnx_models", training_mode = Fals
         my_model = OnnxInferenceWrapper(lora_model)
         my_model.eval()
 
-    # Get layers with gradients in the LoRA model
-    grad_layers, no_grad_layers = get_layers_with_grad(my_model)
-
     # Preprocessing methods
-    my_model = preprocess_model(my_model)
+    if training_mode:
+        my_model = preprocess_model(my_model)
 
-    export(my_model, ocl, onnx_path, opset, do_constant_folding=False)
+    export(my_model, ocl, onnx_path, opset, do_constant_folding=not training_mode)
 
     # Save gradient layer names
     if training_mode:
+        # Get layers with gradients in the LoRA model
+        grad_layers, no_grad_layers = get_layers_with_grad(my_model)
         with open(f"{model_output}/training_config.json", "w+", encoding="utf-8") as f:
             json.dump({
                 "requires_grad": grad_layers,
                 "frozen_params": no_grad_layers
             }, f, ensure_ascii=False)
+
+    # Post-processing
+    if training_mode and postprocess:
+        my_model = onnx.load(onnx_path)
+        my_model = postprocess_model(my_model)
+        onnx_path = Path(f"{model_output}/opt_model.onnx")
+        my_model.save_model_to_file(output_path=onnx_path.absolute().as_posix(), use_external_data_format=True)
     
     # Apply dynamic quantization to non-trainable layers
     if quantize:
-        onnx_dynamic_quantization(onnx_path.absolute().as_posix(), f"{model_output}/quant_model.onnx", exclude_weights=lora_target, weight_type=weight_type)
+        lora_target = [] if not training_mode else lora_target
+        onnx_dynamic_quantization(onnx_path.absolute().as_posix(), f"{model_output}/quant_model.onnx", exclude_weights=lora_target, weight_type=weight_type, exclude_extra_layers=exclude_extra_layers)
+
+def onnx_matmul_quantization(onnx_model_path, onnx_model_quant_output, block_size=32, accuracy_level=4, exclude_weights=["q_proj", "k_proj"], exclude_extra_layers=["embed_tokens"]):
+
+    onnx_model = onnx.load(onnx_model_path)
+
+    nodes_to_not_quantize = []
+
+    # Exclude trainable nodes
+    for param in onnx_model.graph.node:
+        if any((allowed_layer in param.name and param.name.endswith("Transpose")) for allowed_layer in exclude_weights):
+            nodes_to_not_quantize.append(param.name)
+        if any(allowed_layer in param.name for allowed_layer in exclude_extra_layers):
+            nodes_to_not_quantize.append(param.name)
+
+    quant = MatMul4BitsQuantizer(
+            model=onnx_model,
+            block_size=block_size,
+            is_symmetric=True,
+            accuracy_level=accuracy_level,
+            # Exclude trainable LoRA layers from quantization
+            nodes_to_exclude=nodes_to_not_quantize,
+            quant_format=QuantFormat.QDQ
+        )
+    quant.process()
+
+    onnx.save_model(quant.model.model, onnx_model_quant_output, save_as_external_data=True)
 
 def onnx_dynamic_quantization(onnx_model_path, onnx_model_quant_output, weight_type=QuantType.QInt16, exclude_weights=["q_proj", "k_proj"], exclude_extra_layers=["embed_tokens"]):
 
@@ -386,19 +421,184 @@ def onnx_dynamic_quantization(onnx_model_path, onnx_model_quant_output, weight_t
 
     quantize_dynamic(
         extra_options={
-            "ForceQuantizeNoInputCheck": True
+                'ActivationSymmetric': False,         # True for inference speed. False may keep more accuracy.
+                'WeightSymmetric': False,                 # True for inference speed. False may keep more accuracy.
+                'EnableSubgraph': True,                   # True for more quant.
+                'ForceQuantizeNoInputCheck': True,       # True for more quant.
+                'MatMulConstBOnly': True                 # False for more quant. Sometime, the inference speed may get worse. Keep this True in case of training graph.
         },
         nodes_to_exclude=nodes_to_not_quantize,
         model_input=onnx_model_path,
         model_output=onnx_model_quant_output,
+        per_channel=True,
         use_external_data_format=True,
         weight_type=weight_type,
-        #reduce_range=True
+        reduce_range=False
     )
+
+def check_extra_options(kv_pairs):
+    if "exclude_extra_layers" in kv_pairs:
+        op_types_to_quantize = ()
+        for op_type in kv_pairs["exclude_extra_layers"].split("/"):
+            op_types_to_quantize += (op_type, )
+        kv_pairs["exclude_extra_layers"] = op_types_to_quantize
+
+def parse_argument_list(targt):
+    return targt.split('/')
+
+def parse_extra_options(extra_options: List[str]) -> Dict[str, str]:
+    """
+    Parse additional options in KEY=VALUE format into a dictionary.
+    """
+    options_dict = {}
+    for option in extra_options:
+        if "=" in option:
+            key, value = option.split("=", 1)
+            options_dict[key] = value
+        else:
+            raise ValueError(f"Invalid format for extra option '{option}'. Use KEY=VALUE format.")
+        
+    print(f"Extra options: {options_dict}")
+    check_extra_options(options_dict)
+    return options_dict
+
+def load_config_from_file(config_file: str):
+    """Load configurations from a YAML file into a dictionary."""
+    with open(config_file, 'r') as file:
+        config = yaml.safe_load(file)
+    return config[TRAIN_CONFIG]
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Exporting the HF model into a ONNX graph compatible for on-device training.", formatter_class=argparse.RawTextHelpFormatter)
+
+    parser.add_argument(
+        "--model_id",
+        type=str,
+        help="Identifier for the model to be converted."
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        help="Path to the model output location."
+    )
+    parser.add_argument(
+        "--training_mode",
+        type=bool,
+        default=True,
+        help="Whether the model is in training mode. Default is True."
+    )
+    parser.add_argument(
+        "--train_method",
+        type=str,
+        choices=["lora", "lora-xs", "nolora"],
+        default="lora",
+        help="The training method to use, such as LoRA. Default is 'lora'."
+    )
+    parser.add_argument(
+        "--lora_target",
+        type=parse_argument_list,
+        default=["q_proj", "k_proj"],
+        help="Target layers for LoRA, provided as a list. Default is ['q_proj', 'k_proj']."
+    )
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=16,
+        help="Rank for the given LoRA method. Default is 16."
+    )
+    parser.add_argument(
+        "--quantize",
+        type=bool,
+        default=True,
+        help="Whether to apply quantization. Default is True."
+    )
+    parser.add_argument(
+        "--weight_type",
+        type=lambda x: QuantType[x],
+        choices=list(QuantType),
+        default=QuantType.QUInt8,
+        help="The quantization weight type, e.g., QUInt8. Default is QuantType.QUInt8. Recommended QInt4 so it stays in the same quantization domain as inference model."
+    )
+    parser.add_argument(
+        "--config_file",
+        type=str,
+        help="Path to configuration file to load additional options. This config file will overwrite all other arguments."
+    )
+    parser.add_argument(
+        "--extra_options",
+        type=str,
+        nargs="*",
+        metavar="KEY=VALUE",
+        default=[],
+        help=textwrap.dedent("""\
+         Key value pairs for various options. Currently supports:
+            postprocess = False : Whether to try to do operator fusion after creating the graph. The applied fused operators should be supported by training.
+            opset = 20 : Opset version for model operators.
+            exclude_extra_layers = layer1/layer2... : Extra layers to further exclude from the quantization. Keywords should be separated by "/".
+            """
+            )
+    )
+
+    args = parser.parse_args()
+
+    user_extra_options = {}
+    default_extra_options = {
+        "postprocess" : False,
+        "opset" : 20,
+        "exclude_extra_layers": ["embed_tokens"]
+    }
+
+    config_dict = None
+
+    if args.config_file:
+        config_dict = load_config_from_file(args.config_file)
+
+        setattr(args, "peft_config", config_dict["peft_config"])
+        setattr(args, config_dict["train_method"], config_dict[config_dict["train_method"]])
+        
+        # Override any command-line argument with values from the config file
+        for key, value in config_dict.items():
+            
+            # Convert to the correct type
+            if hasattr(args, key):
+                setattr(args, key, value)
+            elif hasattr(default_extra_options, key):
+                setattr(default_extra_options, key, value)
+    else:
+        user_extra_options = parse_extra_options(args.extra_options)
+    args.extra_options = {**default_extra_options, **user_extra_options}
+
+    return args
 
 if __name__ == "__main__":
 
-    optimum_hf_export(model_id=model_id, training_mode=False, train_method=None, lora_target=["q_proj", "k_proj", "v_proj", "o_proj"], lora_rank=4, quantize=True, weight_type=QuantType.QUInt8)
-    #inspect_weights("artifacts/inference_model.onnx")
-    #compare_weights("artifacts/inference_model.onnx", "opt_tinyllama_inference_int16/quant_model.onnx")
-    #trim_initializers("onnx_tinyllama_exported_inf/model.onnx")
+    args = parse_arguments()
+
+    method = getattr(args, "train_method", "lora")
+    peft_config = getattr(args, "peft_config", None)
+    specific_peft_config = getattr(args, method, None)
+
+    print(f"{TRAIN_CONFIG} arguments:")
+    for arg, value in vars(args).items():
+        print(f"{arg}: {value}")
+    
+    print("PEFT arguments:")
+    for arg, value in peft_config.items():
+        print(f"{arg}: {value}")
+
+    print("Extra specific PEFT arguments:")
+    for arg, value in specific_peft_config.items():
+        print(f"{arg}: {value}")
+
+    optimum_hf_export(
+        model_id=args.model_id,
+        model_output=args.output,
+        train_method=args.train_method,
+        training_mode=args.training_mode,
+        lora_target=args.lora_target,
+        lora_rank=args.lora_rank,
+        quantize=args.quantize,
+        weight_type=args.weight_type,
+        peft_config=peft_config,
+        **args.extra_options
+    )

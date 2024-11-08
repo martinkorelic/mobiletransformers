@@ -1,0 +1,10 @@
+"""
+File that stores all the section names of the config.yml file.
+"""
+
+ARTIFACT_CONFIG = "ARTIFACT_BUILDER"
+ARTIFACT_VALIDATOR_CONFIG = "ARTIFACT_VALIDATOR"
+TRAIN_CONFIG = "TRAIN_BUILDER"
+INFERENCE_CONFIG = "INFERENCE_BUILDER"
+INFERENCE_ARTIFACT_CONFIG = "inference_config"
+TEST_GENERATION_CONFIG = "test_generation_config"

@@ -3,18 +3,24 @@ package com.example.orttransformer
 import android.util.Log
 import kotlinx.coroutines.flow.MutableSharedFlow
 
-class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer) {
+class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer, private var trackMetrics: Boolean = true, var timeUpdateStep : Int = 5) {
 
     private var LOG_TAG = "ORTGeneratorNative"
 
     private var inferenceModel : Long = 0
 
-    var decodedText = ""
-    var prefillPhaseTime : Double = 0.0
-    var generationTime : Double = 0.0
-
-    fun createInferenceModel(inferenceModelPath : String, inferenceModelName : String) {
+    suspend fun createInferenceModel(inferenceModelPath : String,
+                                     inferenceModelName : String,
+                                     ttlmSharedFlow: MutableSharedFlow<Double>? = null) {
+        var start : Long = 0L
+        if (trackMetrics) {
+            start = System.nanoTime()
+        }
         inferenceModel = createInferenceSession(inferenceModelPath, inferenceModelName)
+        if (trackMetrics) {
+            Log.d(LOG_TAG, ((System.nanoTime() - start) / 1_000_000_000.0).toString())
+            ttlmSharedFlow?.emit((System.nanoTime() - start) / 1_000_000_000.0)
+        }
     }
 
     fun createInferenceModelFromTraining(trainModel : Long, inferenceModelPath : String, inferenceModelName : String) {
@@ -39,7 +45,11 @@ class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer) {
      * TODO: Does not support batched inputs as of now.
      *
      */
-    suspend fun generate(promptText: String, generationConfig : Map<String, String>, sharedFlow: MutableSharedFlow<String>) : String {
+    suspend fun generate(promptText: String,
+                         generationConfig : Map<String, String>,
+                         tokenSharedFlow: MutableSharedFlow<String>,
+                         generationTimeSharedFlow: MutableSharedFlow<Double>? = null,
+                         prefillTimeSharedFlow: MutableSharedFlow<Double>? = null) : String {
 
         // Assert that the key "max_sequence_length" exists
         assert(generationConfig.containsKey("max_sequence_length")) {
@@ -53,17 +63,25 @@ class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer) {
             return ""
         }
 
-        decodedText = ""
+        var decodedText = ""
 
         var (inputIds, attentionMask, positionIds) = createModelInputs(inputTokens)
         val generatedIds = inputIds
 
         var decoded = 0
-        var start = System.nanoTime()
 
-        while (decoded < generationConfig["max_sequence_length"]!!.toInt()) {
+        var prefillPhaseTime : Double = 0.0
+        var currentGenerationTime : Long = 0L
+        var cumulativeGenerationTime : Long = 0L
+        var prefillStart : Long = 0L
 
-            Log.d(LOG_TAG, inputIds.toString())
+        while (decoded <= generationConfig["max_sequence_length"]!!.toInt()) {
+
+            if (trackMetrics && decoded != 0) {
+                currentGenerationTime = System.nanoTime()
+            } else if (trackMetrics) {
+                prefillStart = System.nanoTime()
+            }
 
             val nextTokenId = performInferenceStep(
                 inferenceModel,
@@ -76,10 +94,18 @@ class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer) {
                 this.tokenizer.vocabSize
             )
 
-            if (decoded == 0) {
-                val end = System.nanoTime() // End time
-                prefillPhaseTime = (end - start) / 1_000_000_000.0
-                start = System.nanoTime()
+            if (trackMetrics && decoded != 0) {
+                cumulativeGenerationTime += (System.nanoTime() - currentGenerationTime)
+            }
+
+            if (trackMetrics && decoded == 0) {
+                val end = System.nanoTime()
+                prefillPhaseTime = (end - prefillStart) / 1_000_000_000.0
+                prefillTimeSharedFlow?.emit(prefillPhaseTime)
+            } else if (trackMetrics && (decoded % timeUpdateStep == 0 || decoded == generationConfig["max_sequence_length"]!!.toInt())) {
+                var updatedGenTime = cumulativeGenerationTime / 1_000_000_000.0
+                Log.d(LOG_TAG, updatedGenTime.toString())
+                generationTimeSharedFlow?.emit(decoded / updatedGenTime)
             }
 
             // Append the next token ID to generated ids
@@ -96,7 +122,7 @@ class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer) {
             positionIds = mutableListOf(nextPositionId)
 
             var decodedToken = tokenizer.decode(intArrayOf(nextTokenId)).toString()
-            sharedFlow.emit(decodedToken)
+            tokenSharedFlow.emit(decodedToken)
             decodedText += decodedToken
             decoded++
 
@@ -106,10 +132,6 @@ class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer) {
                 break
 
         }
-
-        var end_time = System.nanoTime()
-
-        generationTime = decoded / ((end_time - start) / 1_000_000_000.0)
 
         return decodedText
     }

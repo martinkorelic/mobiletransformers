@@ -13,6 +13,10 @@ class InferenceViewModel(private val inferenceRepository: InferenceRepository) :
     val isStreaming : StateFlow<Boolean> = inferenceRepository.isStreaming
     val generationConfig : MutableMap<String, String> = mutableMapOf()
 
+    val ttlmTime : StateFlow<Double> = inferenceRepository.ttlmStream
+    val prefillTime : StateFlow<Double> = inferenceRepository.prefillTimeStream
+    val generationTime : StateFlow<Double> = inferenceRepository.generationTimeStream
+
     fun sendMessage(message: String) {
         viewModelScope.launch {
             inferenceRepository.sendMessage(message, generationConfig)

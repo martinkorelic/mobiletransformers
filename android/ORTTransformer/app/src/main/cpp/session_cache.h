@@ -207,6 +207,7 @@ void startProfiling() {
     __android_log_print(ANDROID_LOG_ERROR, "InferenceProfiler","Started profiling to: %s", profiling_path.c_str());
     auto ortApi = OrtGetApiBase()->GetApi(ORT_API_VERSION);
 
+
     auto status = ortApi->EnableProfiling(session_options, profiling_path.c_str());
 
     // Check the status
@@ -244,11 +245,32 @@ private:
         }
 
         // TODO: Set based on configurations
+        // NNAPI execution provider
 
         uint32_t nnapi_flags = 0;
         nnapi_flags |= NNAPI_FLAG_CPU_DISABLED;
+        nnapi_flags |= NNAPI_FLAG_USE_FP16;
 
         auto status = OrtSessionOptionsAppendExecutionProvider_Nnapi(session_options, nnapi_flags);
+
+        auto ortApi = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+        char** providers;
+        int provider_length;
+        ortApi->GetAvailableProviders(&providers, &provider_length);
+        for (int i = 0; i < provider_length; i++) {
+            __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "Error when setting NNAPI support: %s",providers[i]);
+        }
+
+        session_options.SetInterOpNumThreads(2);
+        session_options.AddConfigEntry("session.dynamic_block_base", "2");
+        session_options.AddConfigEntry("session.disable_quant_qdq","0");
+        session_options.AddConfigEntry("session.use_device_allocator_for_initializers","1");
+        session_options.AddConfigEntry("session.use_env_allocators","1");
+        session_options.AddConfigEntry("session.intra_op_thread_affinities","1;2");
+        session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+
+        // Set execution mode to sequential
+        session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
 
         if (status != nullptr) {
             // Print or log the error message
@@ -367,7 +389,7 @@ struct TrainingSessionCache {
             checkpoint_state(Ort::CheckpointState::LoadCheckpoint(artifact_paths.checkpoint_path.c_str())),
             training_session(ort_env, setSessionOptions(sessionOptionsId, enable_profiling, training_model_path), checkpoint_state, artifact_paths.training_model_path.c_str(),
                              artifact_paths.eval_model_path.c_str(), artifact_paths.optimizer_model_path.c_str()) {
-
+            
     }
 
 private:

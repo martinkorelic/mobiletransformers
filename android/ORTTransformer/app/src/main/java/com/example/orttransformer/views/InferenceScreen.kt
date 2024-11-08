@@ -1,5 +1,8 @@
 package com.example.orttransformer.views
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -27,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -43,11 +47,29 @@ fun InferenceScreen(viewModel: InferenceViewModel) {
     val chatStream by viewModel.chatStream.collectAsState()
     val isStreaming by viewModel.isStreaming.collectAsState()
 
+    val ttlmTime by viewModel.ttlmTime.collectAsState()
+    val prefillTime by viewModel.prefillTime.collectAsState()
+    val generationTime by viewModel.generationTime.collectAsState()
+
     val keyboardController = LocalSoftwareKeyboardController.current
 
     Column(modifier = Modifier
         .fillMaxSize()
         .padding(16.dp)) {
+
+
+        Column (
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp)
+                .border(BorderStroke(1.dp, Color.Gray))
+                .padding(8.dp)
+        ) {
+            MetricItem(label = "Model Load Time", value = "%.2f s".format(ttlmTime))
+            MetricItem(label = "Prefill Time", value = "%.2f s".format(prefillTime))
+            MetricItem(label = "Generation Time", value = "%.2f tokens/s".format(generationTime))
+        }
+
         LazyColumn(
             modifier = Modifier.weight(1f),
             contentPadding = PaddingValues(bottom = 16.dp)
@@ -63,7 +85,6 @@ fun InferenceScreen(viewModel: InferenceViewModel) {
                     }
                 }
             }
-
         }
 
         Row(
@@ -118,3 +139,32 @@ fun ChatBubble(message: ChatMessage) {
     }
 }
 
+@Composable
+fun MetricItem(label: String, value: String) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .border(BorderStroke(1.dp, Color.LightGray)), // Border around each metric item
+        color = MaterialTheme.colorScheme.surface,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = label,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = value,
+                fontSize = 14.sp,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}

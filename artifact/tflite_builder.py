@@ -1,3 +1,9 @@
+"""
+Deprecated script for building the TFLite models for training and inference from Huggingface.
+Unfortunately, the conversion is unoptimized, models are not being exported properly and errors are present.
+Feel free to modify at your own will.
+"""
+
 import os
 import tensorflow as tf
 import keras
@@ -373,5 +379,3 @@ if __name__ == '__main__':
     #run_training_keras_lora()
     #run_training_keras_tflite("Teest test", SAVED_MODEL_TFLITE, do_inference=False)
     convert_llm_tflite(archive_dir="opt_archive_inftrain", use_lora=True, rank=4, tflite_path=SAVED_MODEL_TFLITE, model_type="opt")
-    #convert_tflite()
-    #convert_gemma()

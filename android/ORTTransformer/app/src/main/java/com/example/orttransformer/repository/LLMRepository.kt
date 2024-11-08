@@ -9,7 +9,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -29,8 +31,11 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
     private var generationConfig : MutableMap<String, String> = mutableMapOf(
         "type" to "native",
         "sampling" to "greedy",
-        "max_sequence_length" to "30"
+        "max_sequence_length" to "70"
     )
+
+    // TODO: make change based on config
+    var trackMetrics : Boolean = true
 
     // Configuration paths
     private var artifactTrainDir : String = "/data/local/tmp/tinyllama_int16/train"
@@ -50,11 +55,23 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
     // LLM state
     var llmState : LLMState = LLMState.NotInitialized
 
+    // Mutable flows
+
     private val _tokenFlow = MutableSharedFlow<String>(replay = 1)
     val tokenFlow: SharedFlow<String> = _tokenFlow
 
     private val _lossFlow = MutableSharedFlow<Float>(replay = 1)
     val lossFlow: SharedFlow<Float> = _lossFlow
+
+    // Time metrics
+    private val _ttlmStream = MutableStateFlow<Double>(0.0)
+    val ttlmStream: StateFlow<Double> = _ttlmStream
+
+    private val _prefillTimeStream = MutableStateFlow<Double>(0.0)
+    val prefillTimeStream: StateFlow<Double> = _prefillTimeStream
+
+    private val _generationTimeStream = MutableStateFlow<Double>(0.0)
+    val generationTimeStream: StateFlow<Double> = _generationTimeStream
 
     //private val executorService = Executors.newSingleThreadExecutor()
     private val coroutineScope = CoroutineScope(Dispatchers.Main + Job())
@@ -90,7 +107,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
         return genAiNative
     }
 
-    private fun makeOrtNativeInference() : ORTGeneratorNative? {
+    private suspend fun makeOrtNativeInference() : ORTGeneratorNative? {
         if (ortTrainerNative == null) {
             Log.e(LOG_TAG, "Could not find the train model. Make sure it is initialized before GenAI inference.")
             return null
@@ -106,7 +123,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
         ortTrainerNative?.destroySession(false)
 
         val nativeInference = ORTGeneratorNative(ortTokenizer!!)
-        nativeInference.createInferenceModel(artifactInferenceModelPath, artifactInferenceModelName)
+        nativeInference.createInferenceModel(artifactInferenceModelPath, artifactInferenceModelName, _ttlmStream)
         return nativeInference
     }
 
@@ -198,7 +215,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
                 when (generationConfig["type"]) {
                     "genai" -> ortGenAiNative!!.generateStream()
                     "native" -> {
-                        ortNativeInference!!.generate(prompt, generationConfig, _tokenFlow)
+                        ortNativeInference!!.generate(prompt, generationConfig, _tokenFlow, _generationTimeStream, _prefillTimeStream)
                     }
                 }
             }

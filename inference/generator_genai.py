@@ -1,13 +1,6 @@
-import json
-import onnxruntime_genai as og
+import onnx, time, json
 import numpy as np
-import time
-import onnx
-from onnx import numpy_helper
-
-# Build configuration only
-# python3 -m onnxruntime_genai.models.builder -m model_name -o path_to_output_folder -p precision -e execution_provider -c cache_dir_for_hf_files --extra_options config_only=true
-
+import onnxruntime_genai as og
 
 def test_genai_model(path="./onnx_genai_config"):
 
@@ -64,7 +57,7 @@ def test_genai_model_with_inputs(path, artifact_dir, weight_path, load_inference
     # Set the other inputs
     for initializer in m.graph.initializer:
         if initializer.name in requires_grad_layers:
-            W = numpy_helper.to_array(initializer)
+            W = onnx.numpy_helper.to_array(initializer)
             W = np.copy(W)
             params.set_model_input(initializer.name, W)
 
@@ -81,7 +74,3 @@ def test_genai_model_with_inputs(path, artifact_dir, weight_path, load_inference
     decoded_tokens = tokenizer.decode_batch(output_tokens)
     print(decoded_tokens)
     print(f"Elapsed time for generation: {elapsed_time:.4f}")
-
-if __name__ == "__main__":
-    #test_genai_model("onnx_genai_test")
-    test_genai_model_with_inputs("onnx_genai_test", "build/train", "/onnx_models/opt_tinyllama_inference_int16/quant_model.onnx")

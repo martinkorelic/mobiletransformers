@@ -1,0 +1,89 @@
+###################### TRAINING BUILDER CONFIGURATION ######################
+TRAIN_BUILDER:
+  model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  output: "./build/train_models"
+
+  training_mode: true
+  train_method: "lora"
+
+  # LoRA target modules
+  lora_target:
+    - "q_proj"
+    - "k_proj"
+  lora_rank: 16
+  quantize: true
+  # Weight types for quantizing
+  weight_type: "QUInt8"
+  extra_options:
+    postprocess: false
+    opset: 20
+    exclude_extra_layers:
+      - embed_tokens
+  
+  # Training specific configurations
+  peft_config:
+    lora_dropout: 0
+  
+  lora:
+    config: config
+  lora-xs:
+    config: config
+
+###################### INFERENCE BUILDER CONFIGURATION ######################
+INFERENCE_BUILDER:
+
+  output: "./build/inference_models"
+  
+  # Specify the minimum accuracy level for activation of MatMul in int4 quantization.
+  #  4 is int8, which means input A of int4 quantized MatMul is quantized to int8 and input B is upcasted to int8 for computation.
+  #  3 is bf16.
+  #  2 is fp16.
+  #  1 is fp32.
+  int4_accuracy_level: 4
+
+
+###################### ARTIFACT BUILDER CONFIGURATION ######################
+ARTIFACT_BUILDER:
+  build_path: "./build"
+
+  # This will join path with the TRAIN_BUILDER.output/train_model
+  training_model: "quant_model.onnx"
+
+  # This will join path with the INFERENCE_BUILDER.output/inference_model
+  inference_model: "model.onnx"
+
+  gen_train_artifacts: true
+  test_training: true
+  test_eval: false
+  inference_config:
+    inference_type: "genai" # "native", "genai"
+    output_inference_model: "model"
+    opset: 20
+    weight_input : false # Whether to include trainable weights as model input
+    include_metadata: true # Whether to include the model metadata
+  
+  # Delete the generated models from the directories
+  delete_models: true
+
+###################### ARTIFACT VALIDATOR CONFIGURATION ######################
+ARTIFACT_VALIDATOR:
+
+  # Input path for inference model will be generated as:
+  # ARTIFACT_BUILDER.build_path/inference/ARTIFACT_BUILDER.inference_config.output_inference_model
+
+  # Inference validation
+  test_generation: true
+
+  # Use of the generation config file included in the same directory as inference model
+  use_gen_config_file: false
+
+  test_generation_config:  
+    prompt: "Hello, this is a message for the world. How is your day? Please write me a poem." # Prompt for test generation
+    decode_between: true # Whether to decode the text while it's generating
+    max_length : 100 # Max length of test sequence to generate
+    sampling: "top_k" # Sampling method
+    temperature: 0.7 # Temperature for sampling
+    top_k: 10 # Top K for sampling
+    top_p: 0.9 # Top P for sampling
+
+  # TODO: Train validation

@@ -1,146 +1,30 @@
+"""
+Script that creates the training and inference model artifacts which can be deployed to the device.
+The models are utilized by the on-device application.
+"""
+
+import argparse
+import textwrap
+from typing import Dict, List
 import torch
-import os, json, gc, time
+import os, json, gc, time, yaml
 
 from dotenv import load_dotenv
 load_dotenv()
 
 import numpy as np
 import netron
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
+from transformers import AutoTokenizer, AutoConfig
 
 import onnx
 from onnx import helper, TensorProto, numpy_helper
 from onnxruntime.training import onnxblock, artifacts
 from onnxruntime.training.api import CheckpointState, Module, Optimizer
-from onnxruntime.quantization import quantize_dynamic, QuantType, quantize_static
-from onnxruntime.quantization.preprocess import quant_pre_process
-from peft import PeftModel, LoraConfig
+
 from onnxruntime import InferenceSession
-
-# TODO: Add Huggingface token
-#os.environ["HF_TOKEN"] = "TODO"
-
-model_id = "TinyLlama/TinyLlama_v1.1"#"google/gemma-2b-it"#
-model_name = model_id.split("/")[1]
-
-def convert_onnx(perform_pass=True, quantize=True):
-    """
-    Previous experiments for converting Huggingface models to onnx artifacts for on device training.
-    Use other functions for generation of artifacts.
-    """
-
-    tokenizer = AutoTokenizer.from_pretrained(model_id, token=os.environ['HF_TOKEN'])
-    pre_model = AutoModelForCausalLM.from_pretrained(model_id, token=os.environ['HF_TOKEN'])
-
-    # Custom ONNX CausalLM model
-    model = OnnxCausalLM(model=pre_model)
-
-    lora_config = LoraConfig(
-        r=4,
-        target_modules=["q_proj", "k_proj"],
-        task_type="CAUSAL_LM",
-    )
-
-    # Apply LoRA to the model
-    lora_model = PeftModel(model, lora_config)
-
-    # Get layers with gradients in the LoRA model
-    layers_with_grad = get_layers_with_grad(lora_model)
-
-    # Create dummy input for tracing
-    inputs = tokenizer("This is a test, hello from world.", return_tensors="pt")
-    labels = inputs["input_ids"].clone()
-
-    # Define the export path
-    onnx_model_path = f"onnx_models/lora_{model_name}.onnx"
-    onnx_model_dir = "onnx_models/"
-    onnx_model_quant_output = f"lora_{model_name}_q.onnx"
-
-    # Export the model to ONNX
-    torch.onnx.export(
-        lora_model,                                       # Model to be exported
-        (inputs["input_ids"], inputs["attention_mask"], labels),
-        onnx_model_path,                                  # Path where the model will be saved
-        input_names=['input_ids', 'attention_mask', 'labels'],      # Input names
-        output_names=["loss", "logits"],                          # Output names
-        dynamic_axes={                                    # Dynamic axes for variable length inputs
-            'input_ids': {0: 'batch_size', 1: 'sequence_length'},
-            'attention_mask': {0: 'batch_size', 1: 'sequence_length'},
-            "labels": {0: "batch_size", 1: "sequence_length"},
-            "logits ": {0: "batch_size", 1: "sequence_length"}
-            #'output': {0: 'batch_size', 1: 'sequence_length'},
-        },
-        export_params=True,
-        # Optimize model by folding constant nodes (not recommended for ONNX runtime)
-        do_constant_folding=False,
-        # Training mode for on device learning
-        training=torch.onnx.TrainingMode.TRAINING
-    )
-
-
-    # Perform a forward pass
-    if perform_pass:
-        with torch.no_grad():
-            outputs = model(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"], labels=labels)
-            print(outputs)
-    
-    onnx.checker.check_model(onnx_model_path, full_check=True)
-    onnx_model = onnx.load(onnx_model_path)
-
-    if quantize:
-        no_quantized_layers = ["q_proj", "k_proj"]
-        nodes_to_not_quantize = []
-
-        # Exclude trainable nodes
-        for param in onnx_model.graph.node:
-            if any((allowed_layer in param.name and param.name.endswith("Transpose")) for allowed_layer in no_quantized_layers):
-                nodes_to_not_quantize.append(param.name)
-
-        quantize_dynamic(
-            extra_options={ 
-                "ForceQuantizeNoInputCheck": True
-            },
-            model_input=onnx_model_path,
-            model_output=onnx_model_quant_output,
-            nodes_to_exclude=nodes_to_not_quantize,
-            use_external_data_format=True,
-            weight_type=QuantType.QInt8,
-            reduce_range=True
-        )
-
-        onnx.checker.check_model(onnx_model_quant_output, full_check=True)
-        onnx_model = onnx.load(onnx_model_quant_output)  
-
-        requires_grad = []
-        frozen_params = []
-        for param in onnx_model.graph.initializer:
-            if any(grad_param in param.name for grad_param in no_quantized_layers):
-                requires_grad.append(param.name)
-            else:
-                frozen_params.append(param.name)
-    else:
-        requires_grad = layers_with_grad
-        frozen_params = [
-            param.name
-            for param in onnx_model.graph.initializer
-            if param.name not in requires_grad
-        ]
-
-    del onnx_model
-    print("Requires grad layers:")
-    print(layers_with_grad)
-    print("Frozen parameter layers:")
-    print(frozen_params)
-
-    # Generate the training artifacts
-    artifacts.generate_artifacts(onnx_model_quant_output if quantize else onnx_model_path,
-                                requires_grad = requires_grad,
-                                frozen_params = frozen_params,
-                                # We don't need to provide a loss function, as the loss is already
-                                # computed from the PyTorch Transformer model
-                                #loss = CausalLMCE(),
-                                optimizer = artifacts.OptimType.AdamW,
-                                artifact_directory = onnx_model_dir)
+from inference.generator import generate_tokens_onnx
+from tools.utils import move_files_excluding, delete_directory
+from tools.parser_config import ARTIFACT_CONFIG, TRAIN_CONFIG, INFERENCE_CONFIG
 
 def gen_artifacts(train_dir,
                   artifact_dir="artifacts",
@@ -186,12 +70,12 @@ def gen_artifacts(train_dir,
     with open(f'{artifact_dir}/{train_cfg}', "w", encoding="utf-8") as f:
         json.dump({
             "requires_grad": requires_grad,
-            "frozen_params": frozen_params
+            #"frozen_params": frozen_params
         }, f, ensure_ascii=False)
 
 def onnx_checktrain(model_dir,
                     model_id,
-                    export_inference=True,
+                    export_inference=False,
                     test_inference=False,
                     test_evaluate=False,
                     transfer_weights=False,
@@ -200,7 +84,6 @@ def onnx_checktrain(model_dir,
     """
     Checks the model if the outputs are training correctly as well as evaluation.
     Exports model for inference if needed or transfers the weights to an already existing inference model.
-
 
    - `test_inference` - runs the model through an example prompt
    - `test_evaluate` - tests the model evaluation
@@ -271,7 +154,7 @@ def onnx_checktrain(model_dir,
         gc.collect()
         # Load and test inference if needed
         if test_inference:
-            onnx_infer(f"{model_dir}/{inference_model_path}", with_past=False, max_length=max_sequence_length)
+            onnx_infer(model_id, f"{model_dir}/{inference_model_path}", with_past=False, max_length=max_sequence_length)
     
 def onnx_export_dummy_model(model_output="tokenizer.onnx"):
     """
@@ -307,7 +190,7 @@ def onnx_export_dummy_model(model_output="tokenizer.onnx"):
 
     onnx.save_model(model, model_output, save_as_external_data=False)
 
-def onnx_infer(model_path="inf_model_onnx_gemma_nonq.onnx", with_past=False, max_length=100):
+def onnx_infer(model_id, model_path="inf_model_onnx_gemma_nonq.onnx", with_past=False, max_length=100):
     """
     Test inference with the provided ONNX inference model. Model needs to have inputs:
     - input_ids
@@ -378,7 +261,8 @@ def onnx_transfer_trained_weights(state : CheckpointState, inference_model):
     del onnx_inference_model
     gc.collect()
 
-def gen_genai(model_path,
+def gen_genai(model_id, 
+              model_path,
               training_config,
               new_model_name,
               new_model_path,
@@ -387,6 +271,7 @@ def gen_genai(model_path,
               large_model=False,
               test_generation=False,
               test_generation_config={},
+              check_model=True,
               opset_version=18):
     """
     Creates a GenAI compatible ONNX graph or a custom inference graph.
@@ -452,6 +337,9 @@ def gen_genai(model_path,
 
         # Add custom metadata
         model.metadata_props.append(
+            onnx.StringStringEntryProto(key="model_id", value=str(model_id))
+        )
+        model.metadata_props.append(
             onnx.StringStringEntryProto(key="head_dim", value=str(head_size))
         )
         model.metadata_props.append(
@@ -467,8 +355,9 @@ def gen_genai(model_path,
         # Wait so it finishes writing to disk
         time.sleep(20)
         print("[INFO] Writing large model to disk...")
-        onnx.checker.check_model(new_model_namepath, full_check=True)
-    else:
+        if check_model:
+            onnx.checker.check_model(new_model_namepath, full_check=True)
+    elif check_model:
         onnx.checker.check_model(model, full_check=True)
 
     print("[INFO] Saved GenAI inference model.")
@@ -489,160 +378,6 @@ def get_layers_with_grad(model):
             layers_with_grad.append(name)
     return layers_with_grad
 
-def generate_tokens_onnx(tokenizer,
-                         model,
-                         config,
-                         model_train_weights=[],
-                         with_past=False,
-                         with_weight_input=False,
-                         prompt="Hello, how is your day?",
-                         output_name="logits",
-                         max_length=100,
-                         sampling="greedy",
-                         temperature=1.0,
-                         top_k=50,
-                         decode_between=True):
-    """
-    Generates the tokens from the ONNX Inference sessions.
-    Uses either "topk" or "greedy" sampling methods.
-    """
-    
-    input_ids = tokenizer(prompt, return_attention_mask=True, return_tensors="np")
-
-    num_kv_heads = config.num_key_value_heads if hasattr(config, "num_key_value_heads") else config.num_attention_heads
-    head_size = config.head_dim if hasattr(config, "head_dim") else config.hidden_size // config.num_attention_heads
-
-    # Initialize the generated sequence with the prompt
-    token_input_ids = input_ids["input_ids"]
-
-    attention_mask = np.ones((1, token_input_ids.shape[1]), dtype=np.int64)
-    position_ids = np.arange(token_input_ids.shape[1], dtype=np.int64).reshape(1, -1)
-    generated_ids = np.array(token_input_ids, dtype=np.int64)
-
-    # If KV caching enabled:
-    if with_past:
-        past_key_values = {}
-        for i in range(config.num_hidden_layers):
-            past_key_values[f"past_key_values.{i}.key"] = np.random.rand(*(1, num_kv_heads, 0, head_size)).astype(np.float32)
-            past_key_values[f"past_key_values.{i}.value"] = np.random.rand(*(1, num_kv_heads, 0, head_size)).astype(np.float32)
-
-        present_keys = [pkv.replace("past_key_values", "present") for pkv in past_key_values.keys()]
-
-    start_time = time.time()
-    num_decode = 0
-    for _ in range(max_length):
-
-        print(token_input_ids.shape)
-        print(token_input_ids)
-        print(attention_mask.shape)
-        print(position_ids)
-        print(position_ids.shape)
-
-        model_inputs = {
-            "input_ids": token_input_ids,
-            "attention_mask": attention_mask,
-            "position_ids": position_ids,
-        }
-
-        if with_past:
-            model_inputs.update(past_key_values)
-        if with_weight_input:
-            model_inputs.update(model_train_weights)
-
-        # Forward pass to get logits
-        output = model.run([output_name] + (present_keys if with_past else []), model_inputs)
-
-        logits = output[0]
-
-        print(logits.shape)
-
-        if with_past:
-            present_kv = {}
-            for pkv, pkv_name in zip(output[1:], past_key_values.keys()):
-                present_kv[pkv_name] = pkv
-            past_key_values = present_kv
-        
-        # Get the last token logits and apply temperature
-        logits = logits[:, -1, :] / temperature
-
-        print(logits[:5])
-
-        if sampling=="topk":
-            # Apply top-k filtering
-            top_k_values, top_k_indices = np.partition(logits[0], -top_k)[-top_k:], np.argpartition(logits[0], -top_k)[-top_k:]
-            filtered_logits = np.full_like(logits[0], -float('Inf'))
-            filtered_logits[top_k_indices] = top_k_values
-
-            # Sample from the filtered logits
-            probabilities = np.exp(filtered_logits - np.max(filtered_logits))  # Stability improvement
-            probabilities /= np.sum(probabilities)
-            next_token_id = np.random.choice(len(probabilities), p=probabilities)
-        elif sampling == "greedy":
-            next_token_id = np.argmax(logits[0])
-
-        # Append the sampled token to the sequence
-        generated_ids = np.concatenate([generated_ids, [[next_token_id]]], axis=1)
-        token_input_ids = np.array([[next_token_id]], dtype=np.int64)
-
-        if decode_between:
-            decoded = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-            print(decoded)
-
-        num_decode += 1
-
-        # Update the position_ids (increment by 1 for the new token)
-        new_position_id = position_ids[0, -1] + 1
-        position_ids = np.array([[new_position_id]], dtype=np.int64)
-        
-        # Update the attention_mask (add 1 for the new token)
-        new_ones = np.ones((attention_mask.shape[0], 1), dtype=np.int64)
-        attention_mask = np.concatenate((attention_mask, new_ones), axis=-1)
-
-        # Stop if end-of-sequence token is generated
-        if next_token_id == tokenizer.eos_token_id:
-            break
-    
-    end_time = time.time()
-    print("\n")
-    print(f"[INFO] Generation time: {num_decode / (end_time - start_time)} token/s")
-
-    # Decode the generated tokens
-    return tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-
-def generate_tokens(prompt, tokenizer, model, max_length=50, temperature=1.0, top_k=50):
-    input_ids = tokenizer.encode(prompt, return_tensors='pt')
-    input_ids = input_ids.to(model.device)
-
-    # Initialize the generated sequence with the prompt
-    generated_ids = input_ids
-
-    for _ in range(max_length):
-        # Forward pass to get logits
-        with torch.no_grad():
-            outputs = model(generated_ids)
-            logits = outputs.logits
-
-        # Get the last token logits and apply temperature
-        logits = logits[:, -1, :] / temperature
-        print(logits)
-
-        # Apply top-k filtering
-        top_k_values, top_k_indices = torch.topk(logits, top_k, dim=-1)
-        filtered_logits = torch.full_like(logits, -float('Inf'))
-        filtered_logits.scatter_(1, top_k_indices, top_k_values)
-
-        # Sample from the filtered logits
-        next_token_id = torch.multinomial(torch.nn.functional.softmax(filtered_logits, dim=-1).squeeze(), num_samples=1).item()
-
-        # Append the sampled token to the sequence
-        generated_ids = torch.cat([generated_ids, torch.tensor([[next_token_id]], device=model.device)], dim=1)
-
-        # Stop if end-of-sequence token is generated
-        if next_token_id == tokenizer.eos_token_id:
-            break
-
-    # Decode the generated tokens
-    return tokenizer.decode(generated_ids[0], skip_special_tokens=True)
 
 
 class CausalLMCE(onnxblock.Block):
@@ -666,43 +401,26 @@ class OnnxCausalLM(torch.nn.Module):
         return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
 
 
-def convert_pipeline():
+def convert_pipeline(model_id,
+                    train_model_name,
+                    train_dir,
+                    inference_model_name,
+                    inference_dir,
+                    build_dir,
+                    gen_train_artifacts = True,
+                    test_training = True,
+                    test_eval = True,
+                    test_generation = True,
+                    inference_config = {},
+                    test_generation_config = {},
+                    delete_models=False):
     """
     ONNX conversion for training and inference artifacts.
     Creates a build folder with train and inference subfolders each with models needed for tasks.
     """
 
-    model_id = "TinyLlama/TinyLlama_v1.1"
-
-    train_dir = "onnx_models/opt_tinyllama_train_int16"
-    inference_dir = "onnx_models/"
-    build_dir = "build"
-    model_name = "quant_model.onnx"
-
-    generate_artifacts = False
-    
-    check_train = True
+    # TODO: Infer from the given model
     large_model = True
-
-    inference_export_config = {
-        "type": "genai", # "normal", "genai"
-        "weight_input" : False, # Whether to include trainable weights as model input
-        "test_inference": True, # Whether to perform inference / generation test on the inference exported model
-        "include_metadata": True, # Whether to include the model metadata
-        "inference_model_name": "genai_inference", # The new model name,
-        "opset_version": 18,
-
-        "test_generation_config": {
-            "prompt": "Hello, this is a message for the world. How is your day?", # Prompt for test generation
-            "decode_between": True, # Whether to decode the text while it's generating
-            "max_length" : 100, # Max length of test sequence to generate
-            "sampling": "greedy", # Sampling method
-            "temperature": 1.0, # Temperature for sampling
-            "top_k": 50, # Top K for sampling
-        }
-    }
-
-    test_evaluate = False
 
     try:
         # Create the base directory if it doesn't exist
@@ -716,35 +434,237 @@ def convert_pipeline():
         os.makedirs(inference_path, exist_ok=True)
     
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"[ERROR] An error occurred: {e}")
     
-    if generate_artifacts:
-        gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=model_name)
+    if gen_train_artifacts:
+        gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=train_model_name)
         print("[INFO] Generated training artifacts.")
 
-    if check_train:
+    if test_training:
         onnx_checktrain(model_dir=f'{build_dir}/train',
                         model_id=model_id,
-                        export_inference=(inference_export_config["type"] == "normal"),
-                        test_evaluate=test_evaluate,
-                        test_inference=inference_export_config["test_inference"])
+                        test_evaluate=test_eval)
         print("[INFO] Training check completed.")
     
-    if inference_export_config["type"] == "genai":
-        gen_genai(model_path=f'{inference_dir}/{model_name}',
+    if inference_config["inference_type"] == "genai":
+        gen_genai(model_id=model_id,
+                  model_path=f'{inference_dir}/{inference_model_name}',
                   training_config=f'{train_dir}/training_config.json',
-                  new_model_name=inference_export_config["inference_model_name"],
+                  new_model_name=inference_config["output_inference_model"],
                   new_model_path=f'{build_dir}/inference',
                   large_model=large_model,
-                  test_generation=inference_export_config["test_inference"],
-                  weight_input=inference_export_config["weight_input"],
-                  include_metadata=inference_export_config["include_metadata"],
-                  opset_version=inference_export_config["opset_version"],
-                  test_generation_config=inference_export_config["test_generation_config"])
-        print("[INFO] Generated the inference model graph. Make sure to generate the configuration for GenAI if using for ONNX Generative AI.")
+                  #test_generation=test_generation,
+                  weight_input=inference_config["weight_input"],
+                  include_metadata=inference_config["include_metadata"],
+                  opset_version=inference_config["opset"],
+                  #test_generation_config=test_generation_config,
+                  check_model=inference_config["inference_type"] == "native")
+        print("[INFO] Generated the artifact inference model graph.")
+
+        # Move the rest of the files
+        move_files_excluding(inference_dir, f'{build_dir}/inference', exclude_files=[inference_model_name])
+        print(f"[INFO] Moved the rest of generation configuration files to: {build_dir}/inference")
+
+    
+    # Clean the generated models if needed
+    if delete_models:
+        delete_directory(inference_dir)
+        delete_directory(train_dir)
+        print(f"[INFO] Deleted previously generated training and inference models.")
+
+def parse_extra_options(extra_options: List[str]) -> Dict[str, str]:
+    """
+    Parse additional options in KEY=VALUE format into a dictionary.
+    """
+    options_dict = {}
+    for option in extra_options:
+        if "=" in option:
+            key, value = option.split("=", 1)
+            options_dict[key] = value
+        else:
+            raise ValueError(f"Invalid format for extra option '{option}'. Use KEY=VALUE format.")
+        
+    print(f"Extra options: {options_dict}")
+    return options_dict
+
+def load_config_from_file(config_file: str):
+    """Load configurations from a YAML file into a dictionary."""
+    with open(config_file, 'r') as file:
+        config = yaml.safe_load(file)
+    return config
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Converting the given ONNX models into a ONNX artifacts for on-device training and inference.", formatter_class=argparse.RawTextHelpFormatter)
+
+    parser.add_argument(
+        "--model_id",
+        type=str,
+        help="Identifier for the model to be converted."
+    )
+    parser.add_argument(
+        "--build_path",
+        type=str,
+        help="Path to convert the artifact models."
+    )
+    parser.add_argument(
+        "--inference_model",
+        type=str,
+        help="Name of the inference model."
+    )
+    parser.add_argument(
+        "--inference_dir",
+        type=str,
+        help="Path to the inference model directory."
+    )
+    parser.add_argument(
+        "--training_model",
+        type=str,
+        help="Name of the training model."
+    )
+    parser.add_argument(
+        "--training_dir",
+        type=str,
+        help="Path to the training model directory."
+    )
+    parser.add_argument(
+        "--gen_train_artifacts",
+        type=bool,
+        default=True,
+        help="Whether to generate training artifacts. Default is True."
+    )
+    parser.add_argument(
+        "--test_training",
+        type=bool,
+        default=True,
+        help="Whether to test training capabilities. Default is True."
+    )
+    parser.add_argument(
+        "--test_eval",
+        type=bool,
+        default=True,
+        help="Whether to test evaluation capabilities. Default is True."
+    )
+    #parser.add_argument(
+    #    "--test_generation",
+    #    type=bool,
+    #    default=True,
+    #    help="Whether to perform inference / generation test on the inference exported model."
+    #)
+    parser.add_argument(
+        "--delete_models",
+        type=bool,
+        default=True,
+        help="Deletes the previously generated models."
+    )
+    parser.add_argument(
+        "--config_file",
+        type=str,
+        help="Path to configuration file to load additional options. This config file will overwrite all other arguments."
+    )
+    parser.add_argument(
+        "--inference_config",
+        type=str,
+        nargs="*",
+        metavar="KEY=VALUE",
+        default=[],
+        help=textwrap.dedent("""\
+         Key value pairs for various options. Currently supports:
+            inference_type: genai/native : Type of inference model. If "native" we can perform model checking and other options. If "genai" we cannot perform model checking.
+            output_inference_model = name : Name of the inference model to generate.
+            opset = 20 : Opset version for model operators.
+            weight_input = false : Whether to include trainable weights as model input
+            include_metadata = true : Whether to include the model metadata (this is automatically added if the model type is native).
+            gen_config_file = genai_config.json : # Name of the generation config file included in the same directory as inference model (if included this overwrites the test_generation_config options).
+            """
+            )
+    )
+    #parser.add_argument(
+    #    "--test_generation_config",
+    #    type=str,
+    #    nargs="*",
+    #    metavar="KEY=VALUE",
+    #    default=[],
+    #    help=textwrap.dedent("""\
+    #     Key value pairs for various options. Currently supports:
+    #        prompt = Hello... : Prompt for test generation. If using chatpot template setting, please provide the chat template format as well.
+    #        decode_between = true : Whether to decode the text while it's generating.
+    #        max_length = 100 : Max length of test sequence to generate.
+    #        sampling = top_k : Sampling method. Should support topk and topp
+    #        temperature = 0.7 : Temperature for sampling
+    #        top_k = 10 : Top K for sampling
+    #        top_p = 0.3 : Top P for sampling
+    #        """
+    #        )
+    #)
+    args = parser.parse_args()
+
+    user_inference_config = {}
+    default_user_inference_config = {
+        "type": "genai", # "normal", "genai"
+        "weight_input" : False, # Whether to include trainable weights as model input
+        "test_inference": True, # Whether to perform inference / generation test on the inference exported model
+        "include_metadata": True, # Whether to include the model metadata
+        "output_inference_name": "genai_inference", # The new model name
+        "opset_version": 20,
+        "gen_config_file": "genai_config.json"
+    }
+
+    #user_test_generation_config = {}
+    #default_test_generation_config = {
+    #   "prompt": "Hello, this is a message for the world. How is your day?", # Prompt for test generation
+    #        "decode_between": True, # Whether to decode the text while it's generating
+    #        "max_length" : 100, # Max length of test sequence to generate
+    #       "sampling": "topk", # Sampling method
+    #        "temperature": 0.7, # Temperature for sampling
+    #        "top_k": 10, # Top K for sampling
+    #}
+
+    config_dict = None
+
+    if args.config_file:
+        config_dict = load_config_from_file(args.config_file)
+
+        # Specific
+        setattr(args, "model_id", config_dict[TRAIN_CONFIG]["model_id"])
+        
+        # Override any command-line argument with values from the config file
+        for key, value in config_dict[ARTIFACT_CONFIG].items():
+            
+            # Convert to the correct type
+            if hasattr(args, key):
+                setattr(args, key, value)
+
+        setattr(args, "training_dir",config_dict[TRAIN_CONFIG]["output"])
+        setattr(args, "inference_dir", config_dict[INFERENCE_CONFIG]["output"])
+    else:
+        user_inference_config = parse_extra_options(args.inference_config)
+        args.inference_config = {**default_user_inference_config, **user_inference_config}
+        #user_test_generation_config = parse_extra_options(args.test_generation_config)
+        #args.test_generation_coinfig = {**default_test_generation_config, **user_test_generation_config}
+
+    return args
 
 if __name__ == "__main__":
 
-    # TODO: Argument parser
+    args = parse_arguments()
 
-    convert_pipeline()
+    print(f"{ARTIFACT_CONFIG} arguments:")
+    for arg, value in vars(args).items():
+        print(f"{arg}: {value}")
+
+    convert_pipeline(
+        model_id=args.model_id,
+        train_model_name=args.training_model,
+        train_dir=args.training_dir,
+        inference_model_name=args.inference_model,
+        inference_dir=args.inference_dir,
+        build_dir=args.build_path,
+        gen_train_artifacts=args.gen_train_artifacts,
+        test_training=args.test_training,
+        test_eval=args.test_eval,
+        # We avoid testing generation in this script due to package conflicts
+        #test_generation=args.test_generation,
+        inference_config=args.inference_config,
+        #test_generation_config=args.test_generation_config
+        delete_models=args.delete_models
+    )
