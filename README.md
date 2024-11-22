@@ -1,7 +1,3 @@
----
-base_model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
-library_name: peft
----
 # On-device LLM framework for Fine-Tuning and Inference
 
 This is a framework for generating ONNX training and inference model from Huggingface / local LLM models and deploying them on-device for training and inference. This framework currently supports:
@@ -15,7 +11,7 @@ This is a framework for generating ONNX training and inference model from Huggin
 
 ### On-device
 - [ ] Create PEFT specific adapter merging methods into inference model
-- [ ] Custom tokenizer that is not dependent on ONNX GenAI framework
+- [x] Custom tokenizer that is not dependent on ONNX GenAI framework
 - [ ] Create implementation that will load and save adapters on-device (using [ONNX Runtime LoraAdapters](https://onnxruntime.ai/docs/api/c/struct_ort_1_1_lora_adapter.html)?)
 
 ### Script
@@ -29,6 +25,7 @@ This is a framework for generating ONNX training and inference model from Huggin
 ### Roadmap
 - [ ] (On-device) Add application support for iOS (including CoreML)
 - [ ] (On-device) Add optimization methods for RLHF (?)
+- [ ] (On-device) RAG implementation (?)
 
 ## Usage
 
@@ -106,6 +103,3 @@ TODO: to be written...
 > Any other research made by myself can be found in `docs/ResearchNotes.md`.
 >
 > Created by Martin Korelič - August 2024
-### Framework versions
-
-- PEFT 0.13.2
