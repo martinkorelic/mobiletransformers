@@ -4,10 +4,43 @@
 
 #include "utils.h"
 #include <android/log.h>
+#include <fstream>
+#include <iostream>
 
 #define LOG_TAG "ORTTransformer"
 
 namespace utils {
+
+    std::string LoadBytesFromFile(const std::string& path) {
+        std::ifstream fs(path, std::ios::in | std::ios::binary);
+        if (fs.fail()) {
+            __android_log_print(ANDROID_LOG_ERROR, "utils.LoadBytesFromFile", "Cannot open file: %s", path.c_str());
+            return ""; // Return an empty string to indicate failure
+        }
+
+        // Seek to the end to determine file size
+        fs.seekg(0, std::ios::end);
+        size_t size = static_cast<size_t>(fs.tellg());
+        fs.seekg(0, std::ios::beg);
+
+        // If file is empty, log a warning and return an empty string
+        if (size == 0) {
+            __android_log_print(ANDROID_LOG_ERROR, "utils.LoadBytesFromFile", "File is empty: %s", path.c_str());
+            return "";
+        }
+
+        // Resize the string to fit the file contents
+        std::string data(size, '\0');
+        fs.read(data.data(), size);
+
+        // Check if the read operation failed
+        if (!fs) {
+            __android_log_print(ANDROID_LOG_ERROR, "utils.LoadBytesFromFile", "Error reading file: %s", path.c_str());
+            return "";
+        }
+
+        return data;
+    }
 
     std::string JString2String(JNIEnv *env, jstring jStr) {
         if (!jStr)

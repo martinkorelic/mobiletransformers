@@ -2,7 +2,7 @@ package com.example.orttransformer
 
 import android.util.Log
 
-class ORTTrainerNative(artifactDir : String, private var tokenizer: ORTGenAiTokenizer, cacheDirPath: String) {
+class ORTTrainerNative(artifactDir : String, private var tokenizer: ORTTokenizerNative, cacheDirPath: String) {
 
     private val LOG_TAG = "ORTTrainerNative"
 

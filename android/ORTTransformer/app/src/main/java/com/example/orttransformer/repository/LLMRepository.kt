@@ -2,8 +2,9 @@ package com.example.orttransformer.repository
 
 import android.util.Log
 import com.example.orttransformer.ORTGenAINative
+import com.example.orttransformer.ORTGenAITokenizer
 import com.example.orttransformer.ORTGeneratorNative
-import com.example.orttransformer.ORTGenAiTokenizer
+import com.example.orttransformer.ORTTokenizerNative
 import com.example.orttransformer.ORTTrainerNative
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +32,7 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
     private var generationConfig : MutableMap<String, String> = mutableMapOf(
         "type" to "native",
         "sampling" to "greedy",
-        "max_sequence_length" to "70"
+        "max_sequence_length" to "128"
     )
 
     // TODO: make change based on config
@@ -41,12 +42,15 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
     private var artifactTrainDir : String = "/data/local/tmp/tinyllama_int16/train"
     private var genAiConfigPath : String = "/data/local/tmp/tinyllama_int16/inference"
     private var artifactInferenceModelPath : String = "/data/local/tmp/tinyllama_int16/inference/"
-    private var artifactInferenceModelName : String = "genai_inference.onnx"
+    private var artifactInferenceModelName : String = "model.onnx"
     private var tokenizerConfigPath : String = "/data/local/tmp/genaitest"
 
     // Training capabilities
     private var ortTrainerNative : ORTTrainerNative? = null
-    private var ortTokenizer : ORTGenAiTokenizer? = null
+
+    // Tokenizer capabilities
+    private var ortGenAITokenizer : ORTGenAITokenizer? = null
+    private var ortTokenizerNative : ORTTokenizerNative? = null
 
     // Inference capabilities
     private var ortGenAiNative : ORTGenAINative? = null
@@ -86,13 +90,11 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
     }
 
     private fun makeOrtTrainer() : ORTTrainerNative {
-
-        if (ortTokenizer == null) {
+        if (ortTokenizerNative == null) {
             Log.e(LOG_TAG, "Could not find the tokenizer. Initializing tokenizer...")
-            ortTokenizer = ORTGenAiTokenizer(tokenizerConfigPath)
+            ortTokenizerNative = ORTTokenizerNative(tokenizerConfigPath)
         }
-
-        return ORTTrainerNative(artifactTrainDir, ortTokenizer!!, cacheDir)
+        return ORTTrainerNative(artifactTrainDir, ortTokenizerNative!!, cacheDir)
     }
 
     private fun makeOrtGenAI() : ORTGenAINative? {
@@ -113,16 +115,17 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
             return null
         }
 
-        if (ortTokenizer == null) {
+        if (ortTokenizerNative == null) {
             Log.e(LOG_TAG, "Could not find the tokenizer. Initializing tokenizer...")
-            ortTokenizer = ORTGenAiTokenizer(tokenizerConfigPath)
+            ortTokenizerNative = ORTTokenizerNative(tokenizerConfigPath)
+            ortTokenizerNative?.createTokenizerModel()
         }
 
         // Either we destroy or move session weights, depending on if the model was trained beforehand or not
         // TODO: for now we destroy training session
         ortTrainerNative?.destroySession(false)
 
-        val nativeInference = ORTGeneratorNative(ortTokenizer!!)
+        val nativeInference = ORTGeneratorNative(ortTokenizerNative!!)
         nativeInference.createInferenceModel(artifactInferenceModelPath, artifactInferenceModelName, _ttlmStream)
         return nativeInference
     }
@@ -139,8 +142,10 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
     suspend fun prepareGeneration(inferenceConfig : Map<String, String>?): Job {
         // Clean up the tokenizer and destroy session if there was previous training
         // Takes less memory if we initialize the training session again with the checkpoint state
+
+        // TODO: We shouldn't destroy tokenizer native if we start generating from training session
         if (llmState == LLMState.ReadyTrain) {
-            ortTokenizer = null
+            ortTokenizerNative = null
         }
 
         // If the model was in training state
@@ -157,14 +162,14 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
                 withContext(Dispatchers.Default) {
 
                     // Either we destroy or move session weights, depending on if the model was trained beforehand or not
-                    // TODO: for now we destroy training session with no saving of weights
+                    // TODO: for now we destroy training session with no saving of weights (FIX!!)
                     ortTrainerNative?.destroySession(false)
                     //ortTrainerNative = makeOrtTrainer()
 
                     when (generationConfig["type"]) {
                         "gen_ai" -> {
                             ortGenAiNative = makeOrtGenAI()
-                            ortTokenizer = null
+                            ortGenAITokenizer = null
                         }
                         "native" -> {
                             // TODO: Create native inference model from weight transfer
@@ -204,9 +209,9 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
             "genai" -> {
                 ortGenAiNative?.initializeGenerateStream(prompt)
             }
-            "native" -> {
-                Log.d(LOG_TAG, "TODO: Initialize and prefill stage...")
-            }
+//            "native" -> {
+//                Log.d(LOG_TAG, "TODO: Initialize and prefill stage...")
+//            }
         }
 
         coroutineScope.launch {
@@ -252,6 +257,14 @@ class LLMRepository(modelArtifactPath : String, private val cacheDir : String) {
 
         return coroutineScope.launch {
             withContext(Dispatchers.Default) {
+                if (ortTokenizerNative == null) {
+                    Log.e(LOG_TAG, "Could not find the tokenizer. Initializing tokenizer...")
+                    ortTokenizerNative = ORTTokenizerNative(tokenizerConfigPath)
+
+                } else {
+                    ortTokenizerNative?.createTokenizerModel()
+                }
+
                 ortTrainerNative = makeOrtTrainer()
                 llmState = LLMState.ReadyTrain
             }

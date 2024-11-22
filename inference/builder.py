@@ -11,6 +11,8 @@ This uses optimizations prepared by ONNX GenAI framework and exposes the needed 
 
 from onnx import helper, numpy_helper, TensorProto, external_data_helper, save_model
 from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer, QuantFormat
+from onnxruntime.quantization import QuantFormat, QuantType, quantize_dynamic
+from onnxruntime.quantization.onnx_quantizer import ONNXQuantizer, QuantizationMode
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 import numpy as np
 import torch
@@ -237,7 +239,7 @@ class Model:
             "scale": 1 / np.sqrt(self.head_size),            # Scale value after calculating Q x K' in attention
             "softcap": softcap,                              # Softcap value to prevent values from exploding in attention
             "use_rotemb_in_attn": False,                     # Use rotary embeddings within attention (instead of a separate RotaryEmbedding op)
-            "force_unpacked_matmul": True,                   # Force the matmul of attention to be unpacked (for importing LoRA merged adapters)
+            #"force_unpacked_matmul": True,                   # Force the matmul of attention to be unpacked (for importing LoRA merged adapters)
             "use_packed_matmul": False,                      # Use packed MatMul (instead of 3 separate MatMuls for Q/K/V)
             "block_sparse": {                                # Block-sparse attention-specific variables
                 "sparse_block_size": sparse_block_size,      # Sparse block size for SparseAttention op
@@ -261,8 +263,8 @@ class Model:
             # DML doesn't support packed Q/K/V for GQA yet
             # Packed MatMul with LoRA/QLoRA is not currently supported
             self.attention_attrs["use_packed_matmul"] = (self.ep != "dml" and not self.matmul_attrs["use_lora"])
-            if self.attention_attrs["force_unpacked_matmul"]:
-                self.attention_attrs["use_packed_matmul"] = False
+            #if self.attention_attrs["force_unpacked_matmul"]:
+            #    self.attention_attrs["use_packed_matmul"] = False
 
             # GQA + Rot.Emb. does not require `position ids` as input
             if self.ep != "dml":
@@ -480,7 +482,32 @@ class Model:
                 if any(rqp in node.name for rqp in self.quant_attrs["int4"]["non_quant_nodes_keywords"]):
                     excluding.append(node.name)
 
+        print("Excluding nodes for quantization:")
         print(excluding)
+
+        """
+        quantizer = ONNXQuantizer(
+            model,
+            per_channel=True,
+            reduce_range=False,
+            mode=QuantizationMode.IntegerOps,
+            static=False,  # static
+            weight_qType=QuantType.QUInt8,
+            activation_qType=QuantType.QUInt8,  # dynamic activation only supports uint8
+            tensors_range=None,
+            nodes_to_quantize=None,
+            nodes_to_exclude=excluding,
+            op_types_to_quantize=["MatMul", "Gather"],
+            extra_options={'ActivationSymmetric': False,             # True for inference speed. False may keep more accuracy.
+                   'WeightSymmetric': False,                 # True for inference speed. False may keep more accuracy.
+                   'EnableSubgraph': True,                   # True for more quant.
+                   'ForceQuantizeNoInputCheck': False,       # True for more quant.
+                   'MatMulConstBOnly': False                 # False for more quant. Sometime, the inference speed may get worse.
+                   },
+        )
+        
+        return quantizer.quantize_model()
+        """
 
         quant = MatMul4BitsQuantizer(
             model=model,
@@ -3083,7 +3110,8 @@ def check_extra_options(kv_pairs):
 
     if "use_8bits_moe" in kv_pairs:
         assert(kv_pairs["use_8bits_moe"] == "1" or kv_pairs["use_8bits_moe"] == "0"), "use_8bits_moe must be 0 or 1."
-
+    if "use_lora" in kv_pairs:
+        assert(kv_pairs["use_lora"] == "1" or kv_pairs["use_lora"] == "0"), "use_lora must be 0 or 1."
     if "enable_cuda_graph" in kv_pairs:
         assert(kv_pairs["enable_cuda_graph"] == "1" or kv_pairs["enable_cuda_graph"] == "0"), "enable_cuda_graph must be 0 or 1."
 
@@ -3292,6 +3320,7 @@ def get_args():
                 adapter_path = Path to folder on disk containing the adapter files (adapter_config.json and adapter model weights).
                 prompt_templates = 1: Include per-role prompt templates in the GenAI config file. Default is 0 (not to include).
                 non_quant_nodes = q_proj/k_proj...: Specify the keywords of weights or nodes that will not be quantized. This is for using input of merged LoRA adapters.
+                use_lora = 1 : Specify whether to add non-quantization for the LoRA adapter nodes.
             """),
     )
 
@@ -3316,8 +3345,12 @@ if __name__ == '__main__':
         setattr(args, "model_name", config_dict[TRAIN_CONFIG]["model_id"])
         setattr(args, "cache_dir", os.environ['HF_CACHE'])
         extra_options["hf_token"] = os.environ['HF_TOKEN']
-        extra_options["non_quant_nodes"] = config_dict[TRAIN_CONFIG]["lora_target"]
-        extra_options["prompt_templates"] = "1"
+        if config_dict[INFERENCE_CONFIG]["use_lora"]:
+            extra_options["non_quant_nodes"] = config_dict[TRAIN_CONFIG]["lora_target"]
+        else:
+            extra_options["non_quant_nodes"] = []
+        extra_options["prompt_templates"] = "1" if config_dict[INFERENCE_CONFIG]["prompt_templates"] else "0"
+        extra_options["int4_block_size"] = config_dict[INFERENCE_CONFIG]["int4_block_size"] if "int4_block_size" in config_dict[INFERENCE_CONFIG] else 32
 
         for key, value in config_dict[INFERENCE_CONFIG].items():
             

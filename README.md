@@ -1,3 +1,7 @@
+---
+base_model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+library_name: peft
+---
 # On-device LLM framework for Fine-Tuning and Inference
 
 This is a framework for generating ONNX training and inference model from Huggingface / local LLM models and deploying them on-device for training and inference. This framework currently supports:
@@ -102,3 +106,6 @@ TODO: to be written...
 > Any other research made by myself can be found in `docs/ResearchNotes.md`.
 >
 > Created by Martin Korelič - August 2024
+### Framework versions
+
+- PEFT 0.13.2

@@ -11,6 +11,8 @@
 
 namespace utils {
 
+    std::string LoadBytesFromFile(const std::string& path);
+
     // Convert jstring to std::string
     std::string JString2String(JNIEnv *env, jstring jStr);
 

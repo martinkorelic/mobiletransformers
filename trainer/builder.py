@@ -277,7 +277,7 @@ def optimum_hf_export(model_id,
                       lora_target=["q_proj", "k_proj"],
                       lora_rank=4,
                       quantize=True,
-                      weight_type=QuantType.QUInt4,
+                      weight_type=QuantType.QInt8,
                       peft_config={},
                       specific_peft_config={},
                       postprocess=False,
@@ -302,22 +302,24 @@ def optimum_hf_export(model_id,
     elif config.architectures[0] == "Phi3ForCausalLM":
         ocl = Phi3OnnxConfig(config, task="text-generation", use_past=not training_mode, use_past_in_inputs=not training_mode)
 
+    lora_config = None
+    lora_model = None
+
     if training_mode:
         ocl = OnnxConfigWithLoss(ocl)
-
-    onnx_path = Path(f"{model_output}/model.onnx")
-
-    lora_config = LoraConfig(
+        lora_config = LoraConfig(
             r=lora_rank,
             target_modules=lora_target,
             task_type="CAUSAL_LM",
             **peft_config
         )
 
-    if train_method == "lora":
+    onnx_path = Path(f"{model_output}/model.onnx")
+
+    if training_mode and train_method == "lora":
         # Apply LoRA to the model
         lora_model = PeftModel(model, lora_config)
-    elif train_method == "lora-xs":
+    elif training_mode and train_method == "lora-xs":
         # TODO: Add specific PEFT config
         lora_model = get_peft_model(model, lora_config)
         adapter_name = "default"
@@ -336,7 +338,7 @@ def optimum_hf_export(model_id,
         }
         peft_config_dict[adapter_name] = lora_config
         find_and_initialize(model, peft_config_dict, adapter_name, "svd", reconstruct_dict, None)
-    elif train_method == "nolora":
+    elif not training_mode or train_method == "nolora":
         lora_model = model
 
     if training_mode:
@@ -423,7 +425,7 @@ def onnx_dynamic_quantization(onnx_model_path, onnx_model_quant_output, weight_t
         extra_options={
                 'ActivationSymmetric': False,         # True for inference speed. False may keep more accuracy.
                 'WeightSymmetric': False,                 # True for inference speed. False may keep more accuracy.
-                'EnableSubgraph': True,                   # True for more quant.
+                'EnableSubgraph': False,                   # True for more quant.
                 'ForceQuantizeNoInputCheck': True,       # True for more quant.
                 'MatMulConstBOnly': True                 # False for more quant. Sometime, the inference speed may get worse. Keep this True in case of training graph.
         },
@@ -476,7 +478,7 @@ def parse_arguments():
         type=str,
         help="Identifier for the model to be converted."
     )
-    parser.add_argument(
+    parser.add_argument( 
         "--output",
         type=str,
         help="Path to the model output location."
@@ -547,7 +549,7 @@ def parse_arguments():
         "opset" : 20,
         "exclude_extra_layers": ["embed_tokens"]
     }
-
+    
     config_dict = None
 
     if args.config_file:

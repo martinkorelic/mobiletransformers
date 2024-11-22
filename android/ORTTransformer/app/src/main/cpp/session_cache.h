@@ -9,7 +9,12 @@
 #include "onnxruntime-genai/ort_genai.h"
 #include "onnxruntime-genai/ort_genai_c.h"
 #include "nnapi_provider_factory.h"
+#include "tokenizers/tokenizers_cpp.h"
 #include <android/log.h>
+#include "utils.h"
+#include "filesystem"
+
+namespace fs = std::filesystem;
 
 struct ArtifactPaths {
     std::string checkpoint_path;
@@ -37,6 +42,10 @@ struct WeightSessionCache {
     std::unordered_map<std::string, Ort::Value> weights;
 };
 
+class path;
+
+class path;
+
 /**
  * Caches the current inference session variables. This should be released if a training session wants to begin or inference has ended.
  */
@@ -54,6 +63,7 @@ struct InferenceSessionCache {
     std::vector<std::string> string_storage;
     std::vector<const char*> input_names;
     std::vector<const char*> output_names;
+    bool has_position_ids;
 
     // Model attributes
     int head_dim = 0;
@@ -68,7 +78,7 @@ struct InferenceSessionCache {
 
     InferenceSessionCache(const std::string& inference_model_path, const std::string& inference_model_name,
                           const std::string& sessionOptionsId, const bool enable_profiling) :
-            ort_env(ORT_LOGGING_LEVEL_WARNING, "ORTInference"),
+            ort_env(ORT_LOGGING_LEVEL_VERBOSE, "ORTInference"),
             inference_model_path(inference_model_path),
             inference_model_name(inference_model_name),
             enable_profiling(enable_profiling),
@@ -133,45 +143,63 @@ void initializeKVCache(int batch_size) {
 }
 
 // Method to update past key-values
-void updatePastKeyValues(const std::vector<Ort::Value>& present_key_values) {
-    auto ortApi = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+    void updatePastKeyValues(const std::vector<Ort::Value>& present_key_values) {
+        auto ortApi = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+        Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
-    // Get memory info
-    Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        // Copy present key-values to past key-values
+        for (size_t i = 0; i < present_key_values.size(); i++) {
+            const auto& kv = present_key_values[i];
 
-    // Copy present key-values to past key-values
-    for (size_t i = 0; i < present_key_values.size(); i++) {
+            // Clear existing value if any
+            if (past_key_values[i]) {
+                past_key_values[i].reset();
+            }
 
-        auto& kv = present_key_values[i];
-
-        if (past_key_values[i]) {
-            past_key_values[i].reset();  // Release existing before overwriting
+            // Move the value directly without copying data
+            past_key_values[i] = std::make_unique<Ort::Value>(std::move(const_cast<Ort::Value&>(kv)));
         }
-
-        const int64_t* kv_shape = kv.GetTensorTypeAndShapeInfo().GetShape().data();
-        auto size_dim = kv.GetTensorTypeAndShapeInfo().GetShape();
-        size_t element_count = kv.GetTensorTypeAndShapeInfo().GetElementCount();
-
-        size_t kv_shape_size = kv.GetTensorTypeAndShapeInfo().GetDimensionsCount();
-
-        // Get data pointer without copying
-        const float* data_ptr = kv.GetTensorData<float>();
-
-        // Allocate new memory for the copy
-        float* kv_data = new float[element_count];
-
-        // Get the data from the existing tensor and make a deep copy
-        const float* src_data = kv.GetTensorData<float>();
-        std::memcpy(kv_data, src_data, element_count * sizeof(float));
-
-        OrtValue* new_kv;
-        ortApi->CreateTensorWithDataAsOrtValue(
-                memory_info, kv_data, element_count * sizeof(float),
-                kv_shape, kv_shape_size, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &new_kv);
-
-        past_key_values[i] = std::make_unique<Ort::Value>(new_kv);
     }
-}
+//void updatePastKeyValues(const std::vector<Ort::Value>& present_key_values) {
+//    auto ortApi = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+//
+//    // Get memory info
+//    Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+//
+//    // Copy present key-values to past key-values
+//    for (size_t i = 0; i < present_key_values.size(); i++) {
+//
+//        auto& kv = present_key_values[i];
+//
+//        if (past_key_values[i]) {
+//            past_key_values[i].reset();  // Release existing before overwriting
+//        }
+//
+//        const int64_t* kv_shape = kv.GetTensorTypeAndShapeInfo().GetShape().data();
+//        auto size_dim = kv.GetTensorTypeAndShapeInfo().GetShape();
+//        size_t element_count = kv.GetTensorTypeAndShapeInfo().GetElementCount();
+//
+//        size_t kv_shape_size = kv.GetTensorTypeAndShapeInfo().GetDimensionsCount();
+//
+//        // Get data pointer without copying
+//        const float* data_ptr = kv.GetTensorData<float>();
+//
+//        // Allocate new memory for the copy
+//        std::unique_ptr<float[]> kv_data(new float[element_count]);
+//
+//        // Get the data from the existing tensor and make a deep copy
+//        const float* src_data = kv.GetTensorData<float>();
+//        std::memcpy(kv_data.get(), src_data, element_count * sizeof(float));
+//
+//        OrtValue* new_kv;
+//        ortApi->CreateTensorWithDataAsOrtValue(
+//                memory_info, kv_data.get(), element_count * sizeof(float),
+//                kv_shape, kv_shape_size, ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &new_kv);
+//
+//        past_key_values[i] = std::make_unique<Ort::Value>(new_kv);
+//        kv_data.release();
+//    }
+//}
 
 // End profiling and get the profile data
 std::string endProfiling() {
@@ -236,24 +264,52 @@ private:
             options.DisableCpuMemArena();
         } else if (config_id == "high_perf") {
             // Set options for high performance, if any.
-            options.EnableMemPattern();
+            //options.DisableMemPattern();
+            //options.DisableCpuMemArena();
+            options.AddConfigEntry("session.enable_quant_qdq_cleanup", "0");
+            options.AddConfigEntry("session.disable_quant_qdq", "0");
         }
         // Set profile path file
         if (enable_profiling) {
             profiling_path = artifact_path + "inference_profile.json";
+            fs::path profile_file_prefix{profiling_path};
             allocator_ = Ort::AllocatorWithDefaultOptions();
         }
 
         // TODO: Set based on configurations
-        // NNAPI execution provider
+        //NNAPI execution provider
 
-        uint32_t nnapi_flags = 0;
-        nnapi_flags |= NNAPI_FLAG_CPU_DISABLED;
-        nnapi_flags |= NNAPI_FLAG_USE_FP16;
-
-        auto status = OrtSessionOptionsAppendExecutionProvider_Nnapi(session_options, nnapi_flags);
+//        uint32_t nnapi_flags = 0;
+//        nnapi_flags |= NNAPI_FLAG_CPU_DISABLED;
+//        nnapi_flags |= NNAPI_FLAG_USE_FP16;
+//
+//        auto status = OrtSessionOptionsAppendExecutionProvider_Nnapi(session_options, nnapi_flags);
 
         auto ortApi = OrtGetApiBase()->GetApi(ORT_API_VERSION);
+//
+//        const char* keys[] = {"max_mem", "arena_extend_strategy", "initial_chunk_size_bytes", "max_dead_bytes_per_chunk", "initial_growth_chunk_size_bytes"};
+//        const size_t values[] = {0 /*let ort pick default max memory*/, 0, 1024, 0, 256};
+//        const size_t num_keys = sizeof(keys) / sizeof(keys[0]);
+//
+//        OrtArenaCfg* arena_cfg = nullptr;
+//        ortApi->CreateArenaCfgV2(keys, values, 5, &arena_cfg);
+//
+//        OrtMemoryInfo* mem_info;
+//        ortApi->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &mem_info);
+//
+//        std::unordered_map<std::string, std::string> arena_options = {
+//                {"max_mem", "0"},                          // Let ONNX Runtime pick the default max memory
+//                {"arena_extend_strategy", "0"},            // Default arena extend strategy (next power of 2)
+//                {"initial_chunk_size_bytes", "1024"},      // Initial chunk size in bytes
+//                {"max_dead_bytes_per_chunk", "0"},         // Max dead bytes per chunk (can be 0 for no limit)
+//                {"initial_growth_chunk_size_bytes", "256"} // Initial growth chunk size in bytes
+//        };
+//       ort_env.CreateAndRegisterAllocatorV2(
+//                "CPUExecutionProvider",
+//                mem_info,
+//                arena_options,
+//                arena_cfg);
+
         char** providers;
         int provider_length;
         ortApi->GetAvailableProviders(&providers, &provider_length);
@@ -261,29 +317,34 @@ private:
             __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "Error when setting NNAPI support: %s",providers[i]);
         }
 
-        session_options.SetInterOpNumThreads(2);
+        session_options.SetInterOpNumThreads(1);
+        session_options.SetIntraOpNumThreads(1);
         session_options.AddConfigEntry("session.dynamic_block_base", "2");
-        session_options.AddConfigEntry("session.disable_quant_qdq","0");
         session_options.AddConfigEntry("session.use_device_allocator_for_initializers","1");
         session_options.AddConfigEntry("session.use_env_allocators","1");
-        session_options.AddConfigEntry("session.intra_op_thread_affinities","1;2");
-        session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        //session_options.AddConfigEntry("session.intra_op_thread_affinities","1;2");
+        session_options.AddConfigEntry("session.qdq_matmulnbits_accuracy_level", "4");
+        session_options.AddConfigEntry("session.use_ort_model_bytes_for_initializers","0");
+        session_options.AddConfigEntry("session.qdqisint8allowed", "1");
+        session_options.AddConfigEntry("session.disable_double_qdq_remover","0");
 
-        // Set execution mode to sequential
+        //session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_BASIC);
+
+        //Set execution mode to sequential
         session_options.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
 
-        if (status != nullptr) {
-            // Print or log the error message
-            const char* error_message = Ort::GetApi().GetErrorMessage(status);
-            __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "Error when setting NNAPI support: %s", error_message);
-
-            // Release the status object
-            Ort::GetApi().ReleaseStatus(status);
-
-            throw std::runtime_error("Error setting NNAPI execution provider.");
-        } else {
-            __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "NNAPI execution provider successfully set.");
-        }
+//        if (status != nullptr) {
+//            // Print or log the error message
+//            const char* error_message = Ort::GetApi().GetErrorMessage(status);
+//            __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "Error when setting NNAPI support: %s", error_message);
+//
+//            // Release the status object
+//            Ort::GetApi().ReleaseStatus(status);
+//
+//            throw std::runtime_error("Error setting NNAPI execution provider.");
+//        } else {
+//            __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "NNAPI execution provider successfully set.");
+//        }
 
         return options;
     }
@@ -327,37 +388,45 @@ private:
     }
 
     void generateInputOutputNames() {
+
         // Clear existing data
         string_storage.clear();
         input_names.clear();
         output_names.clear();
+        has_position_ids = false;
 
-        // Reserve space
-        string_storage.reserve(4 + num_layers * 4);
-        input_names.reserve(3 + num_layers * 2);
-        output_names.reserve(1 + num_layers * 2);
+        // Query the number of inputs and outputs
+        size_t num_inputs = inference_session->GetInputCount();
+        size_t num_outputs = inference_session->GetOutputCount();
 
-        string_storage.push_back("input_ids");
-        input_names.push_back(string_storage[0].c_str());
-        string_storage.push_back("attention_mask");
-        input_names.push_back(string_storage[1].c_str());
-        string_storage.push_back("position_ids");
-        input_names.push_back(string_storage[2].c_str());
-        string_storage.push_back("logits");
-        output_names.push_back(string_storage[3].c_str());
+        // Pre-allocate storage to prevent reallocation
+        string_storage.reserve(num_inputs + num_outputs);
+        input_names.reserve(num_inputs);
+        output_names.reserve(num_outputs);
 
-        // Generate names
-        for (int i = 0; i < num_layers; i++) {
-            string_storage.push_back("past_key_values." + std::to_string(i) + ".key");
-            string_storage.push_back("past_key_values." + std::to_string(i) + ".value");
-            string_storage.push_back("present." + std::to_string(i) + ".key");
-            string_storage.push_back("present." + std::to_string(i) + ".value");
+        __android_log_print(ANDROID_LOG_DEBUG, "InputNames", "%zu", num_inputs);
+        __android_log_print(ANDROID_LOG_DEBUG, "InputNames", "%zu", num_outputs);
 
-            size_t current_size = string_storage.size();
-            input_names.push_back(string_storage[current_size - 4].c_str());
-            input_names.push_back(string_storage[current_size - 3].c_str());
-            output_names.push_back(string_storage[current_size - 2].c_str());
-            output_names.push_back(string_storage[current_size - 1].c_str());
+        Ort::AllocatorWithDefaultOptions allocator;
+
+        // Populate input names
+        for (size_t i = 0; i < num_inputs; i++) {
+            auto input_name = inference_session->GetInputNameAllocated(i, allocator);
+            std::string name(input_name.get());
+
+            if (name == "position_ids") {
+                has_position_ids = true;
+            }
+
+            string_storage.push_back(std::move(name));
+            input_names.push_back(string_storage.back().c_str());
+        }
+
+        // Populate output names
+        for (size_t i = 0; i < num_outputs; i++) {
+            auto output_name = inference_session->GetOutputNameAllocated(i, allocator);
+            string_storage.push_back(std::string(output_name.get()));
+            output_names.push_back(string_storage.back().c_str());
         }
 
     }
@@ -457,4 +526,15 @@ struct GenAISessionCache {
         generator = OgaGenerator::Create(*model, *generatorParams);
     }
 };
+
+struct TokenizerSessionCache {
+    std::unique_ptr<tokenizers::Tokenizer> tokenizer;
+
+    TokenizerSessionCache(const std::string &tokenizer_file) {
+        // TODO: For now only works with HF tokenizers
+        auto data = utils::LoadBytesFromFile(tokenizer_file);
+        tokenizer = tokenizers::Tokenizer::FromBlobJSON(data);
+    }
+};
+
 #endif //ORT_PERSONALIZE_SESSION_CACHE_H

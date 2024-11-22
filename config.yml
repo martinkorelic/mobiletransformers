@@ -1,6 +1,6 @@
 ###################### TRAINING BUILDER CONFIGURATION ######################
 TRAIN_BUILDER:
-  model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  model_id: "microsoft/Phi-3-mini-4k-instruct" #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
   output: "./build/train_models"
 
   training_mode: true
@@ -41,6 +41,13 @@ INFERENCE_BUILDER:
   #  1 is fp32.
   int4_accuracy_level: 4
 
+  int4_block_size: 128
+
+  # Specify whether to use LoRA and apply non-quantization to TRAIN_BUILDER.lora_target nodes.
+  use_lora: false
+
+  prompt_templates: false
+
 
 ###################### ARTIFACT BUILDER CONFIGURATION ######################
 ARTIFACT_BUILDER:
@@ -52,18 +59,20 @@ ARTIFACT_BUILDER:
   # This will join path with the INFERENCE_BUILDER.output/inference_model
   inference_model: "model.onnx"
 
-  gen_train_artifacts: true
-  test_training: true
+  gen_train_artifacts: false
+  gen_inference_artifacts: true
+
+  test_training: false
   test_eval: false
   inference_config:
     inference_type: "genai" # "native", "genai"
-    output_inference_model: "model"
+    output_inference_model: "phi3-mini-4k-instruct-cpu-int4-rtn-block-32"
     opset: 20
     weight_input : false # Whether to include trainable weights as model input
     include_metadata: true # Whether to include the model metadata
   
-  # Delete the generated models from the directories
-  delete_models: true
+  # Delete the generated models from the "*_models" directories
+  delete_models: false
 
 ###################### ARTIFACT VALIDATOR CONFIGURATION ######################
 ARTIFACT_VALIDATOR:
@@ -78,9 +87,9 @@ ARTIFACT_VALIDATOR:
   use_gen_config_file: false
 
   test_generation_config:  
-    prompt: "Hello, this is a message for the world. How is your day? Please write me a poem." # Prompt for test generation
+    prompt: "You are a location reasoning model based on Wi-Fi SSID names. User is near a Wi-Fi SSID named LidlWlan. Explain where the user is most likely and in what environment they might be in, give your reasoning. Focus on user activity based on this Wi-Fi SSID." # Prompt for test generation
     decode_between: true # Whether to decode the text while it's generating
-    max_length : 100 # Max length of test sequence to generate
+    max_length : 512 # Max length of test sequence to generate
     sampling: "top_k" # Sampling method
     temperature: 0.7 # Temperature for sampling
     top_k: 10 # Top K for sampling

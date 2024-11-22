@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity() {
     //private var ortTrainer: ORTTrainer? = null
     private var ortGeneratorNative: ORTGeneratorNative? = null
     private var ortTrainerNative : ORTTrainerNative? = null
-    private var ortTokenizer : ORTGenAiTokenizer? = null
+
     private var ortGenAiNative : ORTGenAINative? = null
 
     private var artifactTrainDir : String = "/data/local/tmp/tinyllama_int16/train"
@@ -111,15 +111,6 @@ class MainActivity : ComponentActivity() {
         return genAiNative
     }
 
-    private fun makeOrtTrainer() : ORTTrainerNative? {
-
-        if (ortTokenizer == null) {
-            Log.e(LOG_TAG, "Could not find the tokenizer.")
-            return null
-        }
-
-        return ORTTrainerNative(artifactTrainDir, ortTokenizer!!, applicationContext.cacheDir.toString())
-    }
 
 
     private fun performTestTraining() {

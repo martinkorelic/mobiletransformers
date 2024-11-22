@@ -143,6 +143,46 @@ namespace inference {
         return output;
     }
 
+    void logTensorMemoryUsage(const std::vector<Ort::Value>& tensors) {
+        constexpr size_t BYTES_IN_MB = 1024 * 1024;
+        size_t total_bytes = 0;
+
+        for (const auto& tensor : tensors) {
+            if (!tensor.IsTensor()) {
+
+                __android_log_print(ANDROID_LOG_WARN, "TensorMemory", "Non-tensor value in vector, skipping.");
+                continue;
+            }
+
+            try {
+                auto tensor_info = tensor.GetTensorTypeAndShapeInfo();
+                size_t element_count = tensor_info.GetElementCount();
+
+                size_t element_size = [&tensor_info]() {
+                    switch (tensor_info.GetElementType()) {
+                        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:    return sizeof(float);
+                        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:    return sizeof(int32_t);
+                        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:    return sizeof(int64_t);
+                        case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:   return sizeof(double);
+                        case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:     return sizeof(bool);
+                        default:
+                            __android_log_print(ANDROID_LOG_WARN, "TensorMemory", "Unsupported tensor data type.");
+                            return static_cast<size_t>(0);
+                    }
+                }();
+
+                if (element_size > 0) {
+                    total_bytes += element_count * element_size;
+                }
+            } catch (const std::exception& ex) {
+                __android_log_print(ANDROID_LOG_ERROR, "TensorMemory", "Error processing tensor: %s", ex.what());
+            }
+        }
+
+        double total_mb = static_cast<double>(total_bytes) / BYTES_IN_MB;
+        __android_log_print(ANDROID_LOG_INFO, "TensorMemory", "Total tensor memory usage: %.2f MB", total_mb);
+    }
+
     // Forward pass with KV caching
     float* generateWithKVCache(InferenceSessionCache* session_cache,
                                int64_t* input_ids,
@@ -151,6 +191,7 @@ namespace inference {
                                int64_t batch_size,
                                int64_t sequence_length,
                                int64_t past_sequence_length) {
+
         Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
         std::vector<const char *> input_names = session_cache->input_names;
@@ -161,10 +202,13 @@ namespace inference {
 
         const std::vector<int64_t> input_ids_shape({batch_size, past_sequence_length});
         const std::vector<int64_t> attention_mask_shape({batch_size, sequence_length});
-        const std::vector<int64_t> position_ids_shape({batch_size, past_sequence_length});
+        std::vector<int64_t> position_ids_shape;
+        if (session_cache->has_position_ids) {
+            position_ids_shape = std::vector<int64_t>{batch_size, past_sequence_length};
+        }
 
         std::vector<Ort::Value> input_values;
-
+        input_values.reserve(input_names.size());
         // Input ids
         input_values.emplace_back(Ort::Value::CreateTensor(memory_info, input_ids,
                                                            batch_size * past_sequence_length * sizeof(int64_t),
@@ -176,44 +220,54 @@ namespace inference {
                                                            attention_mask_shape.data(), attention_mask_shape.size(),
                                                            ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64));
         // Position ids
-        input_values.emplace_back(Ort::Value::CreateTensor(memory_info, position_ids,
-                                                           batch_size * past_sequence_length * sizeof(int64_t),
-                                                           position_ids_shape.data(), position_ids_shape.size(),
-                                                           ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64));
+        if (session_cache->has_position_ids) {
+            input_values.emplace_back(Ort::Value::CreateTensor(memory_info, position_ids,
+                                                               batch_size * past_sequence_length * sizeof(int64_t),
+                                                               position_ids_shape.data(), position_ids_shape.size(),
+                                                               ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64));
+        }
+        
         std::vector<Ort::Value> output_values;
-
+        output_values.reserve(output_names.size());
         // Load and move past KV caches to the input
-        //int i = 0;
         for (auto& kv : session_cache->past_key_values) {
-
-//            float* data = kv->GetTensorMutableData<float>(); // Assuming they are float tensors
-//            size_t count = kv->GetTensorTypeAndShapeInfo().GetElementCount();
-//            __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "Past key value i: %d", i);
-//
-//            for (size_t j = 0; j < 5; ++j) {
-//                __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "%f", data[j]);
-//            }
-//            i++;
             input_values.emplace_back(std::move(*kv));
-            output_values.emplace_back(nullptr);
+            output_values.emplace_back(Ort::Value(nullptr));
         }
 
+        logTensorMemoryUsage(input_values);
         output_values.emplace_back(nullptr);
 
+        auto session_run_opts = Ort::RunOptions();
+        //session_run_opts.AddConfigEntry("memory.enable_memory_arena_shrinkage", "cpu:0");
+        //session_run_opts.SetRunLogSeverityLevel(0);
+        //session_run_opts.SetRunLogVerbosityLevel(0);
+        
         // Get the logits
-        session_cache->inference_session->Run(Ort::RunOptions(), input_names.data(), input_values.data(),
+        session_cache->inference_session->Run(session_run_opts, input_names.data(), input_values.data(),
                                               input_count, output_names.data(), output_values.data(), output_count);
 
-        float *output = output_values.front().GetTensorMutableData<float>();
+        std::unique_ptr<Ort::Value> output = std::make_unique<Ort::Value>(std::move(output_values.front()));
 
         if (!output_values.empty()) {
             output_values.erase(output_values.begin());
         }
 
-        // Update KV caches
-        session_cache->updatePastKeyValues(output_values);
+        std::vector<Ort::Value> kv_outputs(
+                std::make_move_iterator(output_values.begin()),
+                std::make_move_iterator(output_values.end())
+        );
 
-        return output;
+        // Update KV caches
+        session_cache->updatePastKeyValues(kv_outputs);
+
+        // Explicitly release input values to free memory
+        input_values.clear();
+        output_values.clear();
+
+        return output->GetTensorMutableData<float>();
     }
+
+
 
 } // namespace inference

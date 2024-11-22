@@ -7,6 +7,7 @@
 #include "include/onnxruntime/onnxruntime_training_cxx_api.h"
 #include "session_cache.h"
 #include "inference.h"
+#include "tokenization.h"
 #include "utils.h"
 #include "train.h"
 #include "onnxruntime-genai/ort_genai.h"
@@ -187,6 +188,13 @@ void ReleaseGenAISession(jlong session) {
     //OgaDestroyModel(session_cache->model.get());
     //OgaDestroyTokenizer(session_cache->tokenizer.get());
     //OgaDestroyTokenizerStream(session_cache->tokenizer_stream.get());
+    delete session_cache;
+    session_cache = nullptr;
+}
+
+void ReleaseTokenizerSession(jlong session) {
+    auto *session_cache = reinterpret_cast<TokenizerSessionCache *>(session);
+
     delete session_cache;
     session_cache = nullptr;
 }
@@ -495,9 +503,8 @@ Java_com_example_orttransformer_ORTGenAINative_releaseGenAISession(
 extern "C" JNIEXPORT jlong JNICALL
 /***
  * Function for creating an inference session from the current training session without exporting from inference.
- * This will allow to perform inference on the other model which is compatible with ONNX GenAI API.
+ * This will allow to perform inference on the other model which is compatible with ONNX GenAI or Native Inference API.
  *
- *  TODO: An inference session with Android NNAPI could be added.
  *
  * 1. Use the current checkpoint data
  * 2. Load the names of trainable layers from training_config.json
@@ -519,7 +526,7 @@ Java_com_example_orttransformer_ORTGeneratorNative_createInferenceSessionFromTra
     std::unique_ptr<InferenceSessionCache> inference_session_cache = std::make_unique<InferenceSessionCache>(
             utils::JString2String(env, inference_model_path),
             utils::JString2String(env, inference_model_path),
-            "low_mem",
+            "high_perf",
             true
     );
 
@@ -529,11 +536,6 @@ Java_com_example_orttransformer_ORTGeneratorNative_createInferenceSessionFromTra
     // Release the current training session, save the checkpoints
     ReleaseTrainingSession(train_session, true);
     train_session_cache = nullptr;
-
-    // TODO: Test inference with Android NNAPI
-    // Source needs to be built with NNAPI enabled to add it to session
-    //Ort::SessionOptions so;
-    //uint32_t nnapi_flags = 0;
 
     // Load the model which will not deserialize the already loaded initializers
     inference_session_cache->inference_session = std::make_unique<Ort::Session>(
@@ -608,6 +610,7 @@ Java_com_example_orttransformer_ORTGenAINative_initializeGenAIInference(JNIEnv *
     session_cache->generatorParams->SetInputSequences(*sequences);
     session_cache->generator = OgaGenerator::Create(*session_cache->model, *session_cache->generatorParams);
 }
+
 
 extern "C"
 JNIEXPORT jstring JNICALL
@@ -700,4 +703,74 @@ Java_com_example_orttransformer_ORTGeneratorNative_performInferenceStep(JNIEnv *
     }
 
     return best_index;
+}
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_com_example_orttransformer_ORTTokenizerNative_createTokenizerSession(JNIEnv *env,
+                                                                          jobject thiz,
+                                                                          jstring jTokenizerFile) {
+    // Convert Java string to C++ string
+    const char *tokenizer_file = env->GetStringUTFChars(jTokenizerFile, nullptr);
+    std::unique_ptr<TokenizerSessionCache> tokenizer = std::make_unique<TokenizerSessionCache>(tokenizer_file);
+
+    // Release the Java string memory
+    env->ReleaseStringUTFChars(jTokenizerFile, tokenizer_file);
+
+    // Return the handle (cast the unique pointer to `jlong`)
+    return reinterpret_cast<jlong>(tokenizer.release());
+}
+
+
+extern "C"
+JNIEXPORT jintArray JNICALL
+Java_com_example_orttransformer_ORTTokenizerNative_tokenizeString(JNIEnv *env, jobject thiz,
+                                                                  jlong tokenizer_model,
+                                                                  jstring sequence) {
+    // Convert Java string to C++ string
+    const char *text = env->GetStringUTFChars(sequence, nullptr);
+
+    std::vector<int32_t> tokens = tokenization::tokenize(tokenizer_model, text);
+
+    // Release the Java string memory
+    env->ReleaseStringUTFChars(sequence, text);
+    jintArray token_array = env->NewIntArray(tokens.size());
+    env->SetIntArrayRegion(token_array, 0, tokens.size(), reinterpret_cast<const jint *>(tokens.data()));
+    return token_array;
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_orttransformer_ORTTokenizerNative_decodeString(JNIEnv *env, jobject thiz,
+                                                                  jlong tokenizer_model,
+                                                                  jintArray sequence) {
+
+    // Convert Java int array to C++ vector
+    jsize length = env->GetArrayLength(sequence);
+    std::vector<int32_t> token_ids(length);
+    env->GetIntArrayRegion(sequence, 0, length, reinterpret_cast<jint *>(token_ids.data()));
+
+    // Decode the token IDs
+    std::string decoded_text = tokenization::decode(tokenizer_model, token_ids);
+
+    // Convert C++ string to Java string
+    return env->NewStringUTF(decoded_text.c_str());
+}
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_orttransformer_ORTTokenizerNative_releaseTokenizerSession(JNIEnv *env,
+                                                                           jobject thiz,
+                                                                           jlong tokenizer_model) {
+    ReleaseTokenizerSession(tokenizer_model);
+}
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_orttransformer_ORTTokenizerNative_decodeToken(JNIEnv *env, jobject thiz,
+                                                               jlong tokenizer_model,
+                                                               jint token_id) {
+
+    // Decode the token IDs
+    std::string decoded_text = tokenization::decodeToken(tokenizer_model, token_id);
+
+    // Convert C++ string to Java string
+    return env->NewStringUTF(decoded_text.c_str());
 }

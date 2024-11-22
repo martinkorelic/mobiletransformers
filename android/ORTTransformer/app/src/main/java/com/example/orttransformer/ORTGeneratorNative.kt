@@ -3,7 +3,7 @@ package com.example.orttransformer
 import android.util.Log
 import kotlinx.coroutines.flow.MutableSharedFlow
 
-class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer, private var trackMetrics: Boolean = true, var timeUpdateStep : Int = 5) {
+class ORTGeneratorNative(private var tokenizer: ORTTokenizerNative, private var trackMetrics: Boolean = true, var timeUpdateStep : Int = 5) {
 
     private var LOG_TAG = "ORTGeneratorNative"
 
@@ -18,7 +18,6 @@ class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer, private var t
         }
         inferenceModel = createInferenceSession(inferenceModelPath, inferenceModelName)
         if (trackMetrics) {
-            Log.d(LOG_TAG, ((System.nanoTime() - start) / 1_000_000_000.0).toString())
             ttlmSharedFlow?.emit((System.nanoTime() - start) / 1_000_000_000.0)
         }
     }
@@ -56,7 +55,8 @@ class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer, private var t
             "Key 'max_sequence_length' does not exist in generationConfig"
         }
 
-        val inputTokens = tokenizer.tokenize(promptText)
+        var inputTokens = tokenizer.tokenize(promptText)
+        inputTokens = tokenizer.prependBosToken(inputTokens)
 
         if (inputTokens == null) {
             Log.d(LOG_TAG, "Failed to generate tokens for the prompt.")
@@ -121,7 +121,7 @@ class ORTGeneratorNative(private var tokenizer: ORTGenAiTokenizer, private var t
             val nextPositionId = positionIds.last() + 1
             positionIds = mutableListOf(nextPositionId)
 
-            var decodedToken = tokenizer.decode(intArrayOf(nextTokenId)).toString()
+            var decodedToken = tokenizer.decodeToken(nextTokenId)
             tokenSharedFlow.emit(decodedToken)
             decodedText += decodedToken
             decoded++

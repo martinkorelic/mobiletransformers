@@ -7,3 +7,7 @@ build/
 onnx_models/
 .env
 cache_dir/
+results/
+merged_models/
+data/
+experiment/

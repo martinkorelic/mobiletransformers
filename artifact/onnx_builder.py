@@ -340,6 +340,9 @@ def gen_genai(model_id,
             onnx.StringStringEntryProto(key="model_id", value=str(model_id))
         )
         model.metadata_props.append(
+            onnx.StringStringEntryProto(key="max_context_length", value=str(config.max_position_embeddings))
+        )
+        model.metadata_props.append(
             onnx.StringStringEntryProto(key="head_dim", value=str(head_size))
         )
         model.metadata_props.append(
@@ -408,6 +411,7 @@ def convert_pipeline(model_id,
                     inference_dir,
                     build_dir,
                     gen_train_artifacts = True,
+                    gen_inference_artifacts = True,
                     test_training = True,
                     test_eval = True,
                     test_generation = True,
@@ -446,7 +450,7 @@ def convert_pipeline(model_id,
                         test_evaluate=test_eval)
         print("[INFO] Training check completed.")
     
-    if inference_config["inference_type"] == "genai":
+    if gen_inference_artifacts and inference_config["inference_type"] == "genai":
         gen_genai(model_id=model_id,
                   model_path=f'{inference_dir}/{inference_model_name}',
                   training_config=f'{train_dir}/training_config.json',

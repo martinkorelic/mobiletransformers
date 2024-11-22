@@ -7,7 +7,7 @@ def test_genai_model(path="./onnx_genai_config"):
     model = og.Model(path)
     params = og.GeneratorParams(model)
     tokenizer = og.Tokenizer(model)
-    input_tokens = tokenizer.encode_batch(["Hello, this is a message for the world. How is your day?"]).astype(np.int64)
+    input_tokens = tokenizer.encode_batch(["You are a location reasoning model based on Wi-Fi SSID names. User is near a Wi-Fi SSID named LidlWlan. Explain where the user is most likely and in what environment they might be in, give your reasoning."]).astype(np.int64)
     #params.set_model_input("labels", label_tokens)
     #params.try_graph_capture_with_max_batch_size(1)
 

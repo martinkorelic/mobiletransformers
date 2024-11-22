@@ -28,12 +28,11 @@ project("orttransformer")
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
         utils.cpp
+        tokenization.cpp
         train.cpp
         inference.cpp
         native-lib.cpp)
 
-#add_library(onnxruntime SHARED IMPORTED)
-#set_target_properties(onnxruntime PROPERTIES IMPORTED_LOCATION ${CMAKE_SOURCE_DIR}/lib/libonnxruntime.so)
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/include/onnxruntime)
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE ${PROJECT_SOURCE_DIR}/../jniLibs/${CMAKE_ANDROID_ARCH_ABI})
 
@@ -44,6 +43,8 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         # List libraries link to the target library
         android
         log
+        tokenizers_c
+        tokenizers_cpp
         onnxruntime
         onnxruntime-genai
 )
