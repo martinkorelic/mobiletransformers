@@ -1,0 +1,3 @@
+[submodule "android/ORTTransformer"]
+	path = android/ORTTransformer
+	url = https://github.com/martinkorelic/orttransformer-android
