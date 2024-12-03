@@ -1,17 +1,21 @@
 
 import json
+import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, DataCollatorForLanguageModeling, AutoConfig, DataCollatorForSeq2Seq, DataCollatorWithPadding
 from datasets import load_dataset, Dataset, DatasetDict
 import os
 from peft import LoraConfig, get_peft_model
 
+from optimization.mars.config import MarsConfig
+from optimization.mars.model import MarsModel
 from trainer.utils import process_sample_dolly, process_sample_alpaca, process_sample_commonsense, process_sample_hellaswag
 from optimization.lora_xs.initialization_utils import find_and_initialize
+from tools.utils import MemoryLoggerCallback
 
 MODEL_ID = "TinyLlama/TinyLlama_v1.1"
 
-LORA_RANK = 32
-LORA_TARGET = ["q_proj", "k_proj", "v_proj", "gate_proj", "up_proj", "down_proj", "o_proj"]
+LORA_RANK = 8
+LORA_TARGET = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"]
 PEFT_CONFIG = {
     "lora_dropout": 0,
     "bias": "none",
@@ -20,7 +24,7 @@ PEFT_CONFIG = {
 
 DATASET_ID = "data/hellaswag_train"#"databricks/databricks-dolly-15k"
 
-PEFT_METHOD = "lora"
+PEFT_METHOD = "mars"
 
 MAX_DATASET_LENGTH = None
 
@@ -103,7 +107,7 @@ def prepare_dataset(dataset : Dataset, dataset_id, tokenizer, max_dataset_length
 
 def train_loraxs(model_id, dataset_id, peft_method, lora_rank, lora_target, peft_config, max_dataset_length, batch_size):
 
-    model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True, token=os.environ["HF_TOKEN"])
+    base_model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True, token=os.environ["HF_TOKEN"])
     tokenizer = AutoTokenizer.from_pretrained(model_id, token=os.environ["HF_TOKEN"])
     config = AutoConfig.from_pretrained(model_id, token=os.environ["HF_TOKEN"])
 
@@ -127,6 +131,7 @@ def train_loraxs(model_id, dataset_id, peft_method, lora_rank, lora_target, peft
             **peft_config
         )
     
+    # Depends on the GPU memory
     per_device_batch = 6
     
     train_args = {
@@ -136,9 +141,9 @@ def train_loraxs(model_id, dataset_id, peft_method, lora_rank, lora_target, peft
         "gradient_accumulation_steps": batch_size // per_device_batch
     }
     
-    model.enable_input_require_grads()
+    base_model.enable_input_require_grads()
 
-    model = get_peft_model(model, lora_config)
+    model = get_peft_model(base_model, lora_config)
 
     if peft_method == "lora-xs":
         adapter_name = "default"
@@ -160,9 +165,29 @@ def train_loraxs(model_id, dataset_id, peft_method, lora_rank, lora_target, peft
 
         for param in model.parameters():
             param.data = param.data.contiguous()
+    elif peft_method == "mars":
+        mars_config = MarsConfig(
+            peft_type="MARS",
+            ranks=[16, 32, 64, 128],
+            lora_alphas=[1,1],  # Scaling factor
+            target_modules=lora_target,  # Target specific model layers
+            task_type="CAUSAL_LM"
+        )
+
+        # Mars: [128, 64, 32, 16] - Trainable parameters: 5006848 (Final Loss: 1.76)
+        # LoRA: Rank 8 - Trainable parameters: 6307840 (Final Loss: 1.74)
+
+        peft_model = MarsModel(base_model, mars_config, "mars")
+        peft_model.train()
+        model = peft_model.model
+        model.config.use_cache = False
 
     # TODO: Reactivate some layers for fine-tuning (if needed)
     activate_trainable_layers(model, "")
+
+    # Compute number of trainable parameters
+    print("Number of trainable parameters:")
+    print(count_trainable_parameters(model))
 
     # Train the model
     train_model(
@@ -195,14 +220,13 @@ def train_model(model, encoded_dataset, data_collator, train_args_plus):
         **train_args_plus
     )
 
-    model.config.use_cache = False
-
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=encoded_dataset["train"],
         eval_dataset=encoded_dataset["test"],
         data_collator=data_collator,
+        callbacks=[MemoryLoggerCallback()]
     )
 
     trainer.train()
@@ -234,6 +258,18 @@ def activate_trainable_layers(peft_model, keywords):
     trainable_layers = [name for name, param in peft_model.named_parameters() if param.requires_grad]
     print(f"Total trainable layers: {len(trainable_layers)}")
     print(f"Trainable layers: {trainable_layers}")
+
+def count_trainable_parameters(model: torch.nn.Module) -> int:
+    """
+    Computes the number of trainable parameters in a PyTorch model.
+
+    Args:
+        model (nn.Module): The PyTorch model.
+
+    Returns:
+        int: The total number of trainable parameters.
+    """
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 if __name__ == "__main__":
     train_loraxs(

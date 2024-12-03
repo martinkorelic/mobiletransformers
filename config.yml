@@ -1,15 +1,21 @@
 ###################### TRAINING BUILDER CONFIGURATION ######################
 TRAIN_BUILDER:
-  model_id: "microsoft/Phi-3-mini-4k-instruct" #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0" #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
   output: "./build/train_models"
 
   training_mode: true
-  train_method: "lora"
+  # lora, lora-xs
+  train_method: "lora-xs"
 
   # LoRA target modules
   lora_target:
     - "q_proj"
     - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "down_proj"
+    - "gate_proj"
+    - "up_proj"
   lora_rank: 16
   quantize: true
   # Weight types for quantizing
@@ -17,8 +23,14 @@ TRAIN_BUILDER:
   extra_options:
     postprocess: false
     opset: 20
+    # Any extra layers to exclude from quantization
     exclude_extra_layers:
       - embed_tokens
+      - lm_head
+    # Quantize only specific node with keywords in exclude_specific_layers
+    exclude_specific: true
+    exclude_specific_layers:
+      - latent
   
   # Training specific configurations
   peft_config:
@@ -59,14 +71,14 @@ ARTIFACT_BUILDER:
   # This will join path with the INFERENCE_BUILDER.output/inference_model
   inference_model: "model.onnx"
 
-  gen_train_artifacts: false
-  gen_inference_artifacts: true
+  gen_train_artifacts: true
+  gen_inference_artifacts: false
 
-  test_training: false
+  test_training: true
   test_eval: false
   inference_config:
     inference_type: "genai" # "native", "genai"
-    output_inference_model: "phi3-mini-4k-instruct-cpu-int4-rtn-block-32"
+    output_inference_model: "model"
     opset: 20
     weight_input : false # Whether to include trainable weights as model input
     include_metadata: true # Whether to include the model metadata

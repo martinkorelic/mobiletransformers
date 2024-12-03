@@ -282,6 +282,8 @@ def optimum_hf_export(model_id,
                       specific_peft_config={},
                       postprocess=False,
                       exclude_extra_layers = ["embed_head"],
+                      exclude_specific=False,
+                      exclude_specific_layers=[],
                       opset=20):
     """
     Exports the model from Huggingface to an ONNX model representation.
@@ -374,7 +376,13 @@ def optimum_hf_export(model_id,
     # Apply dynamic quantization to non-trainable layers
     if quantize:
         lora_target = [] if not training_mode else lora_target
-        onnx_dynamic_quantization(onnx_path.absolute().as_posix(), f"{model_output}/quant_model.onnx", exclude_weights=lora_target, weight_type=weight_type, exclude_extra_layers=exclude_extra_layers)
+        onnx_dynamic_quantization(onnx_path.absolute().as_posix(),
+                                  f"{model_output}/quant_model.onnx",
+                                  exclude_weights=lora_target,
+                                  weight_type=weight_type,
+                                  exclude_extra_layers=exclude_extra_layers,
+                                  exclude_specific=exclude_specific,
+                                  exclude_specific_layers=exclude_specific_layers)
 
 def onnx_matmul_quantization(onnx_model_path, onnx_model_quant_output, block_size=32, accuracy_level=4, exclude_weights=["q_proj", "k_proj"], exclude_extra_layers=["embed_tokens"]):
 
@@ -402,7 +410,13 @@ def onnx_matmul_quantization(onnx_model_path, onnx_model_quant_output, block_siz
 
     onnx.save_model(quant.model.model, onnx_model_quant_output, save_as_external_data=True)
 
-def onnx_dynamic_quantization(onnx_model_path, onnx_model_quant_output, weight_type=QuantType.QInt16, exclude_weights=["q_proj", "k_proj"], exclude_extra_layers=["embed_tokens"]):
+def onnx_dynamic_quantization(onnx_model_path,
+                              onnx_model_quant_output,
+                              weight_type=QuantType.QInt16,
+                              exclude_weights=[],
+                              exclude_extra_layers=[],
+                              exclude_specific=False,
+                              exclude_specific_layers=[]):
 
     onnx_model = onnx.load(onnx_model_path)
 
@@ -410,10 +424,16 @@ def onnx_dynamic_quantization(onnx_model_path, onnx_model_quant_output, weight_t
 
     # Exclude trainable nodes
     for param in onnx_model.graph.node:
-        if any((allowed_layer in param.name and param.name.endswith("Transpose")) for allowed_layer in exclude_weights):
-            nodes_to_not_quantize.append(param.name)
+
+        if not exclude_specific:
+            if any((allowed_layer in param.name and param.name.endswith("Transpose")) for allowed_layer in exclude_weights):
+                nodes_to_not_quantize.append(param.name)
+        else:
+            if any((allowed_layer in param.name and param.name.endswith("Transpose")) for allowed_layer in exclude_specific_layers):
+                nodes_to_not_quantize.append(param.name)
+        
         if any(allowed_layer in param.name for allowed_layer in exclude_extra_layers):
-            nodes_to_not_quantize.append(param.name)
+                nodes_to_not_quantize.append(param.name)
 
     # Does not work
     #quant_pre_process(onnx_model_path, f"pre_{onnx_model_quant_output}", save_as_external_data=True, all_tensors_to_one_file=True, external_data_location=f"pre_{onnx_model_quant_output}")
@@ -444,6 +464,11 @@ def check_extra_options(kv_pairs):
         for op_type in kv_pairs["exclude_extra_layers"].split("/"):
             op_types_to_quantize += (op_type, )
         kv_pairs["exclude_extra_layers"] = op_types_to_quantize
+    if "exclude_specific_layers" in kv_pairs:
+        op_types_to_quantize = ()
+        for op_type in kv_pairs["exclude_specific_layers"].split("/"):
+            op_types_to_quantize += (op_type, )
+        kv_pairs["exclude_specific_layers"] = op_types_to_quantize
 
 def parse_argument_list(targt):
     return targt.split('/')
@@ -547,7 +572,9 @@ def parse_arguments():
     default_extra_options = {
         "postprocess" : False,
         "opset" : 20,
-        "exclude_extra_layers": ["embed_tokens"]
+        "exclude_extra_layers": [],
+        "exclude_specific": False,
+        "exclude_specific_layers": []
     }
     
     config_dict = None
@@ -564,8 +591,9 @@ def parse_arguments():
             # Convert to the correct type
             if hasattr(args, key):
                 setattr(args, key, value)
-            elif hasattr(default_extra_options, key):
-                setattr(default_extra_options, key, value)
+        # Override any command-line argument with values from the config file
+        for key, value in config_dict["extra_options"].items():
+            default_extra_options[key] = value
     else:
         user_extra_options = parse_extra_options(args.extra_options)
     args.extra_options = {**default_extra_options, **user_extra_options}

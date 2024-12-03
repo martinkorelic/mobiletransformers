@@ -5,6 +5,11 @@ Utility functions for the framework.
 import os
 import shutil
 from jinja2 import Template
+import psutil
+import torch
+from transformers import TrainerCallback
+from transformers.trainer_callback import TrainerControl, TrainerState
+from transformers.training_args import TrainingArguments
 
 def create_chat_input(query_prompt, config, add_generation_prompt=True):
     
@@ -53,3 +58,40 @@ def delete_directory(directory_path):
             print(f"Error: {e}")
     else:
         print(f"Directory '{directory_path}' does not exist.")
+
+
+class MemoryLoggerCallback(TrainerCallback):
+    def __init__(self):
+        super().__init__()
+        self.pre_backward_memory = {}
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if torch.cuda.is_available():
+            # Log GPU memory usage
+            allocated = torch.cuda.memory_allocated() / 1024**2  # Convert to MB
+            reserved = torch.cuda.memory_reserved() / 1024**2  # Convert to MB
+            logs["gpu_memory_allocated_MB"] = allocated
+            logs["gpu_memory_reserved_MB"] = reserved
+
+            # Log memory usage before backward pass
+            if self.pre_backward_memory:
+                logs["gpu_memory_allocated_MB_pre_bp"] = self.pre_backward_memory["gpu_memory_allocated_MB_pre_bp"]
+        else:
+            # Log CPU memory usage using psutil
+            mem = psutil.virtual_memory()
+            logs["cpu_memory_used_MB"] = mem.used / 1024**2  # Convert to MB
+            # Log memory usage before backward pass
+            if self.pre_backward_memory:
+                logs["cpu_memory_used_MB_pre_bp"] = self.pre_backward_memory["cpu_memory_used_MB_pre_bp"]
+    
+    def on_optimizer_step(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        if torch.cuda.is_available():
+            # Log GPU memory usage
+            allocated = torch.cuda.memory_allocated() / 1024**2  # Convert to MB
+            #reserved = torch.cuda.memory_reserved() / 1024**2  # Convert to MB
+            self.pre_backward_memory["gpu_memory_allocated_MB_pre_bp"] = allocated
+            #self.pre_backward_memory["gpu_memory_reserved_MB_pre_bs"] = reserved
+        else:
+            # Log CPU memory usage using psutil
+            mem = psutil.virtual_memory()
+            self.pre_backward_memory["cpu_memory_used_MB_pre_bp"] = mem.used / 1024**2  # Convert to MB

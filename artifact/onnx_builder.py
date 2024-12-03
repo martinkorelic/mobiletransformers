@@ -537,6 +537,12 @@ def parse_arguments():
         help="Whether to generate training artifacts. Default is True."
     )
     parser.add_argument(
+        "--gen_inference_artifacts",
+        type=bool,
+        default=True,
+        help="Whether to generate inference artifacts. Default is True."
+    )
+    parser.add_argument(
         "--test_training",
         type=bool,
         default=True,
@@ -663,6 +669,7 @@ if __name__ == "__main__":
         inference_model_name=args.inference_model,
         inference_dir=args.inference_dir,
         build_dir=args.build_path,
+        gen_inference_artifacts=args.gen_inference_artifacts,
         gen_train_artifacts=args.gen_train_artifacts,
         test_training=args.test_training,
         test_eval=args.test_eval,
