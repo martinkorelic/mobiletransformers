@@ -105,7 +105,7 @@ def prepare_dataset(dataset : Dataset, dataset_id, tokenizer, max_dataset_length
     return dataset
 
 
-def train_loraxs(model_id, dataset_id, peft_method, lora_rank, lora_target, peft_config, max_dataset_length, batch_size):
+def train_pipeline(model_id, dataset_id, peft_method, lora_rank, lora_target, peft_config, max_dataset_length, batch_size):
 
     base_model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True, token=os.environ["HF_TOKEN"])
     tokenizer = AutoTokenizer.from_pretrained(model_id, token=os.environ["HF_TOKEN"])
@@ -143,8 +143,6 @@ def train_loraxs(model_id, dataset_id, peft_method, lora_rank, lora_target, peft
     
     base_model.enable_input_require_grads()
 
-    model = get_peft_model(base_model, lora_config)
-
     if peft_method == "lora-xs":
         adapter_name = "default"
         peft_config_dict = {}
@@ -181,6 +179,8 @@ def train_loraxs(model_id, dataset_id, peft_method, lora_rank, lora_target, peft
         peft_model.train()
         model = peft_model.model
         model.config.use_cache = False
+    elif peft_method == "lora":
+        model = get_peft_model(base_model, lora_config)
 
     # TODO: Reactivate some layers for fine-tuning (if needed)
     activate_trainable_layers(model, "")
@@ -272,7 +272,7 @@ def count_trainable_parameters(model: torch.nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 if __name__ == "__main__":
-    train_loraxs(
+    train_pipeline(
         model_id=MODEL_ID,
         dataset_id=DATASET_ID,
         peft_method=PEFT_METHOD,
