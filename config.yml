@@ -5,21 +5,21 @@ TRAIN_BUILDER:
 
   training_mode: true
   # lora, lora-xs
-  train_method: "lora-xs"
+  train_method: "mars"
 
   # LoRA target modules
   lora_target:
-    - "q_proj"
-    - "k_proj"
-    - "v_proj"
-    - "o_proj"
-    - "down_proj"
-    - "gate_proj"
-    - "up_proj"
-  lora_rank: 16
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - down_proj
+    - up_proj
+  lora_rank: 8
   quantize: true
   # Weight types for quantizing
-  weight_type: "QUInt8"
+  weight_type: "QInt8"
   extra_options:
     postprocess: false
     opset: 20
@@ -27,10 +27,13 @@ TRAIN_BUILDER:
     exclude_extra_layers:
       - embed_tokens
       - lm_head
-    # Quantize only specific node with keywords in exclude_specific_layers
-    exclude_specific: true
-    exclude_specific_layers:
+      - mixture
       - latent
+      - lora
+    # Quantize only specific node with keywords in exclude_specific_layers
+    exclude_specific: false
+    exclude_specific_layers:
+      - 
   
   # Training specific configurations
   peft_config:
@@ -40,6 +43,11 @@ TRAIN_BUILDER:
     config: config
   lora-xs:
     config: config
+  mars:
+    ranks:
+      - 64
+      - 32
+      - 16
 
 ###################### INFERENCE BUILDER CONFIGURATION ######################
 INFERENCE_BUILDER:
@@ -71,8 +79,8 @@ ARTIFACT_BUILDER:
   # This will join path with the INFERENCE_BUILDER.output/inference_model
   inference_model: "model.onnx"
 
-  gen_train_artifacts: true
-  gen_inference_artifacts: false
+  gen_train_artifacts: false
+  gen_inference_artifacts: true
 
   test_training: true
   test_eval: false
@@ -99,12 +107,13 @@ ARTIFACT_VALIDATOR:
   use_gen_config_file: false
 
   test_generation_config:  
-    prompt: "You are a location reasoning model based on Wi-Fi SSID names. User is near a Wi-Fi SSID named LidlWlan. Explain where the user is most likely and in what environment they might be in, give your reasoning. Focus on user activity based on this Wi-Fi SSID." # Prompt for test generation
+    prompt: "Please describe to me what a bird looks like. Please be precise and informative." # Prompt for test generation
     decode_between: true # Whether to decode the text while it's generating
-    max_length : 512 # Max length of test sequence to generate
+    max_length : 2 # Max length of test sequence to generate
     sampling: "top_k" # Sampling method
     temperature: 0.7 # Temperature for sampling
     top_k: 10 # Top K for sampling
     top_p: 0.9 # Top P for sampling
+    hf_tokenizer: False # Whether to use the HF tokenizer or local tokenizer files
 
   # TODO: Train validation

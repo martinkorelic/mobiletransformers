@@ -13,7 +13,9 @@ load_dotenv()
 from inference.generator import generate_tokens_onnx
 from tools.utils import create_chat_input
 from tools.parser_config import TRAIN_CONFIG, ARTIFACT_CONFIG, ARTIFACT_VALIDATOR_CONFIG
-from onnxruntime import InferenceSession
+
+import onnxruntime as rt
+from onnxruntime import InferenceSession, SessionOptions
 from transformers import AutoTokenizer, AutoConfig
 
 def validate_generation(model_id, model_name, model_dir, use_gen_config_file, test_generation, test_generation_config):
@@ -28,19 +30,32 @@ def validate_generation(model_id, model_name, model_dir, use_gen_config_file, te
             test_generation_config = json.load(infile)["search"]
     
     if test_generation:
-        
-        tokenizer_config = {}
-        # Load the tokenizer configuration from the JSON file
-        with open(tokenizer_config_path, 'r') as f:
-            tokenizer_config = json.load(f)
 
-        if "chat_template" in tokenizer_config:
-            test_generation_config["prompt"] = create_chat_input(test_generation_config["prompt"], tokenizer_config)
-            print("[INFO] Updated the prompt with chat template:")
-            print(test_generation_config["prompt"])
-        
-        session = InferenceSession(model_path, providers=['CPUExecutionProvider'])
         tokenizer = AutoTokenizer.from_pretrained(model_id, token=os.environ['HF_TOKEN'])
+        
+        if test_generation_config["hf_tokenizer"]:
+            if tokenizer.chat_template is not None:
+                messages = [
+                    {"role": "user", "content": test_generation_config["prompt"]}
+                ]
+                test_generation_config["prompt"] = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        else:
+            tokenizer_config = {}
+            # Load the tokenizer configuration from the JSON file
+            with open(tokenizer_config_path, 'r') as f:
+                tokenizer_config = json.load(f)
+
+            if "chat_template" in tokenizer_config:
+                test_generation_config["prompt"] = create_chat_input(test_generation_config["prompt"], tokenizer_config)
+                print("[INFO] Updated the prompt with chat template:")
+                print(test_generation_config["prompt"])
+
+        sess_options = SessionOptions()    
+        sess_options.enable_profiling = True
+    
+        session = InferenceSession(model_path, sess_options=sess_options, providers=['CPUExecutionProvider'])
+        
+        
         config = AutoConfig.from_pretrained(model_id, token=os.environ['HF_TOKEN'])
 
         input_names = [input_name.name for input_name in session.get_inputs()]
@@ -50,8 +65,8 @@ def validate_generation(model_id, model_name, model_dir, use_gen_config_file, te
                              config,
                              with_past=any("past_key" in inpn for inpn in input_names),
                              with_position_ids=("position_ids" in input_names),
+                             with_labels=any("labels" in inpn for inpn in input_names),
                              **test_generation_config)
-
 
 def parse_extra_options(extra_options: List[str]) -> Dict[str, str]:
     """
@@ -124,6 +139,7 @@ def parse_arguments():
             temperature = 0.7 : Temperature for sampling
             top_k = 10 : Top K for sampling
             top_p = 0.3 : Top P for sampling
+            hf_tokenizer = False : Whether to use HF tokenizer or tokenizer from local files
             """
             )
     )
@@ -134,9 +150,10 @@ def parse_arguments():
        "prompt": "Hello, this is a message for the world. How is your day?", # Prompt for test generation
         "decode_between": True, # Whether to decode the text while it's generating
         "max_length" : 100, # Max length of test sequence to generate
-        "sampling": "topk", # Sampling method
+        "sampling": "top_k", # Sampling method
         "temperature": 0.7, # Temperature for sampling
-        "top_k": 10, # Top K for sampling
+        "top_k": 10, # Top K for sampling,
+        "hf_tokenizer": False
     }
 
     config_dict = None

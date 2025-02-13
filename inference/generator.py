@@ -12,6 +12,7 @@ def generate_tokens_onnx(tokenizer,
                          with_past=False,
                          with_weight_input=False,
                          with_position_ids=True,
+                         with_labels=False,
                          prompt="Hello, how is your day?",
                          output_name="logits",
                          max_length=100,
@@ -25,6 +26,8 @@ def generate_tokens_onnx(tokenizer,
     Generates the tokens from the ONNX Inference sessions.
     Supports either greedy / top_k / top_p sampling methods.
     """
+
+    print(prompt)
 
     input_ids = tokenizer(prompt, return_attention_mask=True, return_tensors="np")
 
@@ -47,6 +50,9 @@ def generate_tokens_onnx(tokenizer,
 
         present_keys = [pkv.replace("past_key_values", "present") for pkv in past_key_values.keys()]
 
+    if with_labels:
+        labels = token_input_ids.copy()
+
     start_time = time.time()
     num_decode = 0
     for _ in range(max_length):
@@ -62,6 +68,8 @@ def generate_tokens_onnx(tokenizer,
             model_inputs.update(past_key_values)
         if with_weight_input:
             model_inputs.update(model_train_weights)
+        if with_labels:
+            model_inputs.update({"labels": labels})
 
         # Forward pass to get logits
         output = model.run([output_name] + (present_keys if with_past else []), model_inputs)
@@ -114,7 +122,15 @@ def generate_tokens_onnx(tokenizer,
 
         # Append the sampled token to the sequence
         generated_ids = np.concatenate([generated_ids, [[next_token_id]]], axis=1)
-        token_input_ids = np.array([[next_token_id]], dtype=np.int64)
+
+        if with_past:
+            # Handle only for the next token
+            token_input_ids = np.array([[next_token_id]], dtype=np.int64)
+            position_ids = np.array([[token_input_ids.shape[-1] - 1]], dtype=np.int64)
+        else:
+            # Handle for the full sequence
+            token_input_ids = np.concatenate([token_input_ids, np.array([[next_token_id]], dtype=np.int64)], axis=-1)
+            position_ids = np.arange(token_input_ids.shape[-1], dtype=np.int64).reshape(1, -1)
 
         if decode_between:
             decoded = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
@@ -122,10 +138,6 @@ def generate_tokens_onnx(tokenizer,
             print("-------------------------------------------------")
 
         num_decode += 1
-
-        # Update the position_ids (increment by 1 for the new token)
-        new_position_id = position_ids[0, -1] + 1
-        position_ids = np.array([[new_position_id]], dtype=np.int64)
         
         # Update the attention_mask (add 1 for the new token)
         new_ones = np.ones((attention_mask.shape[0], 1), dtype=np.int64)

@@ -21,7 +21,8 @@ from onnx import helper, TensorProto, numpy_helper
 from onnxruntime.training import onnxblock, artifacts
 from onnxruntime.training.api import CheckpointState, Module, Optimizer
 
-from onnxruntime import InferenceSession
+import onnxruntime as rt
+from onnxruntime import InferenceSession, SessionOptions
 from inference.generator import generate_tokens_onnx
 from tools.utils import move_files_excluding, delete_directory
 from tools.parser_config import ARTIFACT_CONFIG, TRAIN_CONFIG, INFERENCE_CONFIG
@@ -94,7 +95,16 @@ def onnx_checktrain(model_dir,
     
     state = CheckpointState.load_checkpoint(f"{model_dir}/checkpoint")
 
-    model = Module(f"{model_dir}/training_model.onnx", state, f"{model_dir}/eval_model.onnx")
+    sess_options = SessionOptions()    
+    sess_options.enable_profiling = True
+    sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    sess_options.execution_mode = rt.ExecutionMode.ORT_PARALLEL
+    sess_options.intra_op_num_threads = 4
+    sess_options.inter_op_num_threads = 4
+    sess_options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    sess_options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+
+    model = Module(f"{model_dir}/training_model.onnx", state, f"{model_dir}/eval_model.onnx", session_options=sess_options)
     optimizer = Optimizer(f"{model_dir}/optimizer_model.onnx", model)
 
     tokenizer = AutoTokenizer.from_pretrained(model_id, token=os.environ['HF_TOKEN'])

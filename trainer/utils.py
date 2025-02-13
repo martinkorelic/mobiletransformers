@@ -46,25 +46,18 @@ def process_sample_commonsense(samples, tokenizer, batched=True):
 
     def generate_prompt(data_point):
 
-        if data_point["input"]:
-            return f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request. 
-
-                    ### Instruction:
-                    {data_point["instruction"]}
-
-                    ### Input:
-                    {data_point["input"]}
-
-                    ### Response:
-                    {data_point["output"]}"""
+        if tokenizer.chat_template is not None:
+            messages = [
+                    {"role": "user", "content": data_point["instruction"]},
+                    {"role": "assistant", "content": data_point["output"]}
+            ]
+            return tokenizer.apply_chat_template(messages, add_generation_prompt=False, tokenize=False)
         else:
-            return f"""Below is an instruction that describes a task. Write a response that appropriately completes the request.  
-
-                    ### Instruction:
+            return f"""
                     {data_point["instruction"]}
-
-                    ### Response:
-                    {data_point["output"]}"""
+                    \n\n
+                    {data_point["output"]}
+                    """
     
     if batched:
         text = [
