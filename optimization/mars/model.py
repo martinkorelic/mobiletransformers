@@ -1,12 +1,19 @@
+import os
 import warnings
 from peft.config import PeftConfig
 from peft.tuners.tuners_utils import BaseTuner, BaseTunerLayer, check_target_module_exists
 import torch
 from torch.nn.modules import Module
+from safetensors.torch import save_file
+from research.experiments import generate_complementary_matrices
 
 # TODO: Separate base tuners
 #from .layer import Linear, MarsLayer
-from .layerv2 import Linear, MarsLayer
+#from .layerv2 import Linear, MarsLayer
+#from .layerv3 import Linear, MarsLayer
+#from .layerv4 import Linear, MarsLayer
+#from .layerv5 import Linear, MarsLayer
+from .layerv6 import Linear, MarsLayer
 from .utils import TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING
 
 class MarsModel(BaseTuner):
@@ -15,12 +22,16 @@ class MarsModel(BaseTuner):
 
     def __init__(self, model, peft_config: PeftConfig | dict[str, PeftConfig], adapter_name: str = "mars", low_cpu_mem_usage: bool = False) -> None:
         
-        # TODO: Add general configuration from peft_config
-        cumulative_ranks = torch.cumsum(torch.tensor([0] + peft_config.ranks), dim=0)
-        model.register_buffer("cumulative_ranks", cumulative_ranks)
+        super().__init__(model, peft_config, adapter_name, low_cpu_mem_usage)        
 
-        super().__init__(model, peft_config, adapter_name, low_cpu_mem_usage)
+    def _pre_injection_hook(self, model: Module, config: PeftConfig, adapter_name: str) -> None:
+        self.shared_weights = torch.nn.ModuleDict({})
+        
+        self.gen1 = torch.Generator()
+        self.gen1.manual_seed(config.seed)
 
+        self.gen2 = torch.Generator()
+        self.gen2.manual_seed(config.seed + 1)
 
     def _create_and_replace(self, mars_config, adapter_name: str, target, target_name: str, parent, current_key: str, **kwargs) -> None:
 
@@ -35,16 +46,46 @@ class MarsModel(BaseTuner):
             target.update_layer(
                 target,
                 adapter_name,
-                mars_config.rank,
-                mars_config.lora_alphas,
-                self.model.cumulative_ranks,
+                mars_config.r,
+                mars_config.subspace,
+                mars_config.mixture
             )
+
+            if mars_config.share_weights:
+                target = self._shared_and_store_weights(target, mars_config)
+
         else:
-            new_module = self._create_new_module(mars_config, adapter_name, target, mars_config.ranks, mars_config.lora_alphas, self.model.cumulative_ranks, **kwargs)
+            new_module = self._create_new_module(mars_config, adapter_name, target, mars_config.r, mars_config.subspace, mars_config.mixture, **kwargs)
+
+            if mars_config.share_weights:
+                new_module = self._shared_and_store_weights(new_module, mars_config)
+
             if adapter_name not in self.active_adapter:
                 new_module.requires_grad_(False)
+
             self._replace_module(parent, target_name, new_module, target)
 
+
+    def _shared_and_store_weights(self, new_module, mars_config):
+        # Ensure weight sharing in new_module.down_project
+        down_project_shape = f"{new_module.in_features}x{mars_config.r}"  # Use a string key for ParameterDict
+
+        if down_project_shape in self.shared_weights:
+            # Reuse existing shared weights
+            new_module.down_project[self.active_adapter] = self.shared_weights[down_project_shape]
+        else:
+            # Generate new shared weights
+            A1, A2 = generate_complementary_matrices(m=new_module.in_features, n=mars_config.subspace[0], gen1=self.gen1, gen2=self.gen2)
+
+            A = A1 if mars_config.subspace[1] == 0 else A2[:, :mars_config.r]
+
+            self.shared_weights[down_project_shape] = torch.nn.Linear(new_module.in_features, mars_config.r, bias=False)
+            self.shared_weights[down_project_shape].weight.data = A.T.contiguous()
+            self.shared_weights[down_project_shape].weight.requires_grad = False
+
+            new_module.down_project[self.active_adapter] = self.shared_weights[down_project_shape]
+
+        return new_module
 
     @staticmethod
     def _replace_module(parent, child_name, new_module, child):
@@ -76,7 +117,7 @@ class MarsModel(BaseTuner):
                     module.to(child.weight.device)
 
     @staticmethod
-    def _create_new_module(mars_config, adapter_name, target, ranks, lora_alphas, cumulative_ranks, **kwargs):
+    def _create_new_module(mars_config, adapter_name, target, rank, subspace, mixture, **kwargs):
         if isinstance(target, BaseTunerLayer):
             target_base_layer = target.get_base_layer()
         else:
@@ -94,12 +135,13 @@ class MarsModel(BaseTuner):
                 f"Target module {target} is not supported. Currently, only the following modules are supported: "
                 "`torch.nn.Linear`"
             )
+        
         new_module = Linear(
             base_layer=target,
             adapter_name=adapter_name,
-            ranks=ranks,
-            lora_alphas=lora_alphas,
-            cumulative_ranks=cumulative_ranks,
+            r=rank,
+            subspace=subspace,
+            mixture=mixture,
             fan_in_fan_out=mars_config.fan_in_fan_out,
             **kwargs
         )
@@ -121,8 +163,7 @@ class MarsModel(BaseTuner):
         return peft_config
     
     def _mark_only_adapters_as_trainable(self, model: torch.nn.Module) -> None:
-
-        trainable_keys = ["subspace", "mixture"]
+        
         for n, p in model.named_parameters():
             if self.prefix not in n:
                 p.requires_grad = False
@@ -172,3 +213,39 @@ class MarsModel(BaseTuner):
                     module.unmerge()
                 module.set_adapter(adapter_name)
         self.active_adapter = adapter_name
+    
+    def save_pretrained(self, save_directory: str, safe_serialization: bool = True) -> None:
+        """
+        Saves the trainable adapter weights of the MarsModel in safetensors format.
+
+        Args:
+            save_directory (str): Directory where the adapter model and configuration files will be saved.
+            safe_serialization (bool, optional): Whether to save in safetensors format. Defaults to True.
+        """
+        if os.path.isfile(save_directory):
+            raise ValueError(f"Provided path ({save_directory}) should be a directory, not a file")
+
+        os.makedirs(save_directory, exist_ok=True)
+
+        # Collect trainable adapter weights
+        adapter_weights = {
+            name: param.clone().detach().cpu()
+            for name, param in self.model.named_parameters()
+            if self.prefix in name
+        }
+
+        if not adapter_weights:
+            warnings.warn("No trainable Mars adapters found. Nothing to save.")
+
+        # Save weights
+        file_path = os.path.join(save_directory, "adapter_model.safetensors")
+        if safe_serialization:
+            save_file(adapter_weights, file_path, metadata={"format": "pt"})
+        else:
+            torch.save(adapter_weights, file_path.replace(".safetensors", ".pt"))
+
+        # Save adapter configuration
+        for adapter_name, config in self.peft_config.items():
+            config.save_pretrained(save_directory)
+
+        print(f"Mars adapters saved to {save_directory}")

@@ -96,78 +96,76 @@ def tt_tensor_elements(tt_cores):
         total_elements += core.numel()
     return total_elements
 
-#self.og_shape = base_layer.weight.shape
-#ranks = [self.og_shape[1], 256, 128, 64, 1]
-#og_el = base_layer.weight.numel()
 
-#bl = reshape_to_higher_order(base_layer.weight, target_order=4)
+def sequential_svd(matrix, ranks, steps):
+    """
+    Perform sequential SVD decomposition on a given matrix with rank truncation at each step.
+    Afterward, reconstruct the matrix and calculate the error accuracy drop-off.
+    
+    Args:
+        matrix (np.ndarray): The input matrix to decompose.
+        ranks (list[int]): A list of ranks to truncate to at each step.
+        steps (int): The number of SVD steps to perform.
+    
+    Returns:
+        float: The reconstruction error as a fraction of the original matrix norm.
+    """
+    assert len(ranks) == steps, "Number of ranks must match the number of steps."
+    original_matrix = matrix.clone()
+    intermediates = []  # Store intermediate results
+    
+    for step in range(steps):
+        # Perform SVD decomposition
+        U, Sigma, Vt = torch.linalg.svd(matrix, full_matrices=False)
+        
+        # Truncate based on the rank for this step
+        rank = ranks[step]
+        U_truncated = U[:, :rank]
+        Sigma_truncated = torch.diag(Sigma[:rank]) 
 
-#tensor_train_cores = tensor_train_decomposition(bl, ranks)
-#print(tensor_train_cores)
-#tt_el = tt_tensor_elements(tensor_train_cores)
 
-#print("OG elements:")
-#print(og_el)
-#print("TT elements:")
-#print(tt_el)
-#print(og_el / tt_el)
+        print(Sigma_truncated)
+        Vt_truncated = Vt[:rank, :]
 
-#torch.reshape(tensor_train_contract(tensor_train_cores), shape=og_shape)
-#self.tt_cores = nn.ParameterList([nn.Parameter(core, requires_grad=False) for core in tensor_train_cores])
-# Step 2: Contract the tensor train back to get the approximated matrix
-#base_layer.weight = nn.Parameter(, requires_grad=False)
+        # Store the truncated components
+        intermediates.append(U_truncated)
+        
+        # Multiply Sigma and Vt to create the next matrix for SVD
+        matrix = Sigma_truncated @ Vt_truncated
+        #intermediates.append(matrix[:rank, :rank])
 
-"""
-# Normalize input to stabilize projections
-x_normalized = F.layer_norm(x, normalized_shape=(x.shape[-1],))
+    intermediates.append(matrix)
+    
+    # Reconstruct the final matrix from all truncated components
+    reconstructed_matrix = intermediates[0]
+    for m in intermediates[1:]:
+        reconstructed_matrix = reconstructed_matrix @ m
+    
+    # Compute reconstruction error
+    error = torch.linalg.norm(original_matrix - reconstructed_matrix)
+    original_norm = torch.linalg.norm(original_matrix)
+    reconstruction_error = error / original_norm  # Fraction of the original norm
+    
+    return reconstruction_error
 
-# Collect hidden states from different subspaces
-hidden_states = []
-prev_state = torch.zeros(*x.shape[:-1], 
-                    self.latent_spaces[active_adapter]["subspace_0"].shape[0], 
-                    device=x.device)
+# Example usage:
+if __name__ == "__main__":
+    # Generate a random large matrix
+    torch.manual_seed(42)
+    matrix = torch.rand(1024, 1024)
+    # Define ranks for each step and number of steps
+    #ranks = [1, 32, 32, 1]  # Ranks at each step
+    
+    #tt_c = tensor_train_decomposition(weight_matrix=matrix, ranks=ranks)
+    #tt_d = tensor_train_contract(tt_c)
+    #error = torch.linalg.norm(matrix - tt_d)
+    #original_norm = torch.linalg.norm(matrix)
+    #reconstruction_error = error / original_norm  # Fraction of the original norm
+    #print(f"Reconstruction error (TT): {reconstruction_error:.6f}")
+    # Perform sequential SVD and get reconstruction error
 
-for ns in range(self.num_subspaces):
-rank = self.latent_spaces[active_adapter][f"subspace_{ns}"].shape[0]
-
-# Stable projection
-projected_state = self._stable_projection(
-    x_normalized, 
-    self.U[active_adapter], 
-    self.Sigma[active_adapter], 
-    rank, 
-    x.device
-)
-
-# Inter-subspace mixing with controlled projection
-if ns > 0:
-    mixture_proj = self.mixture_projects[active_adapter][f"mixture_{ns-1}"] * 0.1
-    prev_state = F.linear(prev_state, mixture_proj)
-
-# Combine previous state and current projection
-combined_state = prev_state + projected_state
-
-# Project to current subspace
-subspace_proj = self.latent_spaces[active_adapter][f"subspace_{ns}"]
-hidden_state = combined_state @ subspace_proj
-
-hidden_states.append(hidden_state)
-prev_state = combined_state
-
-# Adaptive scaling of subspace contributions
-scaled_hidden_states = self._adaptive_subspace_scaling(hidden_states)
-
-# Final summation with controlled scaling
-hidden_state_sum = torch.zeros_like(result, device=x.device)
-for hs, V in zip(scaled_hidden_states, 
-            [self.Vt[active_adapter][:rank, :] for rank in 
-            [self.latent_spaces[active_adapter][f"subspace_{ns}"].shape[0] 
-            for ns in range(self.num_subspaces)]]):
-# Soft-clamped final projection
-projected = torch.clamp(hs @ V, min=-2.0, max=2.0)
-hidden_state_sum += projected
-
-# Final addition with small scaling
-result = result + hidden_state_sum
-
-"""
+    ranks = [128]
+    steps = len(ranks)
+ 
+    error = sequential_svd(matrix, ranks, steps=steps)
+    print(f"Reconstruction error (SVD): {error:.6f}")

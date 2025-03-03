@@ -28,8 +28,11 @@ from optimization.lora_xs.initialization_utils import find_and_initialize
 from onnxruntime.transformers.fusion_layernorm import FusionLayerNormalization
 
 from dotenv import load_dotenv
+
+from optimization.mars.model import MarsModel
 load_dotenv()
 
+from optimization.mars.config import MarsConfig
 from tools.parser_config import TRAIN_CONFIG
 
 def get_layers_with_grad(model):
@@ -320,7 +323,7 @@ def optimum_hf_export(model_id,
 
     if training_mode and train_method == "lora":
         # Apply LoRA to the model
-        lora_model = PeftModel(model, lora_config)
+        lora_model = PeftModel(model, lora_config, adapter_name="lora")
     elif training_mode and train_method == "lora-xs":
         # TODO: Add specific PEFT config
         lora_model = get_peft_model(model, lora_config)
@@ -340,6 +343,17 @@ def optimum_hf_export(model_id,
         }
         peft_config_dict[adapter_name] = lora_config
         find_and_initialize(model, peft_config_dict, adapter_name, "svd", reconstruct_dict, None)
+    elif training_mode and train_method == "mars":
+        mars_config = MarsConfig(
+            peft_type="MARS",
+            # TODO: Hardcoded
+            ranks=[64, 32, 16],
+            lora_alphas=[1],  # Scaling factor
+            target_modules=lora_target,  # Target specific model layers
+            task_type="CAUSAL_LM"
+        )
+
+        lora_model = MarsModel(model, mars_config).model
     elif not training_mode or train_method == "nolora":
         lora_model = model
 
@@ -378,7 +392,7 @@ def optimum_hf_export(model_id,
         lora_target = [] if not training_mode else lora_target
         onnx_dynamic_quantization(onnx_path.absolute().as_posix(),
                                   f"{model_output}/quant_model.onnx",
-                                  exclude_weights=lora_target,
+                                  #exclude_weights=lora_target,
                                   weight_type=weight_type,
                                   exclude_extra_layers=exclude_extra_layers,
                                   exclude_specific=exclude_specific,
@@ -392,7 +406,7 @@ def onnx_matmul_quantization(onnx_model_path, onnx_model_quant_output, block_siz
 
     # Exclude trainable nodes
     for param in onnx_model.graph.node:
-        if any((allowed_layer in param.name and param.name.endswith("Transpose")) for allowed_layer in exclude_weights):
+        if any((allowed_layer in param.name for allowed_layer in exclude_weights)):
             nodes_to_not_quantize.append(param.name)
         if any(allowed_layer in param.name for allowed_layer in exclude_extra_layers):
             nodes_to_not_quantize.append(param.name)
@@ -426,14 +440,18 @@ def onnx_dynamic_quantization(onnx_model_path,
     for param in onnx_model.graph.node:
 
         if not exclude_specific:
-            if any((allowed_layer in param.name and param.name.endswith("Transpose")) for allowed_layer in exclude_weights):
+            if any((allowed_layer in param.name) for allowed_layer in exclude_weights):
                 nodes_to_not_quantize.append(param.name)
         else:
-            if any((allowed_layer in param.name and param.name.endswith("Transpose")) for allowed_layer in exclude_specific_layers):
+            if any((allowed_layer in param.name) for allowed_layer in exclude_specific_layers):
                 nodes_to_not_quantize.append(param.name)
-        
+
         if any(allowed_layer in param.name for allowed_layer in exclude_extra_layers):
+            nodes_to_not_quantize.append(param.name)
+        for input_weight in param.input:
+            if any(allowed_layer in input_weight for allowed_layer in exclude_extra_layers):
                 nodes_to_not_quantize.append(param.name)
+                break
 
     # Does not work
     #quant_pre_process(onnx_model_path, f"pre_{onnx_model_quant_output}", save_as_external_data=True, all_tensors_to_one_file=True, external_data_location=f"pre_{onnx_model_quant_output}")
@@ -594,6 +612,7 @@ def parse_arguments():
         # Override any command-line argument with values from the config file
         for key, value in config_dict["extra_options"].items():
             default_extra_options[key] = value
+        setattr(args, "weight_type", QuantType[config_dict["weight_type"]])
     else:
         user_extra_options = parse_extra_options(args.extra_options)
     args.extra_options = {**default_extra_options, **user_extra_options}

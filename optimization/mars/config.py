@@ -7,7 +7,7 @@ from peft.config import PeftConfig
 from peft.utils import PeftType
 
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 
 @dataclass
 class MarsConfig(PeftConfig):
@@ -27,32 +27,29 @@ class MarsConfig(PeftConfig):
             `nn.ModuleList` of the model, which is often called `'layers'` or `'h'`.
     """
 
-    ranks: Optional[Union[list[int]]] = field(
-        default_factory=[64, 32],
-        metadata={
-            "help": (
-                "List of ranks to create the adapter rank latent subspaces. Mixture matrices will be computed from these ranks."
-            )
-        },
-    )
-    lora_alphas: Optional[Union[list[int]]] = field(
-        default_factory=[1, 1],
-        metadata={
-            "help": (
-                "List of alphas for each of these latent subspace outputs, matches the index for each of the ranks in `ranks`."
-            )
-        },
-    )
+    r: int = field(default=8, metadata={"help": "Lora attention dimension"}),
+    subspace: Tuple[int, int] = field(default=(8, 0), metadata={"help": "Lora attention dimension. First element original rank space, second element the subspace to take."}),
     target_modules: Optional[Union[list[str], str]] = field(
         default=None,
         metadata={
             "help": (
-                "List of module names or regex expression of the module names to replace with Vera."
-                "For example, ['q', 'v'] or '.*decoder.*(SelfAttention|EncDecAttention).*(q|v)$'. "
-                "Only linear layers are supported."
-            )
+                "List of module names or regex expression of the module names to replace with LoRA."
+                "For example, ['q', 'v'] or '.*decoder.*(SelfAttention|EncDecAttention).*(q|v)$'."
+                "This can also be a wildcard 'all-linear' which matches all linear/Conv1D layers except the output layer."
+                "If not specified, modules will be chosen according to the model architecture, If the architecture is "
+                "not known, an error will be raised -- in this case, you should specify the target modules manually."
+            ),
         },
+    ),
+    mixture: bool = field(
+        default=False,
+        metadata={"help": "Set this to True if the adapter layer should include a mixture layer."},
     )
+    share_weights: bool = field(
+        default=True,
+        metadata={"help": "Set this to True if the adapter layers should share frozen weights."},
+    )
+    seed: int = field(default=42, metadata={"help": "Seed for initializing layers."})
     bias: str = field(default="none", metadata={"help": "Bias type for Mars. Can be 'none', 'all' or 'mars_only'"})
     fan_in_fan_out: bool = field(
         default=False,

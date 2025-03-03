@@ -28,9 +28,9 @@ class MarsLayer(BaseTunerLayer):
         # TODO: Move some parameters to register buffers (could be inferred from cumulative_ranks?)
         self.sum_rank = sum(ranks)
 
-        self.down_project[adapter_name] = nn.Parameter(U[:, :self.io_rank] @ torch.diag(S[:self.io_rank]), requires_grad=False)
+        self.down_project[adapter_name] = nn.Parameter((U[:, :self.io_rank] @ torch.diag(S[:self.io_rank])).T, requires_grad=False)
 
-        self.up_project[adapter_name] = nn.Parameter(Vt[:self.io_rank, :], requires_grad=False)
+        self.up_project[adapter_name] = nn.Parameter(Vt[:self.io_rank, :].T, requires_grad=False)
 
         self.latent_up_proj[adapter_name] = nn.Parameter(torch.nn.init.normal_(torch.empty((self.io_rank * len(ranks), self.sum_rank)), mean=0, std=0.00001))
         self.latent_down_proj[adapter_name] = nn.Parameter(torch.nn.init.normal_(torch.empty((self.sum_rank, self.io_rank * len(ranks))), mean=0, std=0.00001))
@@ -90,25 +90,29 @@ class Linear(nn.Module, MarsLayer):
         else:
             
             result = self.base_layer(x, *args, **kwargs)
-
             
             for active_adapter in self.active_adapters:
                 if active_adapter not in self.latent_up_proj.keys():
                     continue
                 
-                down_projection = x @ self.down_project[active_adapter]
+                down_projection = x @ self.down_project[active_adapter].T
 
-                down_proj_in = torch.tile(down_projection, (1, 1, self.num_subspaces))
+                batch_size, seq_len, hidden_dim = down_projection.shape
+                new_hidden_dim = hidden_dim * self.num_subspaces
+
+                #down_proj_in = torch.tile(down_projection, (1, 1, self.num_subspaces))
+                down_proj_in = (
+                    down_projection.unsqueeze(-1)
+                    .expand(batch_size, seq_len, hidden_dim, self.num_subspaces)
+                    .reshape(batch_size, seq_len, new_hidden_dim)
+                )
 
                 proj_in = down_proj_in @ self.latent_up_proj[active_adapter]
 
                 # Second project out because we canot modify gradient in place
                 proj_out = torch.clone(proj_in)
 
-                #print(self.model.base_layer.cumulative_rank)
-                #print(self.model.buffers())
-
-                # Step 3: Iteratively update proj in place
+                # Step 3: Iteratively update proj
                 for ns in range(self.num_subspaces - 1):
                     start_idx = self.cumulative_ranks[ns]
                     end_idx = self.cumulative_ranks[ns + 1]
@@ -125,7 +129,12 @@ class Linear(nn.Module, MarsLayer):
 
                 out_projection = proj_out @ self.latent_down_proj[active_adapter]
 
-                up_proj_out = torch.tile(self.up_project[active_adapter], (self.num_subspaces, 1))
+                #up_proj_out = torch.tile(self.up_project[active_adapter], (self.num_subspaces, 1))
+
+                # Expand self.up_project[active_adapter] along the first dimension to match the required size
+                up_proj_out = self.up_project[active_adapter].T.expand(self.num_subspaces, -1, -1)
+
+                up_proj_out = up_proj_out.reshape(-1, self.up_project[active_adapter].T.shape[-1])
 
                 # TODO: LoRA Alpha
                 result += out_projection @ up_proj_out
