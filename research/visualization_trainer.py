@@ -17,7 +17,7 @@ from transformers.trainer_callback import TrainerControl, TrainerState
 from transformers.training_args import TrainingArguments
 
 class MemoryUsageCallback(TrainerCallback):
-    """Logs GPU and CPU memory usage during training."""
+    """Logs GPU, CPU, and PyTorch-allocated CPU memory usage during training."""
     def __init__(self):
         super().__init__()
         self.gpu_mem_before_fwd = 0
@@ -27,10 +27,13 @@ class MemoryUsageCallback(TrainerCallback):
         self.gpu_peak_mem_bwd = 0
         self.cpu_mem_after_bwd = 0
         self.cpu_mem_after_fwd = 0
-        self.cpu_mem_before = 0
+        self.cpu_mem_before_fwd = 0
+        self.torch_cpu_mem_before = 0
+        self.torch_cpu_mem_after_fwd = 0
+        self.torch_cpu_mem_after_bwd = 0
 
     def _get_memory_usage(self):
-        """Helper function to get GPU & CPU memory usage."""
+        """Helper function to get GPU, CPU, and PyTorch-allocated CPU memory usage."""
         gpu_mem, gpu_peak_mem = (0.0, 0.0)
         if torch.cuda.is_available():
             torch.cuda.synchronize()  # Ensure accurate measurements
@@ -47,17 +50,27 @@ class MemoryUsageCallback(TrainerCallback):
 
     def on_backward_begin(self, args, state, control, **kwargs):
         """Capture memory just before backward pass (when activations are present)."""
-        self.gpu_mem_after_fwd, self.gpu_peak_mem_fwd, self.cpu_mem_after_fwd = self._get_memory_usage()
+        self.gpu_mem_after_fwd, self.gpu_peak_mem_fwd, self.cpu_mem_after_fwd, self.torch_cpu_mem_after_fwd = self._get_memory_usage()
 
     def on_backward_end(self, args, state, control, **kwargs):
         """Capture memory after backward pass."""
-        self.gpu_mem_after_bwd, self.gpu_peak_mem_bwd, self.cpu_mem_after_bwd = self._get_memory_usage()
+        self.gpu_mem_after_bwd, self.gpu_peak_mem_bwd, self.cpu_mem_after_bwd, self.torch_cpu_mem_after_bwd = self._get_memory_usage()
 
     def on_log(self, args, state, control, **kwargs):
         """Logs memory usage at the end of each step."""
-        print(f"\n[Memory Usage] Model training memory  | GPU: {self.gpu_mem_before_fwd:.2f} GB, CPU: {self.cpu_mem_before_fwd:.2f} GB")
+        print(f"\n[Memory Usage] Model training memory:")
+        print(f"  GPU: {self.gpu_mem_before_fwd:.2f} GB -> {self.gpu_mem_after_bwd:.2f} GB (Peak: {self.gpu_peak_mem_bwd:.2f} GB)")
+        print(f"  CPU: {self.cpu_mem_before_fwd:.2f} GB -> {self.cpu_mem_after_bwd:.2f} GB")
+        #print(f"  PyTorch CPU Allocated: {self.torch_cpu_mem_before:.2f} GB -> {self.torch_cpu_mem_after_bwd:.2f} GB")
         #print(f"  - After Forward   | GPU: {self.gpu_mem_after_fwd:.2f} GB (Peak: {self.gpu_peak_mem_fwd:.2f} GB), CPU: {self.cpu_mem_after_fwd:.2f} GB")
         #print(f"  - After Backward  | GPU: {self.gpu_mem_after_bwd:.2f} GB (Peak: {self.gpu_peak_mem_bwd:.2f} GB), CPU: {self.cpu_mem_after_bwd:.2f} GB\n")
+
+class ProfCallback(TrainerCallback):
+    def __init__(self, prof):
+        self.prof = prof
+
+    def on_step_end(self, args, state, control, **kwargs):
+        self.prof.step()
 
 class LogStepTimerCallback(TrainerCallback):
     def __init__(self):

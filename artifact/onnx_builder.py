@@ -96,7 +96,7 @@ def onnx_checktrain(model_dir,
     state = CheckpointState.load_checkpoint(f"{model_dir}/checkpoint")
 
     sess_options = SessionOptions()    
-    sess_options.enable_profiling = True
+    sess_options.enable_profiling = False
     sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
     sess_options.execution_mode = rt.ExecutionMode.ORT_PARALLEL
     sess_options.intra_op_num_threads = 4

@@ -9,9 +9,42 @@ from onnxruntime.training.api import CheckpointState, Module, Optimizer, LinearL
 import onnxruntime as rt
 from onnxruntime import InferenceSession, SessionOptions
 from datasets import load_dataset, Dataset, DatasetDict
-from trainer.utils import process_sample_commonsense, process_sample_dolly
+
+from collections import defaultdict
 
 from torch.utils.data import DataLoader
+
+def process_sample_commonsense(samples, tokenizer, batched=True):
+
+    def generate_prompt(data_point):
+
+        if tokenizer.chat_template is not None:
+            messages = [
+                    {"role": "user", "content": data_point["instruction"]},
+                    {"role": "assistant", "content": data_point["output"]}
+            ]
+            return tokenizer.apply_chat_template(messages, add_generation_prompt=False, tokenize=False)
+        else:
+            return f"""
+                    {data_point["instruction"]}
+                    \n\n
+                    {data_point["output"]}
+                    """
+    
+    if batched:
+        text = [
+            generate_prompt({
+                "instruction": samples["instruction"][i],
+                "input": samples["input"][i],
+                "output": samples["output"][i]
+            })
+            for i in range(len(list(samples.values())[0]))
+        ]
+    else:
+        text = generate_prompt(samples)
+    
+    tk = tokenizer(text, return_tensors="pt", padding=True)
+    return tk
 
 def preload_dataset(dataset_id):
 
@@ -209,10 +242,11 @@ class ORTTrainer:
         # TODO: Customize
         sess_options = SessionOptions()
         sess_options.enable_profiling = False
-        sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
-        sess_options.execution_mode = rt.ExecutionMode.ORT_PARALLEL
+        sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_options.execution_mode = rt.ExecutionMode.ORT_SEQUENTIAL#ORT_PARALLEL
         sess_options.intra_op_num_threads = 4
         sess_options.inter_op_num_threads = 4
+        sess_options.enable_cpu_mem_arena = False
         sess_options.add_session_config_entry("session.intra_op.allow_spinning", "0")
         sess_options.add_session_config_entry("session.inter_op.allow_spinning", "0")
 
@@ -259,6 +293,7 @@ class ORTTrainer:
         pbar = tqdm(total=total_steps, desc="ONNX Runtime Training")
         
         accumulated_loss = 0.0
+        start_time = time.time()
 
         while global_step < total_steps:
             for batch in dataloader:
@@ -304,6 +339,15 @@ class ORTTrainer:
 
         pbar.close()
 
+        # End time tracking
+        end_time = time.time()
+        total_runtime = end_time - start_time
+        steps_per_second = global_step / total_runtime if total_runtime > 0 else 0
+
+        # Print training performance
+        print(f"\n[INFO] Total training time: {total_runtime:.4f} seconds")
+        print(f"[INFO] Training steps per second: {steps_per_second:.4f}")
+
 
         if self.args.export_inference:
 
@@ -329,9 +373,114 @@ class ORTTrainer:
     def save_checkpoint(self):
         CheckpointState.save_checkpoint(self.state, f"{self.training_model_dir}/checkpoint")
 
+def check_duplicate_initializers(onnx_model_path):
+    """
+    Loads an ONNX model and checks if there are duplicate initializers
+    (same name, shape, and values).
+    """
+    model = onnx.load(onnx_model_path)
 
+    # Check for duplicate names
+    name_counts = defaultdict(int)
+    for initializer in model.graph.initializer:
+        name_counts[initializer.name] += 1
+        if "down_project" in initializer.name:
+            print(initializer.name)
+            print(initializer.dims)
+
+    duplicate_names = [name for name, count in name_counts.items() if count > 1]
+    if duplicate_names:
+        print(f"[WARNING] Duplicate initializer names found: {duplicate_names}")
+    
+    # Check for duplicate initializers with same shape and values
+    initializer_dict = defaultdict(list)
+    for initializer in model.graph.initializer:
+        shape = tuple(initializer.dims)
+        values = onnx.numpy_helper.to_array(initializer)
+        
+        # Convert values to bytes for efficient comparison
+        values_bytes = values.tobytes()
+        
+        initializer_dict[(shape, values_bytes)].append(initializer.name)
+
+    duplicate_initializers = {key: names for key, names in initializer_dict.items() if len(names) > 1}
+
+    if duplicate_initializers:
+        print("[WARNING] Duplicate initializers found with identical shape and values:")
+        for (shape, _), names in duplicate_initializers.items():
+            print(f" - Shape: {shape}, Names: {names}")
+    else:
+        print("[INFO] No duplicate initializers with the same shape and values found.")
+
+def optimize_function(onnx_model_path, output_path="quant_model.onnx"):
+    """
+    Finds MatMul nodes that take the output of redundant Transpose operations as input,
+    and remaps them to use the output of the first Transpose operation.
+    """
+    model = onnx.load(onnx_model_path)
+    graph = model.graph
+
+    # Step 1: Find all initializers that contain "down_project"
+    down_project_initializers = {}  # A dictionary to store initializers with their corresponding Transpose nodes
+    for initializer in graph.initializer:
+        if "down_project" in initializer.name:
+            down_project_initializers[initializer.name] = []
+
+    print(f"[INFO] Found {len(down_project_initializers)} unique down_project initializers.")
+
+    nodes_to_remove = []
+    # Step 2: Identify the Transpose nodes that correspond to each down_project initializer
+    for node in graph.node:
+        if node.op_type == "Transpose" and node.input[0] in down_project_initializers:
+            initializer_name = node.input[0]
+            down_project_initializers[initializer_name].append(node.output[0])
+            if len(down_project_initializers[initializer_name]) > 1:
+                nodes_to_remove.append(node)
+                print(node.name)
+
+    # Step 4: Iterate through MatMul nodes and remap the inputs that use redundant Transpose outputs
+    matmul_nodes = 0
+
+    primary_transposes = set()
+
+    for initializer_name, transpose_outputs in down_project_initializers.items():
+        primary_transpose_output = transpose_outputs[0]
+        for node in graph.node:
+            if node.op_type == "MatMul":
+                for i, inp in enumerate(node.input):
+                    # Check if the input is one of the redundant transpose outputs
+                    if inp in transpose_outputs and inp != primary_transpose_output:
+                        print(f"[INFO] Remapping MatMul node: {node.name}")
+                        print(f" - Old Input: {inp}")
+                        # Update the input to use the primary transposed weight
+                        node.input[i] = primary_transpose_output
+                        matmul_nodes += 1
+        primary_transposes.add(primary_transpose_output)
+                
+    if matmul_nodes == 0:
+        print("[WARNING] No MatMul nodes were remapped.")
+    else:
+        print(f"[INFO] Remapped {matmul_nodes} MatMul nodes to use the correct Transpose output.")
+
+    # Step 5: Remove redundant Transpose nodes that are no longer needed
+
+    if nodes_to_remove:
+        for node in nodes_to_remove:
+            graph.node.remove(node)
+        print(f"[INFO] Removed {len(nodes_to_remove)} redundant Transpose nodes.")
+    else:
+        print("[INFO] No redundant Transpose nodes to remove.")
+
+    # Save the modified ONNX model
+    onnx.save(model, output_path, save_as_external_data=True, location=f"{output_path}.data")
+    print(f"[INFO] Optimized model saved to {output_path}")
+    onnx.checker.check_model(output_path, full_check=True)
 
 if __name__ == "__main__":
+
+    #optimize_function("build/train_models_mars_8/quant_model.onnx")
+    #pass
+
     data_cur = ORTDataCurator("TinyLlama/TinyLlama-1.1B-Chat-v1.0", max_dataset_length=100, test_ratio=0.1)
 
     dataset_id = "data/commonsense"
@@ -339,7 +488,7 @@ if __name__ == "__main__":
     ds = preload_dataset(dataset_id)
 
     data_cur.prepare_dataset(ds, custom_preprocess=process_sample_commonsense)
-    args = ORTTrainingArguments(export_inference=True, grad_accum_steps=2, max_steps=30, scheduler_type="cosine")
-    trainer = ORTTrainer("build/train", args, data_cur)
+    args = ORTTrainingArguments(export_inference=False, grad_accum_steps=2, max_steps=100, scheduler_type="cosine")
+    trainer = ORTTrainer("build/train_lora_32", args, data_cur)
 
     trainer.train()

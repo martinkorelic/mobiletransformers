@@ -47,6 +47,7 @@ class MarsModel(BaseTuner):
                 target,
                 adapter_name,
                 mars_config.r,
+                mars_config.alpha,
                 mars_config.subspace,
                 mars_config.mixture
             )
@@ -55,7 +56,7 @@ class MarsModel(BaseTuner):
                 target = self._shared_and_store_weights(target, mars_config)
 
         else:
-            new_module = self._create_new_module(mars_config, adapter_name, target, mars_config.r, mars_config.subspace, mars_config.mixture, **kwargs)
+            new_module = self._create_new_module(mars_config, adapter_name, target, mars_config.r, mars_config.alpha, mars_config.subspace, mars_config.mixture, **kwargs)
 
             if mars_config.share_weights:
                 new_module = self._shared_and_store_weights(new_module, mars_config)
@@ -117,7 +118,7 @@ class MarsModel(BaseTuner):
                     module.to(child.weight.device)
 
     @staticmethod
-    def _create_new_module(mars_config, adapter_name, target, rank, subspace, mixture, **kwargs):
+    def _create_new_module(mars_config, adapter_name, target, rank, alpha, subspace, mixture, **kwargs):
         if isinstance(target, BaseTunerLayer):
             target_base_layer = target.get_base_layer()
         else:
@@ -140,9 +141,11 @@ class MarsModel(BaseTuner):
             base_layer=target,
             adapter_name=adapter_name,
             r=rank,
+            alpha=alpha,
             subspace=subspace,
             mixture=mixture,
             fan_in_fan_out=mars_config.fan_in_fan_out,
+            seed=mars_config.seed,
             **kwargs
         )
 

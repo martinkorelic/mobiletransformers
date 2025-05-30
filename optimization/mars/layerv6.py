@@ -16,14 +16,14 @@ class MarsLayer(BaseTunerLayer):
         self.down_project = nn.ModuleDict({})
 
         if kwargs.get("mixture", False):
+            # TODO
             self.mixture = nn.ModuleDict({})
+            #self.mixture_vector = nn.ParameterDict({})
             self.mixtures = True
         else:
             self.mixtures = False
 
-        tunable_mixture = kwargs.get("subspace", (0, 0))
-
-        if tunable_mixture[1] == 3:
+        if self.mixtures:
             self.tunable_mixture = True
             self.adapter_layer_names = ("up_project", "mixture")
         else:
@@ -67,24 +67,28 @@ class MarsLayer(BaseTunerLayer):
         self.adapter_scaling_factors = []
         self.weight_magnitudes = []
 
-    def update_layer(self, original_weights, adapter_name, rank, subspace, mixture):
-        
+    def update_layer(self, original_weights, adapter_name, rank, alpha, subspace, mixture, seed=42):
         self.internal_rank = rank
 
         self.in_features = original_weights.in_features
         self.out_features = original_weights.out_features
+        # TODO
+        self.use_mixture_vector = False
+        self.alpha = alpha / self.internal_rank
 
-        if subspace[1] == 3 and mixture:
-            self.adapter_layer_names = ("up_project", "mixture")
+        if mixture:
+            self.adapter_layer_names = ("up_project", "mixture",)
 
         gen = None
-        gen2 = None   
+        gen2 = None
+
+        # TODO: Replace seed
         if self.manual_seed:
             gen = torch.Generator()
-            gen.manual_seed(42)
+            gen.manual_seed(seed)
 
             gen2 = torch.Generator()
-            gen2.manual_seed(42 + 1)
+            gen2.manual_seed(seed + 1)
 
         # Split S into two equal orthogonal complementary subspaces
         A1, A2 = generate_complementary_matrices(m=self.in_features, n=subspace[0], gen1=gen, gen2=gen2)
@@ -108,17 +112,20 @@ class MarsLayer(BaseTunerLayer):
         """
 
         self.down_project[adapter_name] = nn.Linear(self.in_features, self.internal_rank, bias=False)
-        self.down_project[adapter_name].weight.data = A.T.contiguous()
+        self.down_project[adapter_name].weight.data = A.T.contiguous() * self.alpha
         self.down_project[adapter_name].weight.requires_grad = False
 
         if mixture or self.mixtures:
             mixture_linear = nn.Linear(self.internal_rank, self.internal_rank, bias=False)
             mixture_linear.weight.data = torch.eye(self.internal_rank).contiguous()
+            torch.nn.init.normal_(mixture_linear.weight.data, mean=0, std=1/self.internal_rank).contiguous()
             mixture_linear.weight.requires_grad = self.tunable_mixture
             self.mixture[adapter_name] = mixture_linear
+            
+            #self.mixture_vector[adapter_name] = nn.Parameter(torch.nn.init.normal_(torch.empty(self.in_features), std=1/self.internal_rank))
 
         self.up_project[adapter_name] = nn.Linear(self.internal_rank, self.out_features, bias=False)
-        self.up_project[adapter_name].weight.data.zero_()
+        self.up_project[adapter_name].weight.data = torch.nn.init.zeros_(self.up_project[adapter_name].weight.data).contiguous()
         self.up_project[adapter_name].weight.requires_grad = True
 
         #self.down_project[adapter_name] = nn.Parameter(A, requires_grad=False)
@@ -230,8 +237,10 @@ class Linear(nn.Module, MarsLayer):
                  base_layer,
                  adapter_name,
                  r,
+                 alpha,
                  subspace=(8, 0),
                  mixture=False,
+                 seed=42,
                  fan_in_fan_out: bool = False,  # Set this to True if the layer to replace stores weight like (fan_in, fan_out)
                  **kwargs) -> None:
         
@@ -239,12 +248,13 @@ class Linear(nn.Module, MarsLayer):
         MarsLayer.__init__(self, base_layer, mixture=mixture, subspace=subspace, **kwargs)
         self.fan_in_fan_out = fan_in_fan_out
         self._active_adapter = adapter_name
+
         self.update_layer(
-            base_layer, adapter_name, r, subspace, mixture
+            base_layer, adapter_name, r, alpha, subspace, mixture, seed
         )
 
-        if subspace[1] == 3 and mixture:
-            self.adapter_layer_names = ("up_project", "mixture")
+        if mixture:
+            self.adapter_layer_names = ("up_project","mixture",)
 
     def _store_channel_metrics(self, active_adapter):
         """
@@ -306,10 +316,15 @@ class Linear(nn.Module, MarsLayer):
                 # Apply mixture if available
                 if self.mixtures:
                     # Use the mixture Linear layer
-                    result = result + self.up_project[active_adapter](self.mixture[active_adapter](self.down_project[active_adapter](x)))
+                    if self.use_mixture_vector:
+                        result = result + self.up_project[active_adapter](
+                            self.down_project[active_adapter](x * self.mixture_vector[active_adapter])
+                        )
+                    else:
+                        result = result + self.up_project[active_adapter](self.mixture[active_adapter](self.down_project[active_adapter](x)))
                 else:
                     # Skip mixture, go directly to up projection
-                    result = result + self.up_project[active_adapter](self.down_project[active_adapter](x))
+                    result = result + self.up_project[active_adapter](self.down_project[active_adapter](x)) * self.alpha
                 
                 # Add the adapter output to the result
                 #result += up_output

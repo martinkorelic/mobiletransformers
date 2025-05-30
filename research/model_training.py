@@ -2,12 +2,14 @@
 import gc
 import math
 import json, random
+from typing import Dict, List
+from attr import dataclass
 import numpy as np
 import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, DataCollatorForLanguageModeling, AutoConfig, TrainerState
+from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, DataCollatorForLanguageModeling, AutoConfig, TrainerState, PreTrainedTokenizer
 from datasets import load_dataset, Dataset, DatasetDict
 import os
 from peft import PeftModel, LoraConfig, get_peft_model
@@ -27,9 +29,17 @@ add_peft_type("MARS", "MARS")
 
 PEFT_TYPE_TO_MODEL_MAPPING[PeftType("MARS")] = MarsModel
 
-from trainer.utils import process_sample_dolly, process_sample_alpaca, process_sample_commonsense, process_sample_hellaswag
+from trainer.utils import (
+    process_sample_dolly,
+    process_sample_alpaca,
+    process_sample_hellaswag,
+    process_sample_hellaswag_deepeval,
+    process_sample_boolq_deepeval,
+    process_sample_arc_deepeval,
+    process_sample_logiqa_deepeval
+)
 from optimization.lora_xs.initialization_utils import find_and_initialize
-from .visualization_trainer import LogStepTimerCallback, MemoryUsageCallback
+from .visualization_trainer import LogStepTimerCallback, MemoryUsageCallback, ProfCallback
 
 from optimization.mars.test import get_mars_linear_layers, visualize_layer_metrics_with_changes
 
@@ -37,23 +47,60 @@ from safetensors.torch import load_file, save_file
 
 MODEL_ID = "TinyLlama/TinyLlama_v1.1"
 
-LORA_RANK = 32
+LORA_RANK = 16
 LORA_TARGET = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"]
 PEFT_CONFIG = {
     "lora_dropout": 0,
     "bias": "none",
-    "lora_alpha": LORA_RANK
+    "lora_alpha": LORA_RANK*2
 }
 
-DATASET_ID = "data/hellaswag_train"#"databricks/databricks-dolly-15k"
+# Boolq: google/boolq
+# HellaSWAG: Rowan/hellaswag
+# ARC: allenai/ai2_arc
+# LogiQA: data/logiqa_train
 
-PEFT_METHOD = "joint_mars"
+# TODO: Convert into enums with configs
+DATASET_ID = "data/logiqa_train"#"databricks/databricks-dolly-15k"
+DATASET_NAME = None
+PREPROCESS_ID = "logiqa_train_deepeval"
 
-MAX_DATASET_LENGTH = 10000
+PEFT_METHOD = "mars"
+
+MAX_DATASET_LENGTH = None
 
 BATCH_SIZE = 32
 
-def preload_dataset(dataset_id):
+@dataclass
+class DataCollatorForSupervisedDataset:
+    """Dynamically pads input sequences for supervised fine-tuning."""
+
+    tokenizer: PreTrainedTokenizer
+
+    def __call__(self, instances: List[Dict]) -> Dict[str, torch.Tensor]:
+
+        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+
+        # Convert to tensors
+        input_ids = [torch.tensor(x, dtype=torch.long) for x in input_ids]
+        labels = [torch.tensor(x, dtype=torch.long) for x in labels]
+
+        pad_token_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id  # Default to EOS if PAD is missing
+
+        # Pad sequences dynamically
+        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=pad_token_id)
+        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
+
+        # Construct attention mask dynamically: 1 for non-pad tokens, 0 for pad tokens
+        attention_mask = input_ids.ne(pad_token_id).long()
+
+        return {
+            "input_ids": input_ids,
+            "labels": labels,
+            "attention_mask": attention_mask
+        }
+
+def preload_dataset(dataset_id, dataset_name=None):
 
     dataset_ids = dataset_id.split("/")
     
@@ -78,38 +125,40 @@ def preload_dataset(dataset_id):
         # Convert to Hugging Face Dataset
         dataset = Dataset.from_list(data)
 
-         # Create a DatasetDict with the "train" split
+        # Create a DatasetDict with the "train" split
         dataset_dict = DatasetDict({"train": dataset})
 
         return dataset_dict
 
-    return load_dataset(dataset_id)
+    return load_dataset(dataset_id, dataset_name)
 
 
 # Define preprocessing function for tokenization
-def prepare_dataset(dataset : Dataset, dataset_id, tokenizer, max_dataset_length = None, remove_long_samples = True, max_context_length=512, test_ratio=0.1, batch_size = 128, split=True, shuffle=False):
+def prepare_dataset(dataset : Dataset, preprocess_id, tokenizer, max_dataset_length = None, remove_long_samples = True, max_context_length=512, test_ratio=0.1, batch_size = 128, split=True, shuffle=True):
 
     raw_columns = dataset["train"].column_names
-
-    dataset_ids = dataset_id.split("/")
-    if len(dataset_ids) == 2:
-        dataset_id = dataset_ids[1]
 
     if split:
         test_size = test_ratio if max_dataset_length == None else int(max_dataset_length * test_ratio)
         train_size = (1 - test_ratio) if max_dataset_length == None else int(max_dataset_length * (1 - test_ratio))
-        dataset = dataset["train"].train_test_split(test_size=test_size, train_size=train_size, shuffle=shuffle)    
+        dataset = dataset["train"].train_test_split(test_size=test_size, train_size=train_size, shuffle=shuffle)
 
     def process_sample(sample):
 
-        if dataset_id == "alpaca":
+        if preprocess_id == "alpaca":
             return process_sample_alpaca(sample, tokenizer)
-        elif dataset_id == "databricks-dolly-15k":
+        elif preprocess_id == "databricks-dolly-15k":
             return process_sample_dolly(sample, tokenizer)
-        elif dataset_id == "commonsense":
-            return process_sample_commonsense(sample, tokenizer, (batch_size > 1))
-        elif dataset_id == "hellaswag_train":
+        elif preprocess_id == "hellaswag_train":
             return process_sample_hellaswag(sample, tokenizer, (batch_size > 1))
+        elif preprocess_id == "hellaswag_train_deepeval":
+            return process_sample_hellaswag_deepeval(sample, tokenizer, (batch_size > 1))
+        elif preprocess_id == "boolq_train_deepeval":
+            return process_sample_boolq_deepeval(sample, tokenizer, (batch_size > 1))
+        elif preprocess_id == "arc_train_deepeval":
+            return process_sample_arc_deepeval(sample, tokenizer, (batch_size > 1))
+        elif preprocess_id == "logiqa_train_deepeval":
+            return process_sample_logiqa_deepeval(sample, tokenizer, (batch_size > 1))
 
         return tokenizer(sample, return_dict=True, tokenize=True, return_tensors="pt", padding=True, add_generation_prompt=False)
     
@@ -126,25 +175,23 @@ def prepare_dataset(dataset : Dataset, dataset_id, tokenizer, max_dataset_length
 
     return dataset
 
-def train_pipeline(model_id, dataset_id, peft_method, lora_rank, lora_target, peft_config, max_dataset_length, batch_size):
-
-    #set_manual_seed(43)
+def train_pipeline(model_id, dataset_id, preprocess_id, peft_method, lora_rank, lora_target, peft_config, max_dataset_length, batch_size):
 
     base_model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True, token=os.environ["HF_TOKEN"])
     tokenizer = AutoTokenizer.from_pretrained(model_id, token=os.environ["HF_TOKEN"])
     config = AutoConfig.from_pretrained(model_id, token=os.environ["HF_TOKEN"])
 
     # Prepare dataset
-    ds = preload_dataset(dataset_id)
+    ds = preload_dataset(dataset_id, DATASET_NAME)
 
     if tokenizer.pad_token == None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    prepared_dataset = prepare_dataset(ds, dataset_id, tokenizer, max_context_length=config.max_position_embeddings, max_dataset_length=max_dataset_length)
+    prepared_dataset = prepare_dataset(ds, preprocess_id, tokenizer, max_context_length=config.max_position_embeddings, max_dataset_length=max_dataset_length)
     
     print(prepared_dataset)
 
-    datacol = DataCollatorForLanguageModeling(tokenizer, return_tensors="pt", mlm=False)
+    datacol = DataCollatorForSupervisedDataset(tokenizer=tokenizer)#DataCollatorForLanguageModeling(tokenizer, return_tensors="pt", mlm=False, padding=True)
 
     # Prepare the model
     lora_config = LoraConfig(
@@ -158,7 +205,7 @@ def train_pipeline(model_id, dataset_id, peft_method, lora_rank, lora_target, pe
     per_device_batch = 6
     
     train_args = {
-        "learning_rate": 4e-4,
+        "learning_rate": 3e-4,
         "per_device_train_batch_size" : per_device_batch,
         "per_device_eval_batch_size" : per_device_batch,
         "gradient_accumulation_steps": batch_size // per_device_batch,
@@ -188,21 +235,17 @@ def train_pipeline(model_id, dataset_id, peft_method, lora_rank, lora_target, pe
             }
         }
         peft_config_dict[adapter_name] = lora_config
+        model = get_peft_model(base_model, lora_config)
         find_and_initialize(model, peft_config_dict, adapter_name, "svd", reconstruct_dict, None)
 
         for param in model.parameters():
             param.data = param.data.contiguous()
     elif peft_method == "mars":
-        mars_config = MarsConfig(
-            peft_type="MARS",
-            r=lora_rank,
-            target_modules=lora_target,  # Target specific model layers
-            task_type="CAUSAL_LM"
-        )
+        peft_config["mixture"] = True
 
-        model = MarsModel(base_model, mars_config, "mars")
+        model = create_peft_model(base_model, lora_target, lora_method="mars", r=lora_rank, **peft_config)
+
         model.train()
-        model.model.config.use_cache = False
     elif peft_method == "lora":
         model = get_peft_model(base_model, lora_config)
     elif peft_method.startswith("joint"):
@@ -219,11 +262,11 @@ def train_pipeline(model_id, dataset_id, peft_method, lora_rank, lora_target, pe
         other_args
     )
 
-def train_joint_models(base_model, dataset_dict, datacol, lora_target, peft_method, num_cycles = 3, data_ratios = None, **peft_config):
+def train_joint_models(base_model, dataset_dict, datacol, lora_target, peft_method, num_cycles = 1, data_ratios = None, **peft_config):
 
     # TODO: Manual config
     # Create PEFT models with different ranks
-    rank_a = 32
+    rank_a = 8
     rank_b = 4
     rank_c = rank_a + rank_b  # Target model has summed ranks
 
@@ -243,9 +286,9 @@ def train_joint_models(base_model, dataset_dict, datacol, lora_target, peft_meth
     # In case of cosine decaying, the last learning rate always drops to 0.
     # Optimizer states are loaded from the last cycle checkpoint
     lrs = [
-        1e-4,
-        1e-4,
-        1e-4
+        3e-4,
+        3e-4,
+        3e-4
     ]
 
     for cycle in range(num_cycles):
@@ -300,7 +343,9 @@ def train_joint_models(base_model, dataset_dict, datacol, lora_target, peft_meth
             resume = None
 
         print("Starting Model A training...")
-        print(compute_model_size(model_a))
+
+        list_trainable_layers(model_a)
+        print(count_trainable_parameters(model_a))
         # Train model A
         train_peft_model(model_a, train_dataset_a, test_dataset, datacol, output_dir_a, training_args, peft_method, resume)
 
@@ -545,10 +590,10 @@ def get_training_args(output_dir, peft_method, scheduler_args = {}, resume_from_
     return TrainingArguments(
         output_dir=output_dir,
         overwrite_output_dir=(resume_from_checkpoint is not None),
-        max_steps=10,
+        #max_steps=100,
         per_device_train_batch_size=6,
         per_device_eval_batch_size=6,
-        num_train_epochs=1,
+        num_train_epochs=2,
         logging_steps=10,
         #warmup_steps=20,
         optim="adamw_torch",
@@ -561,13 +606,16 @@ def get_training_args(output_dir, peft_method, scheduler_args = {}, resume_from_
         #eval_strategy="epoch", # Evaluate at end of epoch
         #do_eval=True,
         do_train=True,
-        gradient_accumulation_steps=1,
+        #no_cuda=True,
+        gradient_accumulation_steps=3,
         warmup_ratio=scheduler_args.get("warmup_ratio", 0),
         learning_rate=scheduler_args.get("initial_lr", 1e-5),
-        lr_scheduler_type="cosine_with_min_lr",
-        lr_scheduler_kwargs={
-            "min_lr": scheduler_args.get("eta_min", 0.0)
-        }
+        lr_scheduler_type="cosine",
+        # TODO
+        #lr_scheduler_type="cosine_with_min_lr",
+        #lr_scheduler_kwargs={
+        #    "min_lr": scheduler_args.get("eta_min", 0.0)
+        #}
     )
 
 def get_cosine_scheduler(cycle, last_min_lr, initial_warmup_ratio=0.1, warmup_decay=0.8, eta_min_decay=0.2):
@@ -660,15 +708,14 @@ def create_peft_model(base_model, lora_target, lora_method, r, **peft_config):
         mars_config = MarsConfig(
             peft_type="MARS",
             r=r,
+            alpha=peft_config.get("alpha", r),
             mixture=peft_config.get("mixture", False),
             subspace=peft_config.get("subspace", (r, 0)),
-            target_modules=lora_target,  # Target specific model layers
+            target_modules=lora_target,
             task_type=None
         )
-        #model = MarsModel(base_model, mars_config, "mars")
+
         return get_peft_model(base_model, mars_config, adapter_name="mars")
-        #model = MarsModel(base_model, mars_config, "mars")
-        #model.model.config.use_cache = False
 
     return None
 
@@ -680,6 +727,9 @@ def compute_max_steps(train_dataloader, grad_accum_steps=1, epochs=1):
 
 def train_peft_model(model, train_dataset, eval_dataset, data_collator, output_dir, training_args, peft_method, resume=None):
     
+    # Manual seed
+    set_manual_seed(42)
+
     # TODO: Trainer does not log out validation loss
     trainer = Trainer(
         model=model,
@@ -687,7 +737,7 @@ def train_peft_model(model, train_dataset, eval_dataset, data_collator, output_d
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
-        callbacks=[MemoryUsageCallback()]
+        callbacks=[LogStepTimerCallback()]
     )
     
     if resume is not None:
@@ -728,7 +778,7 @@ def train_peft_model(model, train_dataset, eval_dataset, data_collator, output_d
 
 def train_model(peft_model, encoded_dataset, data_collator, train_args_plus, other_args):
 
-    peft_model = (peft_model if other_args["method"] in ["mars"] else peft_model)
+    #peft_model = (peft_model if other_args["method"] in ["mars"] else peft_model)
 
     # Reactivate some layers for fine-tuning (if needed)
     list_trainable_layers(peft_model)
@@ -740,18 +790,22 @@ def train_model(peft_model, encoded_dataset, data_collator, train_args_plus, oth
     # Step 4: Set Up Training Arguments
     training_args = TrainingArguments(
         output_dir="./results",
-        eval_strategy="steps",
-        eval_steps=1000,
+        #eval_strategy="steps",
+        #eval_steps=1000,
         save_strategy="no",
-        warmup_steps=20,
-        max_steps=1000,
-        num_train_epochs=1,
+        warmup_ratio=0.1,
+        #max_steps=10,
+        num_train_epochs=2,
         weight_decay=0.0,
-        logging_dir="./results/logs",
         logging_steps=10,
+        report_to="none",  # Disable logging to TensorBoard
+        logging_dir=None,  # Ensure no logging directory is used
+        #logging_dir="./results/logs",
+        #logging_steps=10,
         # Major problem using this on AMD GPU, avoid
         #fp16=torch.cuda.is_available(),
-        #gradient_checkpointing=True,
+        gradient_checkpointing=False,
+        do_eval=False,
         remove_unused_columns=False,
         optim="adamw_torch",
         save_steps=2000,
@@ -767,8 +821,7 @@ def train_model(peft_model, encoded_dataset, data_collator, train_args_plus, oth
         train_dataset=encoded_dataset["train"],
         eval_dataset=encoded_dataset["test"],
         data_collator=data_collator,
-        callbacks=[LogStepTimerCallback(),MemoryUsageCallback()]
-        #callbacks=[MemoryLoggerCallback(), LoRAWeightVisualizerCallback(model, lora_targets=LORA_TARGET, log_steps=10)]
+        #callbacks=[LogStepTimerCallback()]
     )
 
     trainer.train()
@@ -777,7 +830,10 @@ def train_model(peft_model, encoded_dataset, data_collator, train_args_plus, oth
     visualize_training = False
 
     if save_model:
-        peft_model.model.save_pretrained("./results/adapters")
+        if "lora" in other_args["method"]:
+            peft_model.save_pretrained("./results/adapters")
+        elif "mars" in other_args["method"]:
+            peft_model.base_model.save_pretrained("./results/adapters")
 
     if visualize_training:
         trainable_layers = get_mars_linear_layers(peft_model)
@@ -828,38 +884,11 @@ def count_trainable_parameters(model: torch.nn.Module) -> int:
     """
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-def compute_model_size(model):
-    """
-    Computes the size of a PyTorch model in gigabytes (GB),
-    accounting for shared tensors to avoid double-counting.
-
-    Args:
-        model (torch.nn.Module): The model whose size needs to be computed.
-
-    Returns:
-        float: Model size in GB.
-    """
-    unique_params = set()
-    
-    def get_storage_size(tensor):
-        """Returns the size of the tensor's storage if not already counted."""
-        storage = tensor.storage()
-        if storage not in unique_params:
-            unique_params.add(storage)
-            return storage.nbytes()
-        return 0  # Already counted
-    
-    param_size = sum(get_storage_size(p) for p in model.parameters())
-    buffer_size = sum(get_storage_size(b) for b in model.buffers())
-
-    total_size_gb = (param_size + buffer_size) / (1024 ** 3)  # Convert bytes to GB
-
-    return total_size_gb
-
 if __name__ == "__main__":
     train_pipeline(
         model_id=MODEL_ID,
         dataset_id=DATASET_ID,
+        preprocess_id=PREPROCESS_ID,
         peft_method=PEFT_METHOD,
         lora_rank=LORA_RANK,
         lora_target=LORA_TARGET,

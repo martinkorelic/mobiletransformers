@@ -1,10 +1,10 @@
 ###################### TRAINING BUILDER CONFIGURATION ######################
 TRAIN_BUILDER:
-  model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0" #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0" #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
   output: "./build/train_models"
 
   training_mode: true
-  # lora, lora-xs
+  # lora, lora-xs, mars
   train_method: "mars"
 
   # LoRA target modules
@@ -30,6 +30,7 @@ TRAIN_BUILDER:
       - mixture
       - latent
       - lora
+      - mars
     # Quantize only specific node with keywords in exclude_specific_layers
     exclude_specific: false
     exclude_specific_layers:
@@ -44,10 +45,8 @@ TRAIN_BUILDER:
   lora-xs:
     config: config
   mars:
-    ranks:
-      - 64
-      - 32
-      - 16
+    mixture: True
+    subspace: [8, 1]
 
 ###################### INFERENCE BUILDER CONFIGURATION ######################
 INFERENCE_BUILDER:
@@ -79,8 +78,8 @@ ARTIFACT_BUILDER:
   # This will join path with the INFERENCE_BUILDER.output/inference_model
   inference_model: "model.onnx"
 
-  gen_train_artifacts: false
-  gen_inference_artifacts: true
+  gen_train_artifacts: true
+  gen_inference_artifacts: false
 
   test_training: true
   test_eval: false

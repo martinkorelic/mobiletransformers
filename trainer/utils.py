@@ -1,4 +1,209 @@
 import textwrap, inspect
+from deepeval.benchmarks.hellaswag.template import HellaSwagTemplate
+from deepeval.benchmarks.bool_q.template import BoolQTemplate
+from deepeval.benchmarks.arc.template import ARCTemplate
+from deepeval.benchmarks.logi_qa.template import LogiQATemplate
+
+def process_sample_logiqa_deepeval(samples, tokenizer, batched=True):
+
+    def generate_prompt(data_point):
+
+        question = LogiQATemplate.format_question(data_point)
+        answer = LogiQATemplate.format_output(data_point)
+
+        if tokenizer.chat_template is not None:
+            messages = [
+                {"role": "user", "content": question}, 
+                {"role": "assistant", "content": " {}\n\n".format(answer)}
+            ]
+            return tokenizer.apply_chat_template(messages, tokenize=False)
+
+        base_prompt_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
+        inputs = tokenizer(question + answer, return_tensors="pt", padding=False)
+
+        labels = inputs["input_ids"].clone()
+        labels[0, :len(base_prompt_tokens)-1] = -100
+
+        return (
+            inputs["input_ids"].squeeze(0),
+            labels.squeeze(0)
+        )
+    
+    if batched:
+        batch = {
+            "input_ids": [],
+            "labels": []
+        }
+        for i in range(len(samples["question"])):
+            sample = {
+                "question": samples["question"][i],
+                "text": samples["text"][i],
+                "options": samples["options"][i],
+                "answer": samples["answer"][i]
+            }
+            input_ids, labels = generate_prompt(sample)
+            batch["input_ids"].append(input_ids)
+            batch["labels"].append(labels)
+        
+        return batch
+    else:
+        tk = generate_prompt(samples)
+
+    return tk
+
+def process_sample_arc_deepeval(samples, tokenizer, batched=True):
+
+    def generate_prompt(data_point):
+
+        question = ARCTemplate.format_question(data_point, include_answer=False)
+        question_answer = ARCTemplate.format_question(data_point, include_answer=True)
+
+        if tokenizer.chat_template is not None:
+            messages = [
+                {"role": "user", "content": question}, 
+                {"role": "assistant", "content": " {}\n\n".format(ARCTemplate.format_answer(data_point))}
+            ]
+            return tokenizer.apply_chat_template(messages, tokenize=False)
+
+        base_prompt_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
+        inputs = tokenizer(question_answer, return_tensors="pt", padding=False)
+
+        labels = inputs["input_ids"].clone()
+        labels[0, :len(base_prompt_tokens)-1] = -100
+
+        return (
+            inputs["input_ids"].squeeze(0),
+            labels.squeeze(0)
+        )
+    
+    if batched:
+        batch = {
+            "input_ids": [],
+            "labels": []
+        }
+        for i in range(len(samples["question"])):
+            sample = {
+                "question": samples["question"][i],
+                "choices": samples["choices"][i],
+                "answerKey": samples["answerKey"][i]
+            }
+            input_ids, labels = generate_prompt(sample)
+            batch["input_ids"].append(input_ids)
+            batch["labels"].append(labels)
+        
+        return batch
+    else:
+        tk = generate_prompt(samples)
+
+    return tk
+
+def process_sample_boolq_deepeval(samples, tokenizer, batched=True):
+
+    def generate_prompt(data_point):
+
+        question = BoolQTemplate.format_question(data_point)
+        answer = BoolQTemplate.format_answer(data_point)
+
+        
+        if tokenizer.chat_template is not None:
+            messages = [
+                {"role": "user", "content": question}, 
+                {"role": "assistant", "content": " {}\n\n".format(answer)}
+            ]
+            return tokenizer.apply_chat_template(messages, tokenize=False)
+
+        base_prompt_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
+        inputs = tokenizer(question + answer, return_tensors="pt", padding=False)
+
+        labels = inputs["input_ids"].clone()
+        labels[0, :len(base_prompt_tokens)-1] = -100
+
+        return (
+            inputs["input_ids"].squeeze(0),
+            labels.squeeze(0)
+        )
+    
+    if batched:
+        batch = {
+            "input_ids": [],
+            "labels": []
+        }
+        for i in range(len(samples["question"])):
+            sample = {
+                "question": samples["question"][i],
+                "passage": samples["passage"][i],
+                "answer": samples["answer"][i]
+            }
+            input_ids, labels = generate_prompt(sample)
+            batch["input_ids"].append(input_ids)
+            batch["labels"].append(labels)
+        
+        return batch
+    else:
+        tk = generate_prompt(samples)
+
+    return tk
+
+def process_sample_hellaswag_deepeval(samples, tokenizer, batched=True):
+
+    def generate_prompt(data_point):
+
+        base_prompt = f'The following are multiple choice sentence completion problems about {data_point["activity_label"]}.\n\n'
+        
+        if tokenizer.chat_template is not None:
+            choices = ["A", "B", "C", "D"]
+            gen_output = HellaSwagTemplate.format_question(
+                data_point,
+                include_answer=False
+            )
+            messages = [
+                {"role": "user", "content": base_prompt + gen_output}, 
+                {"role": "assistant", "content": " {}\n\n".format(choices[int(data_point["label"])])}
+            ]
+            return tokenizer.apply_chat_template(messages, tokenize=False)
+        
+        gen_output_base = base_prompt + HellaSwagTemplate.format_question(
+            data_point,
+            include_answer=False
+        )
+
+        base_prompt_tokens = tokenizer(gen_output_base, return_tensors="pt", padding=False)["input_ids"][0]
+
+        gen_output_full = base_prompt + HellaSwagTemplate.format_question(
+            data_point,
+            include_answer=True
+        )
+
+        inputs = tokenizer(gen_output_full, return_tensors="pt", padding=False)
+        labels = inputs["input_ids"].clone()
+        labels[0, :len(base_prompt_tokens)] = -100
+
+        return (
+            inputs["input_ids"].squeeze(0),
+            labels.squeeze(0)
+        )
+    
+    if batched:
+        batch = {
+            "input_ids": [],
+            "labels": []
+        }
+        for i in range(len(samples["ctx"])):
+            sample = {
+                "ctx": samples["ctx"][i],
+                "endings": samples["endings"][i],
+                "label": samples["label"][i],
+                "activity_label": samples["activity_label"][i]
+            }
+            input_ids, labels = generate_prompt(sample)
+            batch["input_ids"].append(input_ids)
+            batch["labels"].append(labels)
+        
+        return batch
+    else:
+        tk = generate_prompt(samples)
+
+    return tk
 
 def process_sample_dolly(sample, tokenizer):
 
@@ -42,37 +247,7 @@ def process_sample_alpaca(sample, tokenizer):
     text = tokenizer(chat, return_tensors="pt", padding=True)
     return text
 
-def process_sample_commonsense(samples, tokenizer, batched=True):
 
-    def generate_prompt(data_point):
-
-        if tokenizer.chat_template is not None:
-            messages = [
-                    {"role": "user", "content": data_point["instruction"]},
-                    {"role": "assistant", "content": data_point["output"]}
-            ]
-            return tokenizer.apply_chat_template(messages, add_generation_prompt=False, tokenize=False)
-        else:
-            return f"""
-                    {data_point["instruction"]}
-                    \n\n
-                    {data_point["output"]}
-                    """
-    
-    if batched:
-        text = [
-            generate_prompt({
-                "instruction": samples["instruction"][i],
-                "input": samples["input"][i],
-                "output": samples["output"][i]
-            })
-            for i in range(len(list(samples.values())[0]))
-        ]
-    else:
-        text = generate_prompt(samples)
-    
-    tk = tokenizer(text, return_tensors="pt", padding=True)
-    return tk
 
 def process_sample_hellaswag(samples, tokenizer, batched=True):
     def generate_prompt(data_point):
@@ -103,3 +278,10 @@ def process_sample_hellaswag(samples, tokenizer, batched=True):
     
     tk = tokenizer(text, return_tensors="pt", padding=True)
     return tk
+
+
+if __name__ == "__main__":
+
+    obj = {"ind": 45, "activity_label": "Starting a campfire", "ctx_a": "A man begins demonstrating how to place the newspaper and twigs on top of that. He then creates a pyramid shaped structure.", "ctx_b": "he", "ctx": "A man begins demonstrating how to place the newspaper and twigs on top of that. He then creates a pyramid shaped structure. he", "split": "train", "split_type": "indomain", "label": 1, "endings": ["then lays out the twigs and shoots them over the cellophane so that they stick in the newspaper.", "takes his lighter and lights the newspaper in several places to start the fire.", "then puts tokens on the top of the pyramid, hugging it to frame it.", "extends hands over it then dumps the paper on top."], "source_id": "activitynet~v_-Xl95IW5H_s"}
+
+    process_sample_hellaswag_deepeval(obj)

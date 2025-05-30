@@ -16,9 +16,22 @@ from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfi
 
 from transformers import AutoModelForCausalLM, AutoConfig
 from peft import PeftModel, LoraConfig, get_peft_model
+from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
+from peft import PeftType
+from optimization.mars.config import MarsConfig
+from optimization.mars.model import MarsModel
+
+def add_peft_type(name, value):
+    """Dynamically add a new value to the PeftType enum."""
+    setattr(PeftType, name, value)
+    PeftType._value2member_map_[value] = name
+
+# Add custom PEFT type dynamically
+add_peft_type("MARS", "MARS")
+PEFT_TYPE_TO_MODEL_MAPPING[PeftType("MARS")] = MarsModel
 
 from onnxruntime.quantization import quantize_dynamic, QuantType, QuantFormat
-from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer
+#from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer
 
 from onnxruntime.transformers.onnx_model import OnnxModel
 
@@ -29,10 +42,8 @@ from onnxruntime.transformers.fusion_layernorm import FusionLayerNormalization
 
 from dotenv import load_dotenv
 
-from optimization.mars.model import MarsModel
 load_dotenv()
 
-from optimization.mars.config import MarsConfig
 from tools.parser_config import TRAIN_CONFIG
 
 def get_layers_with_grad(model):
@@ -302,7 +313,7 @@ def optimum_hf_export(model_id,
 
     if config.architectures[0] == "LlamaForCausalLM":
         ocl = LlamaOnnxConfig(config, task="text-generation", use_past=not training_mode, use_past_in_inputs=not training_mode)
-    elif config.architectures[0] == "GemmaForCausalLM":
+    elif config.architectures[0] == "GemmaForCausalLM" or config.architectures[0] == "Gemma2ForCausalLM":
         ocl = GemmaOnnxConfig(config, task="text-generation", use_past=not training_mode, use_past_in_inputs=not training_mode)
     elif config.architectures[0] == "Phi3ForCausalLM":
         ocl = Phi3OnnxConfig(config, task="text-generation", use_past=not training_mode, use_past_in_inputs=not training_mode)
@@ -312,20 +323,26 @@ def optimum_hf_export(model_id,
 
     if training_mode:
         ocl = OnnxConfigWithLoss(ocl)
+
+    onnx_path = Path(f"{model_output}/model.onnx")
+
+    if training_mode and train_method == "lora":
+        # Apply LoRA to the model
         lora_config = LoraConfig(
             r=lora_rank,
             target_modules=lora_target,
             task_type="CAUSAL_LM",
             **peft_config
         )
-
-    onnx_path = Path(f"{model_output}/model.onnx")
-
-    if training_mode and train_method == "lora":
-        # Apply LoRA to the model
         lora_model = PeftModel(model, lora_config, adapter_name="lora")
     elif training_mode and train_method == "lora-xs":
         # TODO: Add specific PEFT config
+        lora_config = LoraConfig(
+            r=lora_rank,
+            target_modules=lora_target,
+            task_type="CAUSAL_LM",
+            **peft_config
+        )
         lora_model = get_peft_model(model, lora_config)
         adapter_name = "default"
         peft_config_dict = {}
@@ -346,19 +363,19 @@ def optimum_hf_export(model_id,
     elif training_mode and train_method == "mars":
         mars_config = MarsConfig(
             peft_type="MARS",
-            # TODO: Hardcoded
-            ranks=[64, 32, 16],
-            lora_alphas=[1],  # Scaling factor
+            r=lora_rank,
+            mixture=specific_peft_config.get("mixture", False),
+            subspace=tuple(specific_peft_config.get("subspace", (lora_rank, 1))),
             target_modules=lora_target,  # Target specific model layers
-            task_type="CAUSAL_LM"
+            task_type=None
         )
 
-        lora_model = MarsModel(model, mars_config).model
+        lora_model = get_peft_model(model, mars_config, adapter_name="mars")
     elif not training_mode or train_method == "nolora":
         lora_model = model
 
     if training_mode:
-        my_model = OnnxTrainerWrapper(lora_model)
+        my_model = OnnxTrainerWrapper(lora_model.base_model.model)
         my_model.train()
     else:
         my_model = OnnxInferenceWrapper(lora_model)
@@ -387,6 +404,10 @@ def optimum_hf_export(model_id,
         onnx_path = Path(f"{model_output}/opt_model.onnx")
         my_model.save_model_to_file(output_path=onnx_path.absolute().as_posix(), use_external_data_format=True)
     
+    del my_model
+    my_model = None
+    gc.collect()
+
     # Apply dynamic quantization to non-trainable layers
     if quantize:
         lora_target = [] if not training_mode else lora_target
@@ -535,7 +556,7 @@ def parse_arguments():
     parser.add_argument(
         "--train_method",
         type=str,
-        choices=["lora", "lora-xs", "nolora"],
+        choices=["lora", "lora-xs", "mars", "nolora"],
         default="lora",
         help="The training method to use, such as LoRA. Default is 'lora'."
     )
@@ -649,5 +670,6 @@ if __name__ == "__main__":
         quantize=args.quantize,
         weight_type=args.weight_type,
         peft_config=peft_config,
+        specific_peft_config=specific_peft_config,
         **args.extra_options
     )

@@ -49,7 +49,8 @@ class MarsConfig(PeftConfig):
         default=True,
         metadata={"help": "Set this to True if the adapter layers should share frozen weights."},
     )
-    seed: int = field(default=42, metadata={"help": "Seed for initializing layers."})
+    alpha: int = field(default=8, metadata={"help": "Scaling factor, computed as alpha/rank."})
+    seed: int = field(default=41, metadata={"help": "Seed for initializing layers."})
     bias: str = field(default="none", metadata={"help": "Bias type for Mars. Can be 'none', 'all' or 'mars_only'"})
     fan_in_fan_out: bool = field(
         default=False,

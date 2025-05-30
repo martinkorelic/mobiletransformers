@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
 from transformers import AutoModelForCausalLM
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -55,7 +54,7 @@ def visualize_llama_layer_cosine_similarity(model_name: str, layer_name: str, ou
     
     # Convert to numpy array for visualization
     similarity_matrix = similarity_matrix.numpy()
-    
+    """
     # Generate the heatmap
     plt.figure(figsize=(10, 8))
     plt.imshow(similarity_matrix, interpolation='nearest', cmap='coolwarm')
@@ -72,6 +71,7 @@ def visualize_llama_layer_cosine_similarity(model_name: str, layer_name: str, ou
     plt.savefig(output_file)
     plt.close()
     print(f"Heatmap saved to {output_file}")
+    """
 
 def generate_complementary_matrices(m, n, mean=0, std=0.1, gen1=None, gen2=None):
     if m <= n:
