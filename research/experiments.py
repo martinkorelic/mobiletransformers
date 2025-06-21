@@ -15,6 +15,124 @@ import research.cca_core as cca_core
 
 MODEL_ID = "TinyLlama/TinyLlama_v1.1"
 
+import torch
+def create_orthogonal_matrices(m, num_matrices, mean=0.0, std=1.0, initial_matrix=None, device='cpu', generator=None):
+    """
+    Create mutually orthogonal matrices using null space construction.
+    
+    This approach is based on the fact that if B is in the null space of A^T,
+    then A^T @ B = 0, which means the matrices are orthogonal.
+    
+    Args:
+        m (int): Dimension of each square matrix (m x m)
+        num_matrices (int): Number of matrices to generate
+        mean (float): Mean for random initialization
+        std (float): Standard deviation for random initialization  
+        initial_matrix (torch.Tensor, optional): Initial matrix of size (m, m)
+        device (str): Device to create tensors on
+        generator (torch.Generator, optional): Random number generator
+    
+    Returns:
+        torch.Tensor: Stacked matrices of size (m, m * num_matrices)
+    """
+    
+    if initial_matrix is not None:
+        if initial_matrix.shape != (m, m):
+            raise ValueError(f"Initial matrix must be of size ({m}, {m})")
+        A = initial_matrix.to(device)
+        remaining = num_matrices - 1
+    else:
+        # Generate first matrix with controlled rank
+        # We need null_dim >= remaining matrices
+        # So rank should be <= m - (num_matrices - 1)
+        remaining = num_matrices - 1
+        max_rank = m - remaining
+        
+        if max_rank <= 0:
+            raise ValueError(f"Cannot fit {num_matrices} matrices of size ({m}, {m}). Maximum possible: {m}")
+        
+        # Create a rank-deficient matrix by construction: A = U @ V^T
+        # where U is (m, max_rank) and V is (m, max_rank)
+        U = torch.nn.init.normal_(
+            torch.empty((m, max_rank), device=device),
+            mean=mean, std=std, generator=generator
+        )
+        V = torch.nn.init.normal_(
+            torch.empty((m, max_rank), device=device),
+            mean=mean, std=std, generator=generator
+        )
+        A = U @ V.T  # This has rank <= max_rank
+    
+    if remaining == 0:
+        return A
+    
+    # Compute QR decomposition to get null space basis
+    Q, _ = torch.linalg.qr(A, mode='complete')
+    
+    # The rank determines how much null space we have
+    rank_A = torch.linalg.matrix_rank(A).item()
+    null_dim = m - rank_A
+    
+    if null_dim == 0:
+        raise ValueError(f"Matrix A is full rank (rank={rank_A}). No null space available for orthogonal matrices.")
+    
+    # Check if we have enough null space dimensions
+    if remaining > null_dim:
+        raise ValueError(f"Cannot generate {remaining} additional matrices. Null space dimension is only {null_dim}.")
+    
+    # Extract null space basis (last null_dim columns of Q)
+    null_basis = Q[:, rank_A:]  # Shape: (m, null_dim)
+    
+    # Generate remaining matrices in the null space
+    matrices = [A]
+    
+    for i in range(remaining):
+        # Generate random coefficients for the null space basis
+        coeffs = torch.nn.init.normal_(
+            torch.empty((null_dim, m), device=device),
+            mean=mean, std=std, generator=generator
+        )
+        
+        # Create matrix in null space: null_basis @ coeffs
+        B = null_basis @ coeffs  # Shape: (m, m)
+        matrices.append(B)
+    
+    # Stack all matrices horizontally
+    result = torch.cat(matrices, dim=1)
+    return result
+
+def verify_orthogonality(stacked_matrices, m, num_matrices, tolerance=1e-5):
+    """
+    Verify that the matrices are mutually orthogonal.
+    """
+    matrices = [stacked_matrices[:, i*m:(i+1)*m] for i in range(num_matrices)]
+    
+    print("Matrix statistics:")
+    for i, matrix in enumerate(matrices):
+        mean_val = torch.mean(matrix).item()
+        std_val = torch.std(matrix).item()
+        print(f"  Matrix {i}: mean = {mean_val:.4f}, std = {std_val:.4f}")
+    
+    print("\nOrthogonality verification:")
+    all_orthogonal = True
+    
+    for i in range(num_matrices):
+        for j in range(i+1, num_matrices):
+            # Check A^T * B and B^T * A
+            product1 = torch.matmul(matrices[i].T, matrices[j])
+            product2 = torch.matmul(matrices[j].T, matrices[i])
+            
+            max_val1 = torch.max(torch.abs(product1)).item()
+            max_val2 = torch.max(torch.abs(product2)).item()
+            
+            is_orthogonal = max_val1 < tolerance and max_val2 < tolerance
+            print(f"  Matrices {i} and {j}: A^T*B max = {max_val1:.2e}, B^T*A max = {max_val2:.2e} {'✓' if is_orthogonal else '✗'}")
+            
+            if not is_orthogonal:
+                all_orthogonal = False
+    
+    return all_orthogonal
+
 def visualize_llama_layer_cosine_similarity(model_name: str, layer_name: str, output_file: str):
     """
     Load a Llama model and compute a heatmap of cosine similarities

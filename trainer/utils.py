@@ -1,8 +1,60 @@
+from dataclasses import dataclass
 import textwrap, inspect
+from typing import Dict, List
 from deepeval.benchmarks.hellaswag.template import HellaSwagTemplate
 from deepeval.benchmarks.bool_q.template import BoolQTemplate
 from deepeval.benchmarks.arc.template import ARCTemplate
 from deepeval.benchmarks.logi_qa.template import LogiQATemplate
+import numpy as np
+import torch
+from transformers import PreTrainedTokenizer
+
+@dataclass
+class DataCollatorForSupervisedDataset:
+    """Dynamically pads input sequences for supervised fine-tuning."""
+
+    tokenizer: PreTrainedTokenizer
+
+    def __call__(self, instances: List[Dict], return_tensors="pt") -> Dict[str, torch.Tensor]:
+
+        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+
+        # Convert to tensors
+        input_ids = [torch.tensor(x, dtype=torch.long) for x in input_ids]
+        labels = [torch.tensor(x, dtype=torch.long) for x in labels]
+
+        pad_token_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id  # Default to EOS if PAD is missing
+
+        # Pad sequences dynamically
+        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=pad_token_id)
+        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=-100)
+
+        # Construct attention mask dynamically: 1 for non-pad tokens, 0 for pad tokens
+        attention_mask = input_ids.ne(pad_token_id).long()
+
+        # Convert to requested tensor format
+        if return_tensors == "np":
+            return {
+                "input_ids": input_ids.numpy(),
+                "labels": labels.numpy(),
+                "attention_mask": attention_mask.numpy()
+            }
+        elif return_tensors == "pt":
+            return {
+                "input_ids": input_ids,
+                "labels": labels,
+                "attention_mask": attention_mask
+            }
+        else:
+            raise ValueError(f"return_tensors must be 'pt' or 'np', got {return_tensors}")
+        
+    def numpy_call(self, instances: List[Dict]) -> Dict[str, np.ndarray]:
+        """Convenience method that returns NumPy arrays."""
+        return self.__call__(instances, return_tensors="np")
+    
+    def pytorch_call(self, instances: List[Dict]) -> Dict[str, torch.Tensor]:
+        """Convenience method that returns PyTorch tensors."""
+        return self.__call__(instances, return_tensors="pt")
 
 def process_sample_logiqa_deepeval(samples, tokenizer, batched=True):
 
@@ -248,7 +300,6 @@ def process_sample_alpaca(sample, tokenizer):
     return text
 
 
-
 def process_sample_hellaswag(samples, tokenizer, batched=True):
     def generate_prompt(data_point):
 
@@ -279,9 +330,3 @@ def process_sample_hellaswag(samples, tokenizer, batched=True):
     tk = tokenizer(text, return_tensors="pt", padding=True)
     return tk
 
-
-if __name__ == "__main__":
-
-    obj = {"ind": 45, "activity_label": "Starting a campfire", "ctx_a": "A man begins demonstrating how to place the newspaper and twigs on top of that. He then creates a pyramid shaped structure.", "ctx_b": "he", "ctx": "A man begins demonstrating how to place the newspaper and twigs on top of that. He then creates a pyramid shaped structure. he", "split": "train", "split_type": "indomain", "label": 1, "endings": ["then lays out the twigs and shoots them over the cellophane so that they stick in the newspaper.", "takes his lighter and lights the newspaper in several places to start the fire.", "then puts tokens on the top of the pyramid, hugging it to frame it.", "extends hands over it then dumps the paper on top."], "source_id": "activitynet~v_-Xl95IW5H_s"}
-
-    process_sample_hellaswag_deepeval(obj)

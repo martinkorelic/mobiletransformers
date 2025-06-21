@@ -7,7 +7,7 @@ from research.experiments import generate_complementary_matrices
 
 class MarsLayer(BaseTunerLayer):
 
-    adapter_layer_names = ("up_project",)
+    adapter_layer_names = ("up_project","down_project")
 
     def __init__(self, base_layer: nn.Module, **kwargs) -> None:
         self.base_layer = base_layer
@@ -113,7 +113,7 @@ class MarsLayer(BaseTunerLayer):
 
         self.down_project[adapter_name] = nn.Linear(self.in_features, self.internal_rank, bias=False)
         self.down_project[adapter_name].weight.data = A.T.contiguous() * self.alpha
-        self.down_project[adapter_name].weight.requires_grad = False
+        self.down_project[adapter_name].weight.requires_grad = True
 
         if mixture or self.mixtures:
             mixture_linear = nn.Linear(self.internal_rank, self.internal_rank, bias=False)
@@ -231,7 +231,7 @@ class MarsLayer(BaseTunerLayer):
 
 class Linear(nn.Module, MarsLayer):
 
-    adapter_layer_names = ("up_project",)
+    adapter_layer_names = ("up_project","down_project")
 
     def __init__(self,
                  base_layer,

@@ -14,7 +14,7 @@ from datasets import load_dataset, Dataset, DatasetDict
 import os
 from peft import PeftModel, LoraConfig, get_peft_model
 from optimization.mars.config import MarsConfig
-from optimization.mars.model import MarsModel
+from optimization.mars.modelv2 import MarsModel
 
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
@@ -47,7 +47,7 @@ from safetensors.torch import load_file, save_file
 
 MODEL_ID = "TinyLlama/TinyLlama_v1.1"
 
-LORA_RANK = 16
+LORA_RANK = 4
 LORA_TARGET = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"]
 PEFT_CONFIG = {
     "lora_dropout": 0,
@@ -67,7 +67,7 @@ PREPROCESS_ID = "logiqa_train_deepeval"
 
 PEFT_METHOD = "mars"
 
-MAX_DATASET_LENGTH = None
+MAX_DATASET_LENGTH = 1000
 
 BATCH_SIZE = 32
 
@@ -241,7 +241,6 @@ def train_pipeline(model_id, dataset_id, preprocess_id, peft_method, lora_rank, 
         for param in model.parameters():
             param.data = param.data.contiguous()
     elif peft_method == "mars":
-        peft_config["mixture"] = True
 
         model = create_peft_model(base_model, lora_target, lora_method="mars", r=lora_rank, **peft_config)
 
@@ -252,6 +251,8 @@ def train_pipeline(model_id, dataset_id, preprocess_id, peft_method, lora_rank, 
         return train_joint_models(
             base_model, prepared_dataset, datacol, lora_target, peft_method, **peft_config
         )
+
+    print(model)
 
     # Train the model
     train_model(
@@ -590,7 +591,7 @@ def get_training_args(output_dir, peft_method, scheduler_args = {}, resume_from_
     return TrainingArguments(
         output_dir=output_dir,
         overwrite_output_dir=(resume_from_checkpoint is not None),
-        #max_steps=100,
+        #max_steps=1,
         per_device_train_batch_size=6,
         per_device_eval_batch_size=6,
         num_train_epochs=2,
@@ -709,9 +710,11 @@ def create_peft_model(base_model, lora_target, lora_method, r, **peft_config):
             peft_type="MARS",
             r=r,
             alpha=peft_config.get("alpha", r),
-            mixture=peft_config.get("mixture", False),
-            subspace=peft_config.get("subspace", (r, 0)),
             target_modules=lora_target,
+            **peft_config,
+            #optimization_level=3,
+            #modules_to_quantize=['q', 'up'],
+            #modules_to_preserve_errors=['up'],
             task_type=None
         )
 
@@ -794,7 +797,7 @@ def train_model(peft_model, encoded_dataset, data_collator, train_args_plus, oth
         #eval_steps=1000,
         save_strategy="no",
         warmup_ratio=0.1,
-        #max_steps=10,
+        #max_steps=2,
         num_train_epochs=2,
         weight_decay=0.0,
         logging_steps=10,
@@ -821,7 +824,7 @@ def train_model(peft_model, encoded_dataset, data_collator, train_args_plus, oth
         train_dataset=encoded_dataset["train"],
         eval_dataset=encoded_dataset["test"],
         data_collator=data_collator,
-        #callbacks=[LogStepTimerCallback()]
+        callbacks=[MemoryUsageCallback()]
     )
 
     trainer.train()

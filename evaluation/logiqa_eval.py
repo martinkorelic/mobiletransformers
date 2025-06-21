@@ -6,9 +6,9 @@ os.environ["DEEPEVAL_TELEMETRY_OPT_OUT"] = "YES"
 from deepeval.benchmarks import LogiQA
 from evaluation.eval_adapter_models import CustomPeftModel
 
-MODEL_PATH = "results/mars-16-logiqa-a-2-e2"
+MODEL_PATH = "results/lora-4-logiqa"
 
-custom_llm = CustomPeftModel(adapter_path=MODEL_PATH, adapter_name="mars")
+custom_llm = CustomPeftModel(adapter_path=MODEL_PATH, adapter_name="lora")
 
 # Define benchmark with specific tasks and shots
 benchmark = LogiQA(

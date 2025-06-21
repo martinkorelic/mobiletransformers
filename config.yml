@@ -16,7 +16,7 @@ TRAIN_BUILDER:
     - gate_proj
     - down_proj
     - up_proj
-  lora_rank: 8
+  lora_rank: 4
   quantize: true
   # Weight types for quantizing
   weight_type: "QInt8"
@@ -31,6 +31,7 @@ TRAIN_BUILDER:
       - latent
       - lora
       - mars
+      - shared
     # Quantize only specific node with keywords in exclude_specific_layers
     exclude_specific: false
     exclude_specific_layers:
@@ -45,8 +46,13 @@ TRAIN_BUILDER:
   lora-xs:
     config: config
   mars:
-    mixture: True
-    subspace: [8, 1]
+    optimization_level: 3
+    modules_to_preserve_errors:
+      - q
+    modules_to_quantize:
+      - q
+      - k
+      - v
 
 ###################### INFERENCE BUILDER CONFIGURATION ######################
 INFERENCE_BUILDER:

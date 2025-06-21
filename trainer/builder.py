@@ -19,7 +19,7 @@ from peft import PeftModel, LoraConfig, get_peft_model
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
 from optimization.mars.config import MarsConfig
-from optimization.mars.model import MarsModel
+from optimization.mars.modelv2 import MarsModel
 
 def add_peft_type(name, value):
     """Dynamically add a new value to the PeftType enum."""
@@ -59,97 +59,6 @@ def get_layers_with_grad(model):
         else:
             layers_with_no_grad.append(name)
     return layers_with_grad, layers_with_no_grad
-
-def remap_graph(onnx_model_path):
-    """
-    Function that would remap graph inputs for past and present KV caching.
-    Adding conditional input based on training_mode input which indicates if we are using model for training or inference.
-    This is harder to implement as each architecture does KV concatenation differently and would affect the output.
-    """
-    model = onnx.load(onnx_model_path)
-    graph = model.graph
-
-    ensure_training_mode_input(graph)
-
-    concat_nodes = []
-
-    for i, node in enumerate(graph.node):
-        
-        if node.op_type != "Concat":
-            continue
-
-        past_inputs = []
-        other_node_inputs = []
-
-        for input_name in node.input:
-            if "past_key_values" in input_name:
-                past_inputs.append(input_name)
-            else:
-                other_node_inputs.append(input_name)
-        
-        node_outputs = list(node.output)
-
-        if len(past_inputs) > 0:
-            concat_nodes.append(node)
-        
-        assert len(node_outputs) == 1
-
-        present_node_outputs = []
-
-        for n in graph.node:
-            if any(ni == node_outputs[0] and "present" in ni for ni in n.input):
-                present_node_outputs.append(n.name)
-
-        if len(present_node_outputs) > 0:   
-            add_conditional_node(graph, node, past_inputs, other_node_inputs, node_outputs, present_node_outputs, i)
-
-    onnx.save(model, "test_name.onnx", save_as_external_data=True)
-    del model
-    onnx.checker.check_model("test_name.onnx", full_check=True)
-
-def add_conditional_node(graph, node, past_inputs, other_node_inputs, node_outputs, present_node_outputs, num_node):
-    """
-    Conditional flow node "If".
-    Problem with such a function is that different models implement KV caching differently,
-    so this would need to be implemented differently for each model if needed.
-    """
-
-    # Training mode with no past
-    then_branch = helper.make_graph(
-        nodes=[
-            # Identity node for using 'present' input as is
-            helper.make_node("Identity", inputs=other_node_inputs, outputs=node_outputs)
-        ],
-        name=f"training_branch_{node_outputs[0]}",
-        inputs=[],
-        outputs=[helper.make_tensor_value_info(name, TensorProto.FLOAT, ("batch_size", 4, "past_sequence_length + 1", 64)) for name in node_outputs]
-    )
-
-    other_node_inputs.extend(past_inputs)
-
-    # Inference with past
-    else_branch = helper.make_graph(
-        nodes=[
-            # Use the concat node
-            helper.make_node("Concat", inputs=other_node_inputs, outputs=node_outputs, axis=-2)
-        ],
-        name=f"inference_branch_{node_outputs[0]}",
-        inputs=[], #+ past_inputs,
-        outputs=[helper.make_tensor_value_info(name, TensorProto.FLOAT, ("batch_size", 4, "past_sequence_length + 1", 64)) for name in node_outputs]
-    )
-
-    if_node = helper.make_node(
-                "If",
-                inputs=["training_mode"],
-                outputs=node_outputs,
-                then_branch=then_branch,
-                else_branch=else_branch
-            )
-
-    graph.node.remove(node)
-    graph.node.insert(num_node, if_node)
-
-    return graph
 
 def ensure_training_mode_input(graph):
     """
@@ -364,10 +273,10 @@ def optimum_hf_export(model_id,
         mars_config = MarsConfig(
             peft_type="MARS",
             r=lora_rank,
-            mixture=specific_peft_config.get("mixture", False),
-            subspace=tuple(specific_peft_config.get("subspace", (lora_rank, 1))),
+            onnx_export=True, # always needs to be True for export
             target_modules=lora_target,  # Target specific model layers
-            task_type=None
+            task_type=None,
+            **specific_peft_config
         )
 
         lora_model = get_peft_model(model, mars_config, adapter_name="mars")

@@ -1,7 +1,7 @@
 import onnx, time, os, gc, json
 
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoConfig, DataCollatorForLanguageModeling
+from transformers import AutoTokenizer, AutoConfig
 import numpy as np
 from onnx import helper, TensorProto, numpy_helper
 from onnxruntime.training import onnxblock, artifacts
@@ -13,38 +13,17 @@ from datasets import load_dataset, Dataset, DatasetDict
 from collections import defaultdict
 
 from torch.utils.data import DataLoader
+from trainer.utils import DataCollatorForSupervisedDataset
 
-def process_sample_commonsense(samples, tokenizer, batched=True):
-
-    def generate_prompt(data_point):
-
-        if tokenizer.chat_template is not None:
-            messages = [
-                    {"role": "user", "content": data_point["instruction"]},
-                    {"role": "assistant", "content": data_point["output"]}
-            ]
-            return tokenizer.apply_chat_template(messages, add_generation_prompt=False, tokenize=False)
-        else:
-            return f"""
-                    {data_point["instruction"]}
-                    \n\n
-                    {data_point["output"]}
-                    """
-    
-    if batched:
-        text = [
-            generate_prompt({
-                "instruction": samples["instruction"][i],
-                "input": samples["input"][i],
-                "output": samples["output"][i]
-            })
-            for i in range(len(list(samples.values())[0]))
-        ]
-    else:
-        text = generate_prompt(samples)
-    
-    tk = tokenizer(text, return_tensors="pt", padding=True)
-    return tk
+from trainer.utils import (
+    process_sample_dolly,
+    process_sample_alpaca,
+    process_sample_hellaswag,
+    process_sample_hellaswag_deepeval,
+    process_sample_boolq_deepeval,
+    process_sample_arc_deepeval,
+    process_sample_logiqa_deepeval
+)
 
 def preload_dataset(dataset_id):
 
@@ -119,7 +98,7 @@ class ORTDataCurator:
         
         self.model_id = model_id
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, token=os.environ['HF_TOKEN'])
-        self.collator = DataCollatorForLanguageModeling(self.tokenizer, mlm=False, return_tensors="np")
+        self.collator = DataCollatorForSupervisedDataset(self.tokenizer)
 
         self.max_dataset_length = max_dataset_length
         self.max_context_length = max_context_length
@@ -348,7 +327,6 @@ class ORTTrainer:
         print(f"\n[INFO] Total training time: {total_runtime:.4f} seconds")
         print(f"[INFO] Training steps per second: {steps_per_second:.4f}")
 
-
         if self.args.export_inference:
 
             exclude_nodes = ["loss"]
@@ -412,83 +390,16 @@ def check_duplicate_initializers(onnx_model_path):
     else:
         print("[INFO] No duplicate initializers with the same shape and values found.")
 
-def optimize_function(onnx_model_path, output_path="quant_model.onnx"):
-    """
-    Finds MatMul nodes that take the output of redundant Transpose operations as input,
-    and remaps them to use the output of the first Transpose operation.
-    """
-    model = onnx.load(onnx_model_path)
-    graph = model.graph
-
-    # Step 1: Find all initializers that contain "down_project"
-    down_project_initializers = {}  # A dictionary to store initializers with their corresponding Transpose nodes
-    for initializer in graph.initializer:
-        if "down_project" in initializer.name:
-            down_project_initializers[initializer.name] = []
-
-    print(f"[INFO] Found {len(down_project_initializers)} unique down_project initializers.")
-
-    nodes_to_remove = []
-    # Step 2: Identify the Transpose nodes that correspond to each down_project initializer
-    for node in graph.node:
-        if node.op_type == "Transpose" and node.input[0] in down_project_initializers:
-            initializer_name = node.input[0]
-            down_project_initializers[initializer_name].append(node.output[0])
-            if len(down_project_initializers[initializer_name]) > 1:
-                nodes_to_remove.append(node)
-                print(node.name)
-
-    # Step 4: Iterate through MatMul nodes and remap the inputs that use redundant Transpose outputs
-    matmul_nodes = 0
-
-    primary_transposes = set()
-
-    for initializer_name, transpose_outputs in down_project_initializers.items():
-        primary_transpose_output = transpose_outputs[0]
-        for node in graph.node:
-            if node.op_type == "MatMul":
-                for i, inp in enumerate(node.input):
-                    # Check if the input is one of the redundant transpose outputs
-                    if inp in transpose_outputs and inp != primary_transpose_output:
-                        print(f"[INFO] Remapping MatMul node: {node.name}")
-                        print(f" - Old Input: {inp}")
-                        # Update the input to use the primary transposed weight
-                        node.input[i] = primary_transpose_output
-                        matmul_nodes += 1
-        primary_transposes.add(primary_transpose_output)
-                
-    if matmul_nodes == 0:
-        print("[WARNING] No MatMul nodes were remapped.")
-    else:
-        print(f"[INFO] Remapped {matmul_nodes} MatMul nodes to use the correct Transpose output.")
-
-    # Step 5: Remove redundant Transpose nodes that are no longer needed
-
-    if nodes_to_remove:
-        for node in nodes_to_remove:
-            graph.node.remove(node)
-        print(f"[INFO] Removed {len(nodes_to_remove)} redundant Transpose nodes.")
-    else:
-        print("[INFO] No redundant Transpose nodes to remove.")
-
-    # Save the modified ONNX model
-    onnx.save(model, output_path, save_as_external_data=True, location=f"{output_path}.data")
-    print(f"[INFO] Optimized model saved to {output_path}")
-    onnx.checker.check_model(output_path, full_check=True)
-
 if __name__ == "__main__":
 
-    #optimize_function("build/train_models_mars_8/quant_model.onnx")
-    #pass
+    data_cur = ORTDataCurator("TinyLlama/TinyLlama_v1.1", max_dataset_length=100, test_ratio=0.1)
 
-    data_cur = ORTDataCurator("TinyLlama/TinyLlama-1.1B-Chat-v1.0", max_dataset_length=100, test_ratio=0.1)
-
-    dataset_id = "data/commonsense"
+    dataset_id = "data/logiqa_train"
 
     ds = preload_dataset(dataset_id)
 
-    data_cur.prepare_dataset(ds, custom_preprocess=process_sample_commonsense)
+    data_cur.prepare_dataset(ds, custom_preprocess=process_sample_logiqa_deepeval)
     args = ORTTrainingArguments(export_inference=False, grad_accum_steps=2, max_steps=100, scheduler_type="cosine")
-    trainer = ORTTrainer("build/train_lora_32", args, data_cur)
+    trainer = ORTTrainer("build/train_mars_8_4_frozen_shared", args, data_cur)
 
     trainer.train()

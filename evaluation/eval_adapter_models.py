@@ -2,7 +2,7 @@ import transformers
 import torch, os, json
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, AutoConfig
 from optimization.mars.config import MarsConfig
-from optimization.mars.model import MarsModel
+from optimization.mars.modelv2 import MarsModel
 
 from peft import PeftModel, LoraConfig, PeftConfig, get_peft_model
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
@@ -25,7 +25,7 @@ from deepeval.models import DeepEvalBaseLLM
 from safetensors.torch import load_file
 
 class CustomPeftModel(DeepEvalBaseLLM):
-    def __init__(self, adapter_path, model_name="PEFT model", adapter_name="lora", device="cuda"):
+    def __init__(self, adapter_path, model_name="PEFT model", adapter_name="lora", base_model=None, device="cuda"):
         """
         Custom LLM class that loads a base LLaMA 3 8B model and applies a PEFT adapter if available.
         
@@ -40,6 +40,8 @@ class CustomPeftModel(DeepEvalBaseLLM):
         adapter_tensors = os.path.join(adapter_path, "adapter_model.safetensors")
         base_config_path = os.path.join(adapter_path, "config.json")
         base_tensors = os.path.join(adapter_path, "model.safetensors")
+        base_model_name = base_model
+        config = None
 
         # Check if base model exists
         if os.path.exists(base_tensors):

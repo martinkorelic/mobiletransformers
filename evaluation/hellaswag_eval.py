@@ -9,9 +9,9 @@ from deepeval.benchmarks.tasks import HellaSwagTask
 from evaluation.eval_adapter_models import CustomPeftModel
 
 # results/joint-mars-8-4-12-a-2-shuffled
-MODEL_PATH = "results/mars-8-hellaswag-a-2-grad-acc-3"
+MODEL_PATH = "results/mars-new-8-hellaswag"
 
-custom_llm = CustomPeftModel(adapter_path=MODEL_PATH, adapter_name="mars")
+custom_llm = CustomPeftModel(adapter_path=MODEL_PATH, adapter_name="mars", base_model='TinyLlama/TinyLlama_v1.1')
 
 # Define benchmark with specific tasks and shots
 benchmark = HellaSwag(

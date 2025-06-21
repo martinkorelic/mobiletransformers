@@ -59,8 +59,8 @@ class MemoryUsageCallback(TrainerCallback):
     def on_log(self, args, state, control, **kwargs):
         """Logs memory usage at the end of each step."""
         print(f"\n[Memory Usage] Model training memory:")
-        print(f"  GPU: {self.gpu_mem_before_fwd:.2f} GB -> {self.gpu_mem_after_bwd:.2f} GB (Peak: {self.gpu_peak_mem_bwd:.2f} GB)")
-        print(f"  CPU: {self.cpu_mem_before_fwd:.2f} GB -> {self.cpu_mem_after_bwd:.2f} GB")
+        print(f"  GPU: {self.gpu_mem_before_fwd:.2f} GB")
+        print(f"  CPU: {self.cpu_mem_before_fwd:.2f} GB")
         #print(f"  PyTorch CPU Allocated: {self.torch_cpu_mem_before:.2f} GB -> {self.torch_cpu_mem_after_bwd:.2f} GB")
         #print(f"  - After Forward   | GPU: {self.gpu_mem_after_fwd:.2f} GB (Peak: {self.gpu_peak_mem_fwd:.2f} GB), CPU: {self.cpu_mem_after_fwd:.2f} GB")
         #print(f"  - After Backward  | GPU: {self.gpu_mem_after_bwd:.2f} GB (Peak: {self.gpu_peak_mem_bwd:.2f} GB), CPU: {self.cpu_mem_after_bwd:.2f} GB\n")

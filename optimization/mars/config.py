@@ -27,8 +27,18 @@ class MarsConfig(PeftConfig):
             `nn.ModuleList` of the model, which is often called `'layers'` or `'h'`.
     """
 
-    r: int = field(default=8, metadata={"help": "Lora attention dimension"}),
-    subspace: Tuple[int, int] = field(default=(8, 0), metadata={"help": "Lora attention dimension. First element original rank space, second element the subspace to take."}),
+    r: int = field(default=8, metadata={"help": "Lora attention dimension"})
+    shared_r: Optional[int] = field(default=None, metadata={"help": "Shared rank attention dimension"})
+    optimization_level: int = field(default=0, metadata={
+        "help": (
+            "Optimization level to enable with other configurations:"
+            "0 - fully trainable all layers and no quantization"
+            "1 - fully trainable layers with partial quantization (specified in `modules_to_quantize`)"
+            "2 - fully trainable layers with full quantization"
+            "3 - partial trainable layers (frozen and fused down projection layers) with full quantization"
+            )
+        }
+    )
     target_modules: Optional[Union[list[str], str]] = field(
         default=None,
         metadata={
@@ -38,19 +48,47 @@ class MarsConfig(PeftConfig):
                 "This can also be a wildcard 'all-linear' which matches all linear/Conv1D layers except the output layer."
                 "If not specified, modules will be chosen according to the model architecture, If the architecture is "
                 "not known, an error will be raised -- in this case, you should specify the target modules manually."
-            ),
+            )
         },
-    ),
+    )
+    enabled_qkv: Optional[Tuple[str, ...]] = field(default=("q", "k", "v"), metadata={"help": "Which QKV projections to enable in the shared QKV adapter. Please select between 'q', 'k' and 'v'."})
+    enabled_mlp: bool = field(
+        default=True,
+        metadata={"help": "Set this to True if we should have a shared down_proj and gate_proj down projection layers."},
+    )
     mixture: bool = field(
         default=False,
         metadata={"help": "Set this to True if the adapter layer should include a mixture layer."},
     )
-    share_weights: bool = field(
-        default=True,
-        metadata={"help": "Set this to True if the adapter layers should share frozen weights."},
+    modules_to_quantize: Optional[list[str]] = field(
+        default=None,
+        metadata={
+            "help": (
+                "List of modules in which we apply dynamic quantization on base layers."
+                "Choose between the following options: 'q', 'k', 'v', 'gate', 'down', 'up', 'o'."
+            )
+        },
+    )
+    modules_to_preserve_errors: Optional[list[str]] = field(
+        default=None,
+        metadata={
+            "help": (
+                "List of modules in which preserve the quantization error."
+                "If we have shared QKV or shared MLP enabled, we can only have in max of those modules errors preserved."
+                "Choose between the following options: 'q', 'k', 'v', 'gate', 'down', 'up', 'o'."
+            )
+        },
+    )
+    orthogonal_init: bool = field(
+        default=False,
+        metadata={"help": "Whether to enable orthogonal initialization in intermediate matrices."},
+    )
+    onnx_export: bool = field(
+        default=False,
+        metadata={"help": "Whether to prepare the model for ONNX export (disable quantization)."},
     )
     alpha: int = field(default=8, metadata={"help": "Scaling factor, computed as alpha/rank."})
-    seed: int = field(default=41, metadata={"help": "Seed for initializing layers."})
+    seed: int = field(default=42, metadata={"help": "Seed for initializing layers."})
     bias: str = field(default="none", metadata={"help": "Bias type for Mars. Can be 'none', 'all' or 'mars_only'"})
     fan_in_fan_out: bool = field(
         default=False,
@@ -91,9 +129,13 @@ class MarsConfig(PeftConfig):
         #super().__post_init__()
         # PEFT type
         self.peft_type = "MARS"
-        self.target_modules = (
-            set(self.target_modules) if isinstance(self.target_modules, list) else self.target_modules
-        )
+        
+        # Convert target_modules to list instead of set to avoid potential issues
+        if isinstance(self.target_modules, list):
+            self.target_modules = list(set(self.target_modules))  # Remove duplicates but keep as list
+        elif isinstance(self.target_modules, set):
+            self.target_modules = list(self.target_modules)  # Convert set to list
+            
         # check for layers_to_transform and layers_pattern
         if self.layers_pattern and not self.layers_to_transform:
             raise ValueError("When `layers_pattern` is specified, `layers_to_transform` must also be specified. ")
