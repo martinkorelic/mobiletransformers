@@ -26,17 +26,19 @@ from onnxruntime import InferenceSession, SessionOptions
 from inference.generator import generate_tokens_onnx
 from tools.utils import move_files_excluding, delete_directory
 from tools.parser_config import ARTIFACT_CONFIG, TRAIN_CONFIG, INFERENCE_CONFIG
+from tools.tokenizer_export import export_tokenizer_config
 
 def gen_artifacts(train_dir,
                   artifact_dir="artifacts",
                   model_name="quant_model.onnx",
-                  train_cfg="training_config.json"):
+                  train_cfg_file="training_config.json",
+                  training_config={}):
     """
     Generates the training artifacts from the provided model and directory.
     Needs the training configuration provided along with the model in the same directory. 
     """
     onnx_model_path = os.path.join(train_dir, model_name)
-    train_cfg_path = os.path.join(train_dir, train_cfg)
+    train_cfg_path = os.path.join(train_dir, train_cfg_file)
 
     onnx.checker.check_model(onnx_model_path, full_check=True)
     onnx_model = onnx.load(onnx_model_path)
@@ -68,9 +70,10 @@ def gen_artifacts(train_dir,
                                 optimizer = artifacts.OptimType.AdamW,
                                 artifact_directory = artifact_dir)
     
-    with open(f'{artifact_dir}/{train_cfg}', "w", encoding="utf-8") as f:
+    with open(f'{artifact_dir}/{train_cfg_file}', "w", encoding="utf-8") as f:
         json.dump({
             "requires_grad": requires_grad,
+            **training_config
             #"frozen_params": frozen_params
         }, f, ensure_ascii=False)
 
@@ -427,6 +430,8 @@ def convert_pipeline(model_id,
                     test_generation = True,
                     inference_config = {},
                     test_generation_config = {},
+                    train_config = {},
+                    export_tokenizer = True, 
                     delete_models=False):
     """
     ONNX conversion for training and inference artifacts.
@@ -451,7 +456,7 @@ def convert_pipeline(model_id,
         print(f"[ERROR] An error occurred: {e}")
     
     if gen_train_artifacts:
-        gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=train_model_name)
+        gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=train_model_name, training_config=train_config)
         print("[INFO] Generated training artifacts.")
 
     if test_training:
@@ -479,7 +484,10 @@ def convert_pipeline(model_id,
         move_files_excluding(inference_dir, f'{build_dir}/inference', exclude_files=[inference_model_name])
         print(f"[INFO] Moved the rest of generation configuration files to: {build_dir}/inference")
 
-    
+    # Export tokenizer if needed
+    if export_tokenizer:
+        export_tokenizer_config(model_id, build_dir, os.environ['HF_TOKEN'])
+
     # Clean the generated models if needed
     if delete_models:
         delete_directory(inference_dir)
@@ -577,6 +585,12 @@ def parse_arguments():
         help="Deletes the previously generated models."
     )
     parser.add_argument(
+        "--export_tokenizer",
+        type=bool,
+        default=True,
+        help="Exports tokenizer files and config in seperate dir."
+    )
+    parser.add_argument(
         "--config_file",
         type=str,
         help="Path to configuration file to load additional options. This config file will overwrite all other arguments."
@@ -595,6 +609,18 @@ def parse_arguments():
             weight_input = false : Whether to include trainable weights as model input
             include_metadata = true : Whether to include the model metadata (this is automatically added if the model type is native).
             gen_config_file = genai_config.json : # Name of the generation config file included in the same directory as inference model (if included this overwrites the test_generation_config options).
+            """
+            )
+    )
+    parser.add_argument(
+        "--train_config",
+        type=str,
+        nargs="*",
+        metavar="KEY=VALUE",
+        default=[],
+        help=textwrap.dedent("""\
+         Key value pairs for various options. Currently supports:
+            ... TODO add description
             """
             )
     )
@@ -687,5 +713,7 @@ if __name__ == "__main__":
         #test_generation=args.test_generation,
         inference_config=args.inference_config,
         #test_generation_config=args.test_generation_config
+        export_tokenizer=args.export_tokenizer,
+        train_config=args.train_config,
         delete_models=args.delete_models
     )

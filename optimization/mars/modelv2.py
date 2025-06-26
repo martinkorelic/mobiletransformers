@@ -40,12 +40,16 @@ class MarsModel(BaseTuner):
 
         # Map enabled projections to indices in tuple
         enabled_list = list(enabled_qkv)
+
+        # TODO: Check modules if they are even in target_modules
+        any_mlp = any([ 'gate_proj' in tm or 'up_proj' in tm for tm in config.target_modules])
+        any_qkv = any([ 'q_proj' in tm or 'k_proj' in tm or 'v_proj' in tm for tm in config.target_modules])
  
         # Register hooks for each attention layer
         for name, module in model.named_modules():
 
             # TODO: Here we assume the attention layer is named "self_attn"
-            if isinstance(module, type(model.model.layers[0].self_attn)):
+            if isinstance(module, type(model.model.layers[0].self_attn)) and any_qkv:
 
                 # Create a separate shared adapter for each attention layer
                 module.shared_qkv = SharedAttentionAdapter(
@@ -78,7 +82,6 @@ class MarsModel(BaseTuner):
 
                     shared_outputs = getattr(module.shared_qkv, "_shared_outputs", None)
                     if shared_outputs is None:
-                        print("NO QKVS")
                         return args
 
                     try:
@@ -107,7 +110,7 @@ class MarsModel(BaseTuner):
                 register_proj_hook('k_proj', 'k')
                 register_proj_hook('v_proj', 'v')
 
-            elif isinstance(module, type(model.model.layers[0].mlp)):
+            elif isinstance(module, type(model.model.layers[0].mlp)) and any_mlp:
                 module.shared_mlp = SharedMLPAdapter(
                     hidden_size=model.config.hidden_size,
                     rank=config.r,

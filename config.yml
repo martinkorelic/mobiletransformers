@@ -1,7 +1,7 @@
 ###################### TRAINING BUILDER CONFIGURATION ######################
 TRAIN_BUILDER:
-  model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0" #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-  output: "./build/train_models"
+  model_id: "TinyLlama/TinyLlama_v1.1" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0" #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  output: "./build/train_models_lora_4"
 
   training_mode: true
   # lora, lora-xs, mars
@@ -13,9 +13,7 @@ TRAIN_BUILDER:
     - k_proj
     - v_proj
     - o_proj
-    - gate_proj
-    - down_proj
-    - up_proj
+
   lora_rank: 4
   quantize: true
   # Weight types for quantizing
@@ -73,6 +71,7 @@ INFERENCE_BUILDER:
 
   prompt_templates: false
 
+  export_tokenizer: true
 
 ###################### ARTIFACT BUILDER CONFIGURATION ######################
 ARTIFACT_BUILDER:
@@ -87,6 +86,8 @@ ARTIFACT_BUILDER:
   gen_train_artifacts: true
   gen_inference_artifacts: false
 
+  export_tokenizer: true
+
   test_training: true
   test_eval: false
   inference_config:
@@ -96,6 +97,26 @@ ARTIFACT_BUILDER:
     weight_input : false # Whether to include trainable weights as model input
     include_metadata: true # Whether to include the model metadata
   
+  train_config:
+    trainFile: "logiqa_train.jsonl"
+    taskName: "logiqa"
+    batchSize: 1
+    minLearningRate: 0.0001
+    numTrainEpochs: 1
+    warmupSteps: 10
+    maxSteps: 20
+    saveSteps: 55
+    gradAccumSteps: 2
+    removeLongSample: true
+    maxSequenceLength: 512
+    maxDatasetLength: 256
+    datasetBatchSize: 64
+    schedulerType: linear # "linear", "cosine"
+
+  
+  # TODO: export dataset
+  export_dataset: false
+
   # Delete the generated models from the "*_models" directories
   delete_models: false
 
