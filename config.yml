@@ -1,7 +1,7 @@
 ###################### TRAINING BUILDER CONFIGURATION ######################
 TRAIN_BUILDER:
   model_id: "TinyLlama/TinyLlama_v1.1" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0" #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-  output: "./build/train_models_lora_4"
+  output: "./build/train_models"
 
   training_mode: true
   # lora, lora-xs, mars
@@ -13,8 +13,11 @@ TRAIN_BUILDER:
     - k_proj
     - v_proj
     - o_proj
+    - gate_proj
+    - down_proj
+    - up_proj
 
-  lora_rank: 4
+  lora_rank: 8
   quantize: true
   # Weight types for quantizing
   weight_type: "QInt8"
@@ -30,6 +33,9 @@ TRAIN_BUILDER:
       - lora
       - mars
       - shared
+      - gate
+      - o_proj
+      - q_proj
     # Quantize only specific node with keywords in exclude_specific_layers
     exclude_specific: false
     exclude_specific_layers:
@@ -44,13 +50,13 @@ TRAIN_BUILDER:
   lora-xs:
     config: config
   mars:
-    optimization_level: 3
+    optimization_level: 1
     modules_to_preserve_errors:
       - q
     modules_to_quantize:
-      - q
-      - k
-      - v
+      - up
+      - down
+      - gate
 
 ###################### INFERENCE BUILDER CONFIGURATION ######################
 INFERENCE_BUILDER:
@@ -90,22 +96,27 @@ ARTIFACT_BUILDER:
 
   test_training: true
   test_eval: false
+  
   inference_config:
-    inference_type: "genai" # "native", "genai"
+    type: "genai" # "native", "genai"
+    maxSequenceLength: 128
+    trackMetrics: true
+    timeStepUpdate: 5
+    systemPrompt: ""
     output_inference_model: "model"
     opset: 20
     weight_input : false # Whether to include trainable weights as model input
     include_metadata: true # Whether to include the model metadata
   
   train_config:
-    trainFile: "logiqa_train.jsonl"
-    taskName: "logiqa"
+    trainFile: logiqa_train
+    taskName: logiqa
     batchSize: 1
     minLearningRate: 0.0001
     numTrainEpochs: 1
     warmupSteps: 10
     maxSteps: 20
-    saveSteps: 55
+    saveSteps: 50
     gradAccumSteps: 2
     removeLongSample: true
     maxSequenceLength: 512
@@ -113,9 +124,8 @@ ARTIFACT_BUILDER:
     datasetBatchSize: 64
     schedulerType: linear # "linear", "cosine"
 
-  
-  # TODO: export dataset
-  export_dataset: false
+  # Exports the dataset inside the train directory
+  export_dataset: true
 
   # Delete the generated models from the "*_models" directories
   delete_models: false

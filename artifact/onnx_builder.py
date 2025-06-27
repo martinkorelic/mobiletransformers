@@ -24,8 +24,8 @@ from onnxruntime.training.api import CheckpointState, Module, Optimizer
 import onnxruntime as rt
 from onnxruntime import InferenceSession, SessionOptions
 from inference.generator import generate_tokens_onnx
-from tools.utils import move_files_excluding, delete_directory
-from tools.parser_config import ARTIFACT_CONFIG, TRAIN_CONFIG, INFERENCE_CONFIG
+from tools.utils import move_files_excluding, delete_directory, load_and_save_dataset
+from tools.parser_config import ARTIFACT_CONFIG, TRAIN_CONFIG, INFERENCE_CONFIG, TASK_NAME_TO_DATASET
 from tools.tokenizer_export import export_tokenizer_config
 
 def gen_artifacts(train_dir,
@@ -70,6 +70,7 @@ def gen_artifacts(train_dir,
                                 optimizer = artifacts.OptimType.AdamW,
                                 artifact_directory = artifact_dir)
     
+    # Export training configs
     with open(f'{artifact_dir}/{train_cfg_file}', "w", encoding="utf-8") as f:
         json.dump({
             "requires_grad": requires_grad,
@@ -432,6 +433,7 @@ def convert_pipeline(model_id,
                     test_generation_config = {},
                     train_config = {},
                     export_tokenizer = True, 
+                    export_dataset = True,
                     delete_models=False):
     """
     ONNX conversion for training and inference artifacts.
@@ -465,7 +467,8 @@ def convert_pipeline(model_id,
                         test_evaluate=test_eval)
         print("[INFO] Training check completed.")
     
-    if gen_inference_artifacts and inference_config["inference_type"] == "genai":
+    # Export generative AI model
+    if gen_inference_artifacts and inference_config["type"] == "genai":
         gen_genai(model_id=model_id,
                   model_path=f'{inference_dir}/{inference_model_name}',
                   training_config=f'{train_dir}/training_config.json',
@@ -477,16 +480,33 @@ def convert_pipeline(model_id,
                   include_metadata=inference_config["include_metadata"],
                   opset_version=inference_config["opset"],
                   #test_generation_config=test_generation_config,
-                  check_model=inference_config["inference_type"] == "native")
+                  check_model=inference_config["type"] == "native")
         print("[INFO] Generated the artifact inference model graph.")
 
         # Move the rest of the files
         move_files_excluding(inference_dir, f'{build_dir}/inference', exclude_files=[inference_model_name])
         print(f"[INFO] Moved the rest of generation configuration files to: {build_dir}/inference")
 
+    # Export native inference model
+    elif gen_inference_artifacts and inference_config["type"] == "native":
+
+        # TODO: Export native inference model
+
+        # Export generation configuration
+        with open(f'{inference_dir}/generation_config.json', "w", encoding="utf-8") as f:
+            json.dump(inference_config, f, ensure_ascii=False)
+
     # Export tokenizer if needed
     if export_tokenizer:
         export_tokenizer_config(model_id, build_dir, os.environ['HF_TOKEN'])
+
+    if export_dataset:
+        if "taskName" not in train_config or "trainFile" not in train_config:
+            print(f"[WARNING] taskName or trainFile not defined in train_config!")
+        elif train_config["taskName"] not in TASK_NAME_TO_DATASET:
+            print(f"[WARNING] taskName unknown!")
+        else:
+            load_and_save_dataset(TASK_NAME_TO_DATASET[train_config["taskName"]], train_path, train_config["trainFile"], split='train', max_dataset_length=train_config['maxDatasetLength'])
 
     # Clean the generated models if needed
     if delete_models:
@@ -596,6 +616,12 @@ def parse_arguments():
         help="Path to configuration file to load additional options. This config file will overwrite all other arguments."
     )
     parser.add_argument(
+        "--export_dataset",
+        type=bool,
+        default=True,
+        help="Exports dataset file in train dir."
+    )
+    parser.add_argument(
         "--inference_config",
         type=str,
         nargs="*",
@@ -603,7 +629,7 @@ def parse_arguments():
         default=[],
         help=textwrap.dedent("""\
          Key value pairs for various options. Currently supports:
-            inference_type: genai/native : Type of inference model. If "native" we can perform model checking and other options. If "genai" we cannot perform model checking.
+            type: genai/native : Type of inference model. If "native" we can perform model checking and other options. If "genai" we cannot perform model checking.
             output_inference_model = name : Name of the inference model to generate.
             opset = 20 : Opset version for model operators.
             weight_input = false : Whether to include trainable weights as model input
@@ -715,5 +741,6 @@ if __name__ == "__main__":
         #test_generation_config=args.test_generation_config
         export_tokenizer=args.export_tokenizer,
         train_config=args.train_config,
+        export_dataset=args.export_dataset,
         delete_models=args.delete_models
     )

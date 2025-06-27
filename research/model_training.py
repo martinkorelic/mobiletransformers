@@ -18,6 +18,7 @@ from optimization.mars.modelv2 import MarsModel
 
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
+from tools.utils import preload_dataset
 
 def add_peft_type(name, value):
     """Dynamically add a new value to the PeftType enum."""
@@ -99,38 +100,6 @@ class DataCollatorForSupervisedDataset:
             "labels": labels,
             "attention_mask": attention_mask
         }
-
-def preload_dataset(dataset_id, dataset_name=None):
-
-    dataset_ids = dataset_id.split("/")
-    
-    # Take local data
-    if len(dataset_ids) >= 2 and dataset_ids[-2] == "data":
-
-        filepath = dataset_id
-        data = None
-
-        if os.path.exists(f'./{dataset_id}.json'):
-            filepath = f'./{dataset_id}.json'
-
-            with open(filepath, 'r', encoding="utf-8") as f:
-                data = json.load(f)
-
-        elif os.path.exists(f'./{dataset_id}.jsonl'):
-            filepath = f'./{dataset_id}.jsonl'
-
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = [json.loads(line) for line in f]
-
-        # Convert to Hugging Face Dataset
-        dataset = Dataset.from_list(data)
-
-        # Create a DatasetDict with the "train" split
-        dataset_dict = DatasetDict({"train": dataset})
-
-        return dataset_dict
-
-    return load_dataset(dataset_id, dataset_name)
 
 
 # Define preprocessing function for tokenization
