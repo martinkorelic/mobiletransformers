@@ -112,9 +112,7 @@ ARTIFACT_BUILDER:
     trainFile: logiqa_train
     taskName: logiqa
     batchSize: 1
-    minLearningRate: 0.0001
     numTrainEpochs: 1
-    warmupSteps: 10
     maxSteps: 20
     saveSteps: 50
     gradAccumSteps: 2
@@ -123,6 +121,26 @@ ARTIFACT_BUILDER:
     maxDatasetLength: 256
     datasetBatchSize: 64
     schedulerType: linear # "linear", "cosine"
+    schedulerOptions:
+      # Cosine options
+      minLearningRate: 0
+      cosineLearningRate: 0.0001
+      warmupSteps: 10
+      # Linear options
+      linearLearningRate: 0.0001
+      startFactor: 1
+      endFactor: 0.333
+    deviceOptions:
+      enableProfiling: false
+      # Core config id - sets inter / intra op threads
+      # "opt3" - 6 / 4
+      # "opt2" - 4 / 2
+      # "opt1" - 1 / 1
+      coreConfigId: opt2
+      # Memory config id
+      # "low_mem" - disables ONNX Runtime memory arena and pattern 
+      # "high_perf" - enables ONNX Runtime memory arena and pattern 
+      memoryConfigId: low_mem 
 
   # Exports the dataset inside the train directory
   export_dataset: true
