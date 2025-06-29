@@ -21,6 +21,8 @@ from peft import PeftType
 from optimization.mars.config import MarsConfig
 from optimization.mars.modelv2 import MarsModel
 
+from trainer.utils import create_mars_adapter_mapping, create_lora_mapping
+
 def add_peft_type(name, value):
     """Dynamically add a new value to the PeftType enum."""
     setattr(PeftType, name, value)
@@ -283,6 +285,12 @@ def optimum_hf_export(model_id,
     elif not training_mode or train_method == "nolora":
         lora_model = model
 
+    mapping = {}
+    if train_method == "mars":
+        mapping = create_mars_adapter_mapping(lora_model, mars_config.enabled_qkv, mars_config.enabled_mlp)
+    elif train_method == "lora":
+        mapping = create_lora_mapping(lora_model)
+
     if training_mode:
         my_model = OnnxTrainerWrapper(lora_model.base_model.model)
         my_model.train()
@@ -303,7 +311,8 @@ def optimum_hf_export(model_id,
         with open(f"{model_output}/training_config.json", "w+", encoding="utf-8") as f:
             json.dump({
                 "requires_grad": grad_layers,
-                "frozen_params": no_grad_layers
+                "frozen_params": no_grad_layers,
+                "peft_mapping": mapping
             }, f, ensure_ascii=False)
 
     # Post-processing

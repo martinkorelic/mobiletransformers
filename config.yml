@@ -74,10 +74,16 @@ INFERENCE_BUILDER:
 
   # Specify whether to use LoRA and apply non-quantization to TRAIN_BUILDER.lora_target nodes.
   use_lora: false
+  use_qdq: true
+  force_unpacked_matmul: true
+  dynamic_quantize: true
 
   prompt_templates: false
-
   export_tokenizer: false
+  export_genai_config: false
+
+  non_quant_nodes_keywords:
+    - 
 
 ###################### ARTIFACT BUILDER CONFIGURATION ######################
 ARTIFACT_BUILDER:
@@ -96,6 +102,7 @@ ARTIFACT_BUILDER:
 
   export_inference_config: true
   export_tokenizer: true
+  export_merger: true
 
   test_training: true
   test_eval: false

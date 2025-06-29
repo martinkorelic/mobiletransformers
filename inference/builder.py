@@ -10,8 +10,9 @@ This uses optimizations prepared by ONNX GenAI framework and exposes the needed 
 """
 
 from onnx import helper, numpy_helper, TensorProto, external_data_helper, save_model
+import onnx
 from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer, QuantFormat
-from onnxruntime.quantization import QuantFormat, QuantType, quantize_dynamic
+from onnxruntime.quantization import QuantFormat, QuantType, quantize_dynamic, quantize_static
 from onnxruntime.quantization.onnx_quantizer import ONNXQuantizer, QuantizationMode
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 import numpy as np
@@ -239,7 +240,7 @@ class Model:
             "scale": 1 / np.sqrt(self.head_size),            # Scale value after calculating Q x K' in attention
             "softcap": softcap,                              # Softcap value to prevent values from exploding in attention
             "use_rotemb_in_attn": False,                     # Use rotary embeddings within attention (instead of a separate RotaryEmbedding op)
-            #"force_unpacked_matmul": True,                   # Force the matmul of attention to be unpacked (for importing LoRA merged adapters)
+            "force_unpacked_matmul": extra_options["force_unpacked_matmul"],                   # Force the matmul of attention to be unpacked (for importing LoRA merged adapters)
             "use_packed_matmul": False,                      # Use packed MatMul (instead of 3 separate MatMuls for Q/K/V)
             "block_sparse": {                                # Block-sparse attention-specific variables
                 "sparse_block_size": sparse_block_size,      # Sparse block size for SparseAttention op
@@ -263,8 +264,8 @@ class Model:
             # DML doesn't support packed Q/K/V for GQA yet
             # Packed MatMul with LoRA/QLoRA is not currently supported
             self.attention_attrs["use_packed_matmul"] = (self.ep != "dml" and not self.matmul_attrs["use_lora"])
-            #if self.attention_attrs["force_unpacked_matmul"]:
-            #    self.attention_attrs["use_packed_matmul"] = False
+            if self.attention_attrs["force_unpacked_matmul"]:
+                self.attention_attrs["use_packed_matmul"] = False
 
             # GQA + Rot.Emb. does not require `position ids` as input
             if self.ep != "dml":
@@ -311,7 +312,9 @@ class Model:
                 "non_quant_nodes_keywords": extra_options.get("non_quant_nodes", ())
             },
             "use_qdq": extra_options.get("use_qdq", False),           # Use QDQ format
+            "dynamic_quantize": extra_options.get("dynamic_quantize", False)
         }
+
         if self.quant_type is not None:
             # Create quantized attributes from quantization config
             self.quant_attrs["bits"] = config.quantization_config["bits"]
@@ -448,9 +451,31 @@ class Model:
             os.rmdir(self.cache_dir)
 
         # Quantize ONNX model to desired precision
-        # TODO: Replace by quantizing the MatMuls as they are created
         already_quantized_in_qdq_format = self.quant_type is not None and self.quant_attrs["use_qdq"]  # Skip quantizing `MatMul` in `DequantizeLinear --> Transpose --> MatMul` path
         if self.onnx_dtype == "int4" and not already_quantized_in_qdq_format:
+            # Save the model beforehand, because it's easier to quantize dynamically afterwards
+            if self.quant_attrs["dynamic_quantize"]:
+                # Save ONNX model with only one external data file and delete any existing duplicate copies
+                out_path = os.path.join(out_dir, self.filename)
+                data_path = os.path.join(out_dir, os.path.basename(out_path) + ".data")
+                if os.path.exists(out_path):
+                    print(f"Overwriting {out_path}")
+                    os.remove(out_path)
+                if os.path.exists(data_path):
+                    print(f"Overwriting {data_path}")
+                    os.remove(data_path)
+                save_model(
+                    model,
+                    out_path,
+                    save_as_external_data=True,
+                    all_tensors_to_one_file=True,
+                    location=os.path.basename(data_path),
+                    size_threshold=0,
+                    convert_attribute=False,
+                )
+                model = self.to_int4(model, dynamic_quantize=True)
+                return
+            
             model = self.to_int4(model)
 
         # Save ONNX model with only one external data file and delete any existing duplicate copies
@@ -473,7 +498,7 @@ class Model:
             convert_attribute=False,
         )
 
-    def to_int4(self, model):
+    def to_int4(self, model, dynamic_quantize=False):
 
         excluding = []
 
@@ -485,29 +510,26 @@ class Model:
         print("Excluding nodes for quantization:")
         print(excluding)
 
-        """
-        quantizer = ONNXQuantizer(
-            model,
-            per_channel=True,
-            reduce_range=False,
-            mode=QuantizationMode.IntegerOps,
-            static=False,  # static
-            weight_qType=QuantType.QUInt8,
-            activation_qType=QuantType.QUInt8,  # dynamic activation only supports uint8
-            tensors_range=None,
-            nodes_to_quantize=None,
-            nodes_to_exclude=excluding,
-            op_types_to_quantize=["MatMul", "Gather"],
-            extra_options={'ActivationSymmetric': False,             # True for inference speed. False may keep more accuracy.
-                   'WeightSymmetric': False,                 # True for inference speed. False may keep more accuracy.
-                   'EnableSubgraph': True,                   # True for more quant.
-                   'ForceQuantizeNoInputCheck': False,       # True for more quant.
-                   'MatMulConstBOnly': False                 # False for more quant. Sometime, the inference speed may get worse.
-                   },
-        )
-        
-        return quantizer.quantize_model()
-        """
+        if dynamic_quantize:
+
+            quantize_dynamic(
+                extra_options={
+                        'ActivationSymmetric': False,         # True for inference speed. False may keep more accuracy.
+                        'WeightSymmetric': False,                 # True for inference speed. False may keep more accuracy.
+                        'EnableSubgraph': False,                   # True for more quant.
+                        'ForceQuantizeNoInputCheck': True,       # True for more quant.
+                        'MatMulConstBOnly': True                 # False for more quant. Sometime, the inference speed may get worse. Keep this True in case of training graph.
+                },
+                nodes_to_exclude=excluding,
+                model_input='build/inference_models/model.onnx',
+                model_output='build/inference_models/quant_model.onnx',
+                per_channel=True,
+                use_external_data_format=True,
+                weight_type=QuantType.QUInt8,
+                reduce_range=False
+            )
+
+            return model
 
         quant = MatMul4BitsQuantizer(
             model=model,
@@ -777,17 +799,35 @@ class Model:
             if self.quant_attrs["use_qdq"]:
                 return self.make_matmul_int4_qdq(matmul, basename, root_input, **kwargs)
             else:
+                print("DONT MAKE QDQ")
                 return self.make_matmul_int4(matmul, basename, root_input, **kwargs)
         else:
             raise NotImplementedError(f"The {self.onnx_dtype} precision is not currently supported.")
 
     def make_matmul_fp16_or_fp32(self, matmul, name, root_input, **kwargs):
         weight = name[1:].replace("/", ".") + ".weight"
-        self.make_external_tensor(matmul.weight.detach().numpy().transpose().astype(self.to_numpy_dtype[self.io_dtype]), weight)
+        # Store the original weight data without transposing
+        self.make_external_tensor(matmul.weight.detach().numpy().astype(self.to_numpy_dtype[self.io_dtype]), weight)
+
+        # Create transpose node to transpose the weight
+        weight_transpose_name = f"{name}/weight_transpose"
+        original_weight_shape = matmul.weight.shape  # [out_features, in_features]
+        transposed_weight_shape = [original_weight_shape[1], original_weight_shape[0]]  # [in_features, out_features]
+        
+        self.make_transpose(
+            name=weight_transpose_name,
+            root_input=weight,
+            dtype=self.io_dtype,
+            shape=transposed_weight_shape,
+            perm=[1, 0]  # Transpose dimensions 0 and 1
+        )
 
         last_dim = matmul.weight.shape[0]
         output = "logits" if kwargs.get("logits", False) else f"{name}/output_0"
-        self.make_node("MatMul", inputs=[root_input, weight], outputs=[output], name=name)
+        
+        # Use the transposed weight output in MatMul
+        transposed_weight_output = f"{weight_transpose_name}/output_0"
+        self.make_node("MatMul", inputs=[root_input, transposed_weight_output], outputs=[output], name=name)
         self.make_value_info(output, self.io_dtype, shape=['batch_size', 'sequence_length', last_dim])
 
         return name
@@ -864,6 +904,8 @@ class Model:
             return self.make_matmul_fp16_or_fp32(matmul, matmul_name, root_input, **kwargs)
 
         dequantize_output = self.make_dequantize_linear(f"{matmul_name}/DequantizeLinear", matmul)
+
+        print("Creating dequantizeLinear...")
 
         # Add a transpose instead of transposing the weights offline. The reason for this is that it is more natural and usually more performant to
         # compute quantized matmul when the weights are transposed. In most implementations, the transpose should usually be converted to a "transposeB"
@@ -3216,10 +3258,12 @@ def create_model(model_name, input_path, output_dir, precision, execution_provid
         onnx_model = Model(config, io_dtype, precision, execution_provider, cache_dir, extra_options)
 
     # Make GenAI config
-    onnx_model.make_genai_config(hf_name, extra_kwargs, output_dir)
+    if extra_options["export_genai_config"]:
+        onnx_model.make_genai_config(hf_name, extra_kwargs, output_dir)
 
     # Copy Hugging Face processing files to output folder
-    onnx_model.save_processing(hf_name, extra_kwargs, output_dir)
+    if extra_options["export_tokenizer"]:
+        onnx_model.save_processing(hf_name, extra_kwargs, output_dir)
 
 
 def get_args():
@@ -3321,6 +3365,7 @@ def get_args():
                 prompt_templates = 1: Include per-role prompt templates in the GenAI config file. Default is 0 (not to include).
                 non_quant_nodes = q_proj/k_proj...: Specify the keywords of weights or nodes that will not be quantized. This is for using input of merged LoRA adapters.
                 use_lora = 1 : Specify whether to add non-quantization for the LoRA adapter nodes.
+                force_unpacked_matmul = 1: Whether to force unpacking MatMul nodes
             """),
     )
 
@@ -3350,7 +3395,13 @@ if __name__ == '__main__':
         else:
             extra_options["non_quant_nodes"] = []
         extra_options["prompt_templates"] = "1" if config_dict[INFERENCE_CONFIG]["prompt_templates"] else "0"
+        extra_options["int4_accuracy_level"] = config_dict[INFERENCE_CONFIG]["int4_accuracy_level"] if "int4_accuracy_level" in config_dict[INFERENCE_CONFIG] else 4
         extra_options["int4_block_size"] = config_dict[INFERENCE_CONFIG]["int4_block_size"] if "int4_block_size" in config_dict[INFERENCE_CONFIG] else 32
+        extra_options["force_unpacked_matmul"] = config_dict[INFERENCE_CONFIG]["force_unpacked_matmul"]
+        extra_options["export_tokenizer"] = config_dict[INFERENCE_CONFIG]["export_tokenizer"]
+        extra_options["export_genai_config"] = config_dict[INFERENCE_CONFIG]["export_genai_config"]
+        extra_options["use_qdq"] = config_dict[INFERENCE_CONFIG]["use_qdq"]
+        extra_options["dynamic_quantize"] = config_dict[INFERENCE_CONFIG]["dynamic_quantize"]
 
         for key, value in config_dict[INFERENCE_CONFIG].items():
             
@@ -3359,4 +3410,7 @@ if __name__ == '__main__':
             elif hasattr(extra_options, key):
                 setattr(extra_options, key, value)
 
+
+    print(args)
+    print(extra_options)
     create_model(args.model_name, args.input, args.output, args.precision, args.execution_provider, args.cache_dir, **extra_options)

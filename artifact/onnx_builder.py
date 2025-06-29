@@ -28,6 +28,8 @@ from tools.utils import move_files_excluding, delete_directory, load_and_save_da
 from tools.parser_config import ARTIFACT_CONFIG, TRAIN_CONFIG, INFERENCE_CONFIG, TASK_NAME_TO_DATASET
 from tools.tokenizer_export import export_tokenizer_config
 
+from artifact.merger import create_mars_merger_model, create_lora_merger_model
+
 def gen_artifacts(train_dir,
                   artifact_dir="artifacts",
                   model_name="quant_model.onnx",
@@ -74,6 +76,7 @@ def gen_artifacts(train_dir,
     with open(f'{artifact_dir}/{train_cfg_file}', "w", encoding="utf-8") as f:
         json.dump({
             "requires_grad": requires_grad,
+            "peft_mapping": params["peft_mapping"],
             **training_config
             #"frozen_params": frozen_params
         }, f, ensure_ascii=False)
@@ -407,6 +410,7 @@ class CausalLMCE(onnxblock.Block):
         return self._loss1(logits)
 
 def convert_pipeline(model_id,
+                    peft_method,
                     train_model_name,
                     train_dir,
                     inference_model_name,
@@ -423,6 +427,7 @@ def convert_pipeline(model_id,
                     export_tokenizer = True, 
                     export_dataset = True,
                     export_inference_config = True,
+                    export_merger = True,
                     delete_models=False,
                     config_file_path="config.yml"):
     """
@@ -504,6 +509,12 @@ def convert_pipeline(model_id,
             print(f"[WARNING] taskName unknown!")
         else:
             load_and_save_dataset(TASK_NAME_TO_DATASET[train_config["taskName"]], train_path, train_config["trainFile"], split='train', max_dataset_length=train_config['maxDatasetLength'])
+
+    if export_merger:
+        if peft_method == "lora":
+            create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx')
+        elif peft_method == "mars":
+            create_mars_merger_model(f'{build_dir}/train/mars_merger_model.onnx')
 
     # Clean the generated models if needed
     if delete_models:
@@ -625,6 +636,12 @@ def parse_arguments():
         help="Exports dataset file in train dir."
     )
     parser.add_argument(
+        "--export_merger",
+        type=bool,
+        default=True,
+        help="Exports the merger model for adapters."
+    )
+    parser.add_argument(
         "--inference_config",
         type=str,
         nargs="*",
@@ -701,6 +718,7 @@ def parse_arguments():
 
         # Specific
         setattr(args, "model_id", config_dict[TRAIN_CONFIG]["model_id"])
+        setattr(args, "peft_method", config_dict[TRAIN_CONFIG]["train_method"])
         
         # Override any command-line argument with values from the config file
         for key, value in config_dict[ARTIFACT_CONFIG].items():
@@ -729,6 +747,7 @@ if __name__ == "__main__":
 
     convert_pipeline(
         model_id=args.model_id,
+        peft_method=args.peft_method,
         train_model_name=args.training_model,
         train_dir=args.training_dir,
         inference_model_name=args.inference_model,
@@ -746,6 +765,7 @@ if __name__ == "__main__":
         train_config=args.train_config,
         export_dataset=args.export_dataset,
         export_inference_config=args.export_inference_config,
+        export_merger=args.export_merger,
         delete_models=args.delete_models,
         config_file_path=args.config
     )
