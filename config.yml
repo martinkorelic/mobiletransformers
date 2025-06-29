@@ -77,7 +77,7 @@ INFERENCE_BUILDER:
 
   prompt_templates: false
 
-  export_tokenizer: true
+  export_tokenizer: false
 
 ###################### ARTIFACT BUILDER CONFIGURATION ######################
 ARTIFACT_BUILDER:
@@ -90,15 +90,18 @@ ARTIFACT_BUILDER:
   inference_model: "model.onnx"
 
   gen_train_artifacts: true
+
+  # NOTE: If the ONNX Runtime versions do not match, you need to use inference.builder to build inference model
   gen_inference_artifacts: false
 
+  export_inference_config: true
   export_tokenizer: true
 
   test_training: true
   test_eval: false
   
   inference_config:
-    type: "genai" # "native", "genai"
+    type: "native" # "native", "genai"
     maxSequenceLength: 128
     trackMetrics: true
     timeStepUpdate: 5

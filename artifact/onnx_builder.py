@@ -6,7 +6,7 @@ The models are utilized by the on-device application.
 import argparse
 import textwrap
 from typing import Dict, List
-import torch
+import subprocess
 import os, json, gc, time, yaml
 
 from dotenv import load_dotenv
@@ -395,8 +395,6 @@ def get_layers_with_grad(model):
             layers_with_grad.append(name)
     return layers_with_grad
 
-
-
 class CausalLMCE(onnxblock.Block):
     def __init__(self):
         super().__init__()
@@ -407,16 +405,6 @@ class CausalLMCE(onnxblock.Block):
 
     def build(self, logits, *args):
         return self._loss1(logits)
-
-class OnnxCausalLM(torch.nn.Module):
-    def __init__(self, model):
-        super(OnnxCausalLM, self).__init__()
-        # Initialize the pre-trained model
-        self.model = model
-
-    def forward(self, input_ids, attention_mask, labels):
-        return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-
 
 def convert_pipeline(model_id,
                     train_model_name,
@@ -434,7 +422,9 @@ def convert_pipeline(model_id,
                     train_config = {},
                     export_tokenizer = True, 
                     export_dataset = True,
-                    delete_models=False):
+                    export_inference_config = True,
+                    delete_models=False,
+                    config_file_path="config.yml"):
     """
     ONNX conversion for training and inference artifacts.
     Creates a build folder with train and inference subfolders each with models needed for tasks.
@@ -488,12 +478,19 @@ def convert_pipeline(model_id,
         print(f"[INFO] Moved the rest of generation configuration files to: {build_dir}/inference")
 
     # Export native inference model
+    # NOTE: If the ONNX Runtime versions do not match, you need to use inference.builder to build inference model
     elif gen_inference_artifacts and inference_config["type"] == "native":
 
-        # TODO: Export native inference model
+        # Export native inference model (only from config.yml configurations)
+        gen_args = [
+            "python", "-m", "inference.builder",
+            "--config", config_file_path
+        ]
+        subprocess.run(gen_args, check=True)
 
-        # Export generation configuration
-        with open(f'{inference_dir}/generation_config.json', "w", encoding="utf-8") as f:
+    # Export generation configuration
+    if export_inference_config:
+        with open(f'{build_dir}/inference/generation_config.json', "w", encoding="utf-8") as f:
             json.dump(inference_config, f, ensure_ascii=False)
 
     # Export tokenizer if needed
@@ -611,7 +608,13 @@ def parse_arguments():
         help="Exports tokenizer files and config in seperate dir."
     )
     parser.add_argument(
-        "--config_file",
+        "--export_inference_config",
+        type=bool,
+        default=True,
+        help="Exports inference configuration config in build dir."
+    )
+    parser.add_argument(
+        "--config",
         type=str,
         help="Path to configuration file to load additional options. This config file will overwrite all other arguments."
     )
@@ -693,8 +696,8 @@ def parse_arguments():
 
     config_dict = None
 
-    if args.config_file:
-        config_dict = load_config_from_file(args.config_file)
+    if args.config:
+        config_dict = load_config_from_file(args.config)
 
         # Specific
         setattr(args, "model_id", config_dict[TRAIN_CONFIG]["model_id"])
@@ -742,5 +745,7 @@ if __name__ == "__main__":
         export_tokenizer=args.export_tokenizer,
         train_config=args.train_config,
         export_dataset=args.export_dataset,
-        delete_models=args.delete_models
+        export_inference_config=args.export_inference_config,
+        delete_models=args.delete_models,
+        config_file_path=args.config
     )

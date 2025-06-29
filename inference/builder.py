@@ -3277,7 +3277,7 @@ def get_args():
     )
 
     parser.add_argument(
-        "--config_file",
+        "--config",
         type=str,
         help="Path to configuration file to load additional options. This config file will overwrite all other arguments."
     )
@@ -3338,8 +3338,8 @@ if __name__ == '__main__':
     args = get_args()
     extra_options = parse_extra_options(args.extra_options)
 
-    if args.config_file:
-        config_dict = load_config_from_file(args.config_file)
+    if args.config:
+        config_dict = load_config_from_file(args.config)
 
         # Specific
         setattr(args, "model_name", config_dict[TRAIN_CONFIG]["model_id"])
