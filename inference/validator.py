@@ -90,7 +90,7 @@ def load_config_from_file(config_file: str):
     return config
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description="Validator for exported ONNX graphs for on-device inference.", formatter_class=argparse.RawTextHelpFormatter)
+    parser = argparse.ArgumentParser(description="Validator for exported ONNX artifacts for on-device inference.", formatter_class=argparse.RawTextHelpFormatter)
 
     parser.add_argument(
         "--model_id",

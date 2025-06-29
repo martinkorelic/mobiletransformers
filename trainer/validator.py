@@ -1,3 +1,6 @@
+import argparse
+import textwrap
+from typing import Dict, List
 import onnx, time, os, gc, json
 
 from tqdm import tqdm
@@ -13,7 +16,9 @@ from datasets import load_dataset, Dataset, DatasetDict
 from collections import defaultdict
 
 from torch.utils.data import DataLoader
-from trainer.utils import DataCollatorForSupervisedDataset
+import yaml
+from trainer.utils import DataCollatorForSupervisedDataset, taskname_to_deepeval_preprocess_function
+from tools.parser_config import TASK_NAME_TO_DATASET, TRAIN_CONFIG, ARTIFACT_CONFIG, ARTIFACT_VALIDATOR_CONFIG
 
 from trainer.utils import (
     process_sample_dolly,
@@ -124,7 +129,7 @@ class ORTDataCurator:
         def process_sample(sample):
             
             if custom_preprocess:
-                return custom_preprocess(sample, self.tokenizer)
+                return custom_preprocess(sample, self.tokenizer, (self.batch_size > 1))
 
             return self.tokenizer(sample, return_dict=True, tokenize=True, return_tensors="np", padding=True, add_generation_prompt=False)
         
@@ -390,16 +395,158 @@ def check_duplicate_initializers(onnx_model_path):
     else:
         print("[INFO] No duplicate initializers with the same shape and values found.")
 
+def parse_extra_options(extra_options: List[str]) -> Dict[str, str]:
+    """
+    Parse additional options in KEY=VALUE format into a dictionary.
+    """
+    options_dict = {}
+    for option in extra_options:
+        if "=" in option:
+            key, value = option.split("=", 1)
+            options_dict[key] = value
+        else:
+            raise ValueError(f"Invalid format for extra option '{option}'. Use KEY=VALUE format.")
+        
+    print(f"Extra options: {options_dict}")
+    return options_dict
+
+def load_config_from_file(config_file: str):
+    """Load configurations from a YAML file into a dictionary."""
+    with open(config_file, 'r') as file:
+        config = yaml.safe_load(file)
+    return config
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Validator for exported ONNX artifacts for on-device training.", formatter_class=argparse.RawTextHelpFormatter)
+
+    parser.add_argument(
+        "--model_id",
+        type=str,
+        help="Identifier for the model to be converted."
+    )
+    parser.add_argument(
+        "--config_file",
+        type=str,
+        help="Path to configuration file to load additional options. This config file will overwrite all other arguments."
+    )
+    parser.add_argument(
+        "--training_artifact_dir",
+        type=str,
+        help="Path to training artifact directory."
+    )
+    parser.add_argument(
+        "--test_training_config",
+        type=str,
+        nargs="*",
+        metavar="KEY=VALUE",
+        default=[],
+        help=textwrap.dedent("""\
+         Key value pairs for various options. Currently supports:
+            ...
+            """
+            )
+    )
+    parser.add_argument(
+        "--test_scheduler_config",
+        type=str,
+        nargs="*",
+        metavar="KEY=VALUE",
+        default=[],
+        help=textwrap.dedent("""\
+         Key value pairs for various options. Currently supports:
+            ...
+            """
+            )
+    )
+    args = parser.parse_args()
+
+    user_train_generation_config = {}
+    default_train_generation_config = {
+        "trainFile": "",
+        "taskName": "",
+        "numTrainEpochs": 1,
+        "maxSteps": 4,
+        "saveSteps": 50,
+        "gradAccumSteps": 2,
+        "removeLongSample": True,
+        "maxSequenceLength": 512,
+        "maxDatasetLength": 256,
+        "datasetBatchSize": 64,
+        "testRatio": 0.1,
+        "split": True,
+        "shuffle": True,
+        "schedulerType": "cosine"
+    }
+
+    user_scheduler_generation_config = {}
+    default_scheduler_generation_config = {
+       "minLearningRate": 0,
+       "cosineLearningRate": 0.0001,
+       "warmupSteps": 10,
+       "linearLearningRate": 0.0001,
+       "startFactor": 1,
+       "endFactor": 0.333
+    }
+
+    config_dict = None
+
+    if args.config_file:
+        config_dict = load_config_from_file(args.config_file)
+
+        # Specific
+        setattr(args, "model_id", config_dict[TRAIN_CONFIG]["model_id"])
+        setattr(args, "training_artifact_dir", os.path.join(config_dict[ARTIFACT_CONFIG]["build_path"], "train"))
+        setattr(args, "test_scheduler_config", config_dict[ARTIFACT_VALIDATOR_CONFIG]["test_training_config"]["schedulerOptions"])
+        
+        # Override any command-line argument with values from the config file
+        for key, value in config_dict[ARTIFACT_VALIDATOR_CONFIG].items():
+            
+            # Convert to the correct type
+            if hasattr(args, key):
+                setattr(args, key, value)
+
+    else:
+        user_train_generation_config = parse_extra_options(args.test_training_config)
+        args.test_training_config = {**default_train_generation_config, **user_train_generation_config}
+        user_scheduler_generation_config = parse_extra_options(args.test_scheduler_config)
+        args.test_scheduler_config = {**default_scheduler_generation_config, **user_scheduler_generation_config}
+
+    return args
+
+
 if __name__ == "__main__":
+    args = parse_arguments()
 
-    data_cur = ORTDataCurator("TinyLlama/TinyLlama_v1.1", max_dataset_length=100, test_ratio=0.1)
+    print(f"{ARTIFACT_VALIDATOR_CONFIG} arguments:")
+    for arg, value in vars(args).items():
+        print(f"{arg}: {value}")
 
-    dataset_id = "data/logiqa_train"
+    data_cur = ORTDataCurator(model_id=args.model_id,
+                              max_dataset_length=args.test_training_config["maxDatasetLength"],
+                              remove_long_samples=args.test_training_config["removeLongSample"],
+                              max_context_length=args.test_training_config["maxSequenceLength"],
+                              test_ratio=args.test_training_config["testRatio"],
+                              split=args.test_training_config["split"],
+                              shuffle=args.test_training_config["shuffle"],
+                              batch_size=args.test_training_config["batchSize"]
+                              )
 
-    ds = preload_dataset(dataset_id)
+    ds = preload_dataset(TASK_NAME_TO_DATASET[args.test_training_config["taskName"]])
 
-    data_cur.prepare_dataset(ds, custom_preprocess=process_sample_logiqa_deepeval)
-    args = ORTTrainingArguments(export_inference=False, grad_accum_steps=2, max_steps=100, scheduler_type="cosine")
-    trainer = ORTTrainer("build/train_mars_8_4_frozen_shared", args, data_cur)
+    data_cur.prepare_dataset(ds, custom_preprocess=taskname_to_deepeval_preprocess_function(args.test_training_config["taskName"]))
+
+    # NOTE: Only validator for cosine scheduler for now
+    ort_args = ORTTrainingArguments(grad_accum_steps=args.test_training_config["gradAccumSteps"],
+                                learning_rate=args.test_scheduler_config["cosineLearningRate"],
+                                min_learning_rate=args.test_scheduler_config["minLearningRate"],
+                                num_train_epochs=args.test_training_config["numTrainEpochs"],
+                                warmup_steps=args.test_scheduler_config["warmupSteps"],
+                                max_steps=args.test_training_config["maxSteps"],
+                                max_sequence_length=args.test_training_config["maxSequenceLength"],
+                                save_steps=args.test_training_config["saveSteps"],
+                                scheduler_type="cosine"
+                                )
+    
+    trainer = ORTTrainer(args.training_artifact_dir, ort_args, data_cur)
 
     trainer.train()

@@ -80,7 +80,7 @@ def process_sample_logiqa_deepeval(samples, tokenizer, batched=True):
             inputs["input_ids"].squeeze(0),
             labels.squeeze(0)
         )
-    
+
     if batched:
         batch = {
             "input_ids": [],
@@ -99,7 +99,11 @@ def process_sample_logiqa_deepeval(samples, tokenizer, batched=True):
         
         return batch
     else:
-        tk = generate_prompt(samples)
+        tp = generate_prompt(samples)
+        tk = {
+            "input_ids": tp[0],
+            "labels": tp[1]
+        }
 
     return tk
 
@@ -253,7 +257,11 @@ def process_sample_hellaswag_deepeval(samples, tokenizer, batched=True):
         
         return batch
     else:
-        tk = generate_prompt(samples)
+        tp = generate_prompt(samples)
+        tk = {
+            "input_ids": tp[0],
+            "labels": tp[1]
+        }
 
     return tk
 
@@ -330,3 +338,15 @@ def process_sample_hellaswag(samples, tokenizer, batched=True):
     tk = tokenizer(text, return_tensors="pt", padding=True)
     return tk
 
+def taskname_to_deepeval_preprocess_function(preprocess_id):
+
+    if preprocess_id == "hellaswag":
+        return process_sample_hellaswag_deepeval
+    elif preprocess_id == "boolq":
+        return process_sample_boolq_deepeval
+    elif preprocess_id == "arc":
+        return process_sample_arc_deepeval
+    elif preprocess_id == "logiqa":
+        return process_sample_logiqa_deepeval
+
+    return None

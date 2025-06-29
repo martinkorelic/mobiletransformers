@@ -107,6 +107,17 @@ ARTIFACT_BUILDER:
     opset: 20
     weight_input : false # Whether to include trainable weights as model input
     include_metadata: true # Whether to include the model metadata
+    deviceOptions:
+      enableProfiling: false
+      # Core config id - sets inter / intra op threads
+      # "opt3" - 6 / 4
+      # "opt2" - 4 / 2
+      # "opt1" - 1 / 1
+      coreConfigId: opt2
+      # Memory config id
+      # "low_mem" - disables ONNX Runtime memory arena and pattern 
+      # "high_perf" - enables ONNX Runtime memory arena and pattern 
+      memoryConfigId: low_mem
   
   train_config:
     trainFile: logiqa_train
@@ -140,7 +151,7 @@ ARTIFACT_BUILDER:
       # Memory config id
       # "low_mem" - disables ONNX Runtime memory arena and pattern 
       # "high_perf" - enables ONNX Runtime memory arena and pattern 
-      memoryConfigId: low_mem 
+      memoryConfigId: low_mem
 
   # Exports the dataset inside the train directory
   export_dataset: true
@@ -170,4 +181,34 @@ ARTIFACT_VALIDATOR:
     top_p: 0.9 # Top P for sampling
     hf_tokenizer: False # Whether to use the HF tokenizer or local tokenizer files
 
-  # TODO: Train validation
+  # Input path for training model will be generated as:
+  # ARTIFACT_BUILDER.build_path/train
+
+  # Train validation
+  test_training: true
+
+  test_training_config:
+    trainFile: logiqa_train
+    taskName: logiqa
+    batchSize: 1
+    numTrainEpochs: 1
+    maxSteps: 8
+    saveSteps: 50
+    gradAccumSteps: 2
+    removeLongSample: true
+    maxSequenceLength: 512
+    maxDatasetLength: 256
+    datasetBatchSize: 64
+    testRatio: 0.1
+    shuffle: true
+    split: true
+    schedulerType: cosine # "linear", "cosine"
+    schedulerOptions:
+      # Cosine options
+      minLearningRate: 0
+      cosineLearningRate: 0.0001
+      warmupSteps: 10
+      # Linear options
+      linearLearningRate: 0.0001
+      startFactor: 1
+      endFactor: 0.333
