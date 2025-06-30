@@ -5,6 +5,7 @@ Script that validates the generation / inference of the inference artifact model
 import argparse, os, json
 import textwrap
 from typing import Dict, List
+import numpy as np
 import yaml
 
 from dotenv import load_dotenv
@@ -18,16 +19,26 @@ import onnxruntime as rt
 from onnxruntime import InferenceSession, SessionOptions
 from transformers import AutoTokenizer, AutoConfig
 
-def validate_generation(model_id, model_name, model_dir, use_gen_config_file, test_generation, test_generation_config):
+def validate_generation(model_id, model_name, model_dir, test_generation, test_generation_config, load_merged_weights=False, **kwargs):
 
     model_path = os.path.join(model_dir, model_name)
-    tokenizer_config_path = os.path.join(model_dir, "tokenizer_config.json")
-    genai_config_path = os.path.join(model_dir, "genai_config.json")
 
-    if use_gen_config_file:
+    tokenizer_config_path = kwargs.get('tokenizer_dir', model_dir)
+    tokenizer_config_path = os.path.join(tokenizer_config_path, "tokenizer_config.json")
+
+    if test_generation_config['type'] == 'genai':
+        genai_config_path = os.path.join(model_dir, "genai_config.json")
         # Overwrite the generation config
         with open(genai_config_path, "r", encoding="utf-8") as infile:
             test_generation_config = json.load(infile)["search"]
+    elif test_generation_config['type'] == 'native':
+        genai_config_path = os.path.join(model_dir, "generation_config.json")
+        with open(genai_config_path, "r", encoding="utf-8") as infile:
+            file_generation_config = json.load(infile)
+        
+        # Overwrite from test_generation_config
+        for key, v in file_generation_config.items():
+            test_generation_config[key] = v
     
     if test_generation:
 
@@ -52,10 +63,53 @@ def validate_generation(model_id, model_name, model_dir, use_gen_config_file, te
 
         sess_options = SessionOptions()    
         sess_options.enable_profiling = True
-    
-        session = InferenceSession(model_path, sess_options=sess_options, providers=['CPUExecutionProvider'])
+        sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+        # Optionally enable other optimizations
+        # e.g. enable CPU memory arena for faster allocation
+        sess_options.enable_mem_pattern = True
+        sess_options.enable_cpu_mem_arena = True
         
-        
+        external_initializers = []
+
+        if load_merged_weights:
+
+            merged_weights_dir = kwargs.get('temp_weights_dir', './build/train/temp_weights/')
+
+            print(f"[INFO] Loading external initializers from {merged_weights_dir}")
+            for fname in os.listdir(merged_weights_dir):
+                if fname.endswith(".npz"):
+                    npz_path = os.path.join(merged_weights_dir, fname)
+                    weights = np.load(npz_path)
+                    base_layer_name = os.path.splitext(fname)[0]
+
+                    for key in weights.files:
+                        arr = weights[key]
+                        full_key_name = f"{base_layer_name}.{key}"
+                        initializer = rt.OrtValue.ortvalue_from_numpy(arr)
+                        external_initializers.append((full_key_name, initializer))
+                        print(f"[DEBUG] External initializer: {full_key_name} shape={arr.shape}")
+
+        if external_initializers:
+            # convert to ONNX ExternalInitializer format
+            # this is basically a dict of names to OrtValues
+            external_init_map = {name: val for name, val in external_initializers}
+            session = InferenceSession(
+                model_path,
+                sess_options=sess_options,
+                providers=['CPUExecutionProvider'],
+                external_initializers=external_init_map
+            )
+            print("[DEBUG] Session initializers:")
+            for init in session.get_overridable_initializers():
+                print(f"  - {init}")
+        else:
+            session = InferenceSession(
+                model_path,
+                sess_options=sess_options,
+                providers=['CPUExecutionProvider']
+            )
+
         config = AutoConfig.from_pretrained(model_id, token=os.environ['HF_TOKEN'])
 
         input_names = [input_name.name for input_name in session.get_inputs()]
@@ -119,10 +173,10 @@ def parse_arguments():
         help="Whether to perform inference / generation test on the inference exported model."
     )
     parser.add_argument(
-        "--use_gen_config_file",
+        "--load_merged_weights",
         type=bool,
-        default=False,
-        help="Whether to use the provided genai config file or not."
+        default=True,
+        help="Whether to load the merged weights into inference model."
     )
     parser.add_argument(
         "--test_generation_config",
@@ -158,6 +212,8 @@ def parse_arguments():
 
     config_dict = None
 
+    extra_args = {}
+
     if args.config_file:
         config_dict = load_config_from_file(args.config_file)
 
@@ -165,6 +221,9 @@ def parse_arguments():
         setattr(args, "model_id", config_dict[TRAIN_CONFIG]["model_id"])
         setattr(args, "inference_artifact_dir", os.path.join(config_dict[ARTIFACT_CONFIG]["build_path"], "inference"))
         setattr(args, "inference_artifact_name", f'{config_dict[ARTIFACT_CONFIG]["inference_config"]["output_inference_model"]}.onnx')
+
+        extra_args['tokenizer_dir'] = os.path.join(config_dict[ARTIFACT_CONFIG]["build_path"], "tokenizer")
+        extra_args['temp_weights_dir'] = os.path.join(config_dict[ARTIFACT_CONFIG]["build_path"], "train", "temp_weights")
         
         # Override any command-line argument with values from the config file
         for key, value in config_dict[ARTIFACT_VALIDATOR_CONFIG].items():
@@ -177,11 +236,11 @@ def parse_arguments():
         user_test_generation_config = parse_extra_options(args.test_generation_config)
         args.test_generation_config = {**default_test_generation_config, **user_test_generation_config}
 
-    return args
+    return args, extra_args
 
 
 if __name__ == "__main__":
-    args = parse_arguments()
+    args, extra_args = parse_arguments()
 
     print(f"{ARTIFACT_VALIDATOR_CONFIG} arguments:")
     for arg, value in vars(args).items():
@@ -191,7 +250,8 @@ if __name__ == "__main__":
         model_id=args.model_id,
         model_name=args.inference_artifact_name,
         model_dir=args.inference_artifact_dir,
-        use_gen_config_file=args.use_gen_config_file,
         test_generation=args.test_generation,
-        test_generation_config=args.test_generation_config
+        test_generation_config=args.test_generation_config,
+        load_merged_weights=args.load_merged_weights,
+        **extra_args
     )

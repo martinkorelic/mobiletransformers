@@ -33,7 +33,7 @@ add_peft_type("MARS", "MARS")
 PEFT_TYPE_TO_MODEL_MAPPING[PeftType("MARS")] = MarsModel
 
 from onnxruntime.quantization import quantize_dynamic, QuantType, QuantFormat
-#from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer
+#from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer, DefaultWeightOnlyQuantConfig
 
 from onnxruntime.transformers.onnx_model import OnnxModel
 
@@ -336,32 +336,6 @@ def optimum_hf_export(model_id,
                                   exclude_extra_layers=exclude_extra_layers,
                                   exclude_specific=exclude_specific,
                                   exclude_specific_layers=exclude_specific_layers)
-
-def onnx_matmul_quantization(onnx_model_path, onnx_model_quant_output, block_size=32, accuracy_level=4, exclude_weights=["q_proj", "k_proj"], exclude_extra_layers=["embed_tokens"]):
-
-    onnx_model = onnx.load(onnx_model_path)
-
-    nodes_to_not_quantize = []
-
-    # Exclude trainable nodes
-    for param in onnx_model.graph.node:
-        if any((allowed_layer in param.name for allowed_layer in exclude_weights)):
-            nodes_to_not_quantize.append(param.name)
-        if any(allowed_layer in param.name for allowed_layer in exclude_extra_layers):
-            nodes_to_not_quantize.append(param.name)
-
-    quant = MatMul4BitsQuantizer(
-            model=onnx_model,
-            block_size=block_size,
-            is_symmetric=True,
-            accuracy_level=accuracy_level,
-            # Exclude trainable LoRA layers from quantization
-            nodes_to_exclude=nodes_to_not_quantize,
-            quant_format=QuantFormat.QDQ
-        )
-    quant.process()
-
-    onnx.save_model(quant.model.model, onnx_model_quant_output, save_as_external_data=True)
 
 def onnx_dynamic_quantization(onnx_model_path,
                               onnx_model_quant_output,

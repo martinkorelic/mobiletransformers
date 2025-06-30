@@ -107,7 +107,7 @@ Where are we now?? We moved into our new home two weeks ago. I still have
 
 ## Problems
 
-- **ONNX GenAI with transferring weights**
+- **ONNX GenAI with transfering weights**
 
 ONNX GenAI framework currently does not allow adding the weights to the inference session (or does not expose the session options) for the user, therefore the updated weights cannot be to the inference model for generation.
 Request open for this feature:
@@ -220,5 +220,4 @@ There is also an option to build for both platforms:
 
 - [Testing training artifacts in Python](https://github.com/microsoft/onnxruntime-training-examples/blob/master/on_device_training/desktop/python/mnist.ipynb)
 
-- [Transfering weights in C++](https://stackoverflow.com/questions/67301475/parse-an-onnx-model-using-c-extract-layers-input-and-output-shape-from-an-on/67317076#67317076
-)
+- [Transfering weights in C++](https://stackoverflow.com/questions/67301475/parse-an-onnx-model-using-c-extract-layers-input-and-output-shape-from-an-on/67317076#67317076)

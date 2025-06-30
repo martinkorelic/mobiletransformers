@@ -514,9 +514,9 @@ class Model:
 
             quantize_dynamic(
                 extra_options={
-                        'ActivationSymmetric': False,         # True for inference speed. False may keep more accuracy.
-                        'WeightSymmetric': False,                 # True for inference speed. False may keep more accuracy.
-                        'EnableSubgraph': False,                   # True for more quant.
+                        'ActivationSymmetric': True,         # True for inference speed. False may keep more accuracy.
+                        'WeightSymmetric': True,                 # True for inference speed. False may keep more accuracy.
+                        'EnableSubgraph': True,                   # True for more quant.
                         'ForceQuantizeNoInputCheck': True,       # True for more quant.
                         'MatMulConstBOnly': True                 # False for more quant. Sometime, the inference speed may get worse. Keep this True in case of training graph.
                 },
@@ -530,6 +530,8 @@ class Model:
             )
 
             return model
+        
+        print("Quantizing...")
 
         quant = MatMul4BitsQuantizer(
             model=model,
@@ -799,11 +801,28 @@ class Model:
             if self.quant_attrs["use_qdq"]:
                 return self.make_matmul_int4_qdq(matmul, basename, root_input, **kwargs)
             else:
-                print("DONT MAKE QDQ")
                 return self.make_matmul_int4(matmul, basename, root_input, **kwargs)
         else:
             raise NotImplementedError(f"The {self.onnx_dtype} precision is not currently supported.")
 
+    
+    def make_matmul_fp16_or_fp32(self, matmul, name, root_input, **kwargs):
+
+        weight = name[1:].replace("/", ".") + ".weight"
+
+        self.make_external_tensor(matmul.weight.detach().numpy().transpose().astype(self.to_numpy_dtype[self.io_dtype]), weight)
+
+        last_dim = matmul.weight.shape[0]
+
+        output = "logits" if kwargs.get("logits", False) else f"{name}/output_0"
+
+        self.make_node("MatMul", inputs=[root_input, weight], outputs=[output], name=name)
+
+        self.make_value_info(output, self.io_dtype, shape=['batch_size', 'sequence_length', last_dim])
+
+        return name
+
+    """"
     def make_matmul_fp16_or_fp32(self, matmul, name, root_input, **kwargs):
         weight = name[1:].replace("/", ".") + ".weight"
         # Store the original weight data without transposing
@@ -831,7 +850,8 @@ class Model:
         self.make_value_info(output, self.io_dtype, shape=['batch_size', 'sequence_length', last_dim])
 
         return name
-
+    """
+    
     def make_matmul_int4(self, matmul, basename, root_input, **kwargs):
         if not hasattr(matmul, "qweight"):
             # TODO: quantize weights, then save new MatMul numpy weights for onnx model

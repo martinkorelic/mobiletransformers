@@ -463,6 +463,7 @@ def parse_arguments():
     user_train_generation_config = {}
     default_train_generation_config = {
         "trainFile": "",
+        "peftMethod": "",
         "taskName": "",
         "numTrainEpochs": 1,
         "maxSteps": 4,

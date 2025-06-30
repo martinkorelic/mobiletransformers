@@ -345,7 +345,7 @@ def gen_genai(model_id,
         model = helper.make_model(new_graph, opset_imports=[helper.make_operatorsetid("", opset_version)])
     
     if include_metadata:
-
+        print(f"[INFO] Adding metadata to the inference model...")
         config = AutoConfig.from_pretrained(model_id)
 
         num_kv_heads = config.num_key_value_heads if hasattr(config, "num_key_value_heads") else config.num_attention_heads
@@ -369,7 +369,7 @@ def gen_genai(model_id,
             onnx.StringStringEntryProto(key="num_layers", value=str(num_layers))
         )
 
-    onnx.save(model, new_model_namepath, save_as_external_data=True, location=f'{new_model_name}.onnx_data')
+    onnx.save(model, new_model_namepath, save_as_external_data=True, location=f'{new_model_name}.onnx.data')
 
     if large_model:
         # Wait so it finishes writing to disk
@@ -429,7 +429,8 @@ def convert_pipeline(model_id,
                     export_inference_config = True,
                     export_merger = True,
                     delete_models=False,
-                    config_file_path="config.yml"):
+                    config_file_path="config.yml",
+                    **kwargs):
     """
     ONNX conversion for training and inference artifacts.
     Creates a build folder with train and inference subfolders each with models needed for tasks.
@@ -453,6 +454,11 @@ def convert_pipeline(model_id,
         print(f"[ERROR] An error occurred: {e}")
     
     if gen_train_artifacts:
+
+        # Add peft method to training config
+        train_config['peftMethod'] = peft_method
+
+        # Generate training artifacts
         gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=train_model_name, training_config=train_config)
         print("[INFO] Generated training artifacts.")
 
@@ -512,9 +518,18 @@ def convert_pipeline(model_id,
 
     if export_merger:
         if peft_method == "lora":
-            create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx')
+            create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx', quantized=True)
+            create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx', quantized=False)
         elif peft_method == "mars":
-            create_mars_merger_model(f'{build_dir}/train/mars_merger_model.onnx')
+
+            # We need both quantized and non-quantized merger models
+            if 'optimization_level' in kwargs["train_builder_config"][peft_method] and kwargs["train_builder_config"][peft_method]['optimization_level'] <= 1:
+                create_mars_merger_model(f'{build_dir}/train/mars_merger_model.onnx', quantized=False)
+            create_mars_merger_model(f'{build_dir}/train/mars_qmerger_model.onnx', quantized=True)
+
+            # We also need basic LoRA merger models for this PEFT method
+            create_lora_merger_model(f'{build_dir}/train/lora_qmerger_model.onnx', quantized=True)
+            create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx', quantized=False)
 
     # Clean the generated models if needed
     if delete_models:
@@ -711,6 +726,8 @@ def parse_arguments():
     #        "top_k": 10, # Top K for sampling
     #}
 
+    extra_args = {}
+
     config_dict = None
 
     if args.config:
@@ -729,17 +746,19 @@ def parse_arguments():
 
         setattr(args, "training_dir",config_dict[TRAIN_CONFIG]["output"])
         setattr(args, "inference_dir", config_dict[INFERENCE_CONFIG]["output"])
+
+        extra_args["train_builder_config"] = config_dict[TRAIN_CONFIG]
     else:
         user_inference_config = parse_extra_options(args.inference_config)
         args.inference_config = {**default_user_inference_config, **user_inference_config}
         #user_test_generation_config = parse_extra_options(args.test_generation_config)
         #args.test_generation_coinfig = {**default_test_generation_config, **user_test_generation_config}
 
-    return args
+    return args, extra_args
 
 if __name__ == "__main__":
 
-    args = parse_arguments()
+    args, extra_args = parse_arguments()
 
     print(f"{ARTIFACT_CONFIG} arguments:")
     for arg, value in vars(args).items():
@@ -767,5 +786,6 @@ if __name__ == "__main__":
         export_inference_config=args.export_inference_config,
         export_merger=args.export_merger,
         delete_models=args.delete_models,
-        config_file_path=args.config
+        config_file_path=args.config,
+        **extra_args
     )

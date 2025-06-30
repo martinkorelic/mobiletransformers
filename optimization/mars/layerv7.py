@@ -149,6 +149,10 @@ class MarsLayer(BaseTunerLayer):
         # ONNX dynamic quantization will take care of quantizing the base weights
         if self.onnx_export:
             self.base_layer = original_weights
+
+        # Attach alpha and rank to up projections
+        self.up_project[adapter_name].rank = self.rank
+        self.up_project[adapter_name].alpha = self.alpha
     
         self.adapter_name = adapter_name
         self._move_adapter_to_device_of_base_layer(adapter_name)
@@ -268,7 +272,7 @@ class SharedMLPAdapter(nn.Module):
 
         self.rank = rank
         self.shared_rank = shared_rank
-        self.alpha = alpha
+        self.alpha = alpha / self.rank
         self.orth_init = kwargs.get('orth_init', False)
         self.no_mixture = kwargs.get('no_mixture', False)
         self.trainable_down = kwargs.get("trainable_down", True)
@@ -334,7 +338,7 @@ class SharedAttentionAdapter(nn.Module):
 
         self.rank = rank
         self.shared_rank = shared_rank
-        self.alpha = alpha
+        self.alpha = alpha / self.rank
         self.enabled = enabled
         self.enabled_idx = [i for i, name in enumerate(['q', 'k', 'v']) if name in enabled]
         self.num_enabled = len(self.enabled)

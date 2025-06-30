@@ -5,7 +5,7 @@ TRAIN_BUILDER:
 
   training_mode: true
   # lora, lora-xs, mars
-  train_method: "mars"
+  train_method: mars
 
   # LoRA target modules
   lora_target:
@@ -18,8 +18,9 @@ TRAIN_BUILDER:
     - up_proj
 
   lora_rank: 8
+  lora_alpha: 8
   quantize: true
-  # Weight types for quantizing
+  # Weight types for quantizing (dynamic quantization can only use UInt8)
   weight_type: "QInt8"
   extra_options:
     postprocess: false
@@ -76,7 +77,7 @@ INFERENCE_BUILDER:
   use_lora: false
   use_qdq: true
   force_unpacked_matmul: true
-  dynamic_quantize: true
+  dynamic_quantize: false
 
   prompt_templates: false
   export_tokenizer: false
@@ -95,25 +96,25 @@ ARTIFACT_BUILDER:
   # This will join path with the INFERENCE_BUILDER.output/inference_model
   inference_model: "model.onnx"
 
-  gen_train_artifacts: true
+  gen_train_artifacts: false
 
   # NOTE: If the ONNX Runtime versions do not match, you need to use inference.builder to build inference model
-  gen_inference_artifacts: false
+  gen_inference_artifacts: true
 
   export_inference_config: true
   export_tokenizer: true
   export_merger: true
 
-  test_training: true
+  test_training: false
   test_eval: false
   
   inference_config:
-    type: "native" # "native", "genai"
+    type: "genai" # "native", "genai"
     maxSequenceLength: 128
     trackMetrics: true
     timeStepUpdate: 5
     systemPrompt: ""
-    output_inference_model: "model"
+    output_inference_model: "quant_model"
     opset: 20
     weight_input : false # Whether to include trainable weights as model input
     include_metadata: true # Whether to include the model metadata
@@ -181,15 +182,19 @@ ARTIFACT_VALIDATOR:
   # Use of the generation config file included in the same directory as inference model
   use_gen_config_file: false
 
-  test_generation_config:  
+  test_generation_config:
+    type: native
     prompt: "Please describe to me what a bird looks like. Please be precise and informative." # Prompt for test generation
     decode_between: true # Whether to decode the text while it's generating
-    max_length : 2 # Max length of test sequence to generate
+    max_length : 64 # Max length of test sequence to generate
     sampling: "top_k" # Sampling method
     temperature: 0.7 # Temperature for sampling
     top_k: 10 # Top K for sampling
     top_p: 0.9 # Top P for sampling
     hf_tokenizer: False # Whether to use the HF tokenizer or local tokenizer files
+
+  # Test loading the merged adapters into model
+  load_merged_weights: false
 
   # Input path for training model will be generated as:
   # ARTIFACT_BUILDER.build_path/train
@@ -202,7 +207,7 @@ ARTIFACT_VALIDATOR:
     taskName: logiqa
     batchSize: 1
     numTrainEpochs: 1
-    maxSteps: 8
+    maxSteps: 2
     saveSteps: 50
     gradAccumSteps: 2
     removeLongSample: true

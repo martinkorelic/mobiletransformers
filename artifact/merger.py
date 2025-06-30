@@ -237,405 +237,208 @@ def test_onnx_chunking_model(model_path="onnx_chunking_model.onnx"):
             return
 
 
-def create_lora_merger_model(
-    output_path="lora_merger_dynamic.onnx"
-):
+def create_lora_merger_model(output_path="lora_merger.onnx", quantized=True):
     """
-    Creates an ONNX model that merges LoRA weights with quantized base weights using dynamic shapes.
-    
-    Input:
-    - weight_quantized: uint8 quantized base weights [out_features, in_features]
-    - x_zero_point: uint8 scalar zero point for base weights
-    - x_scale: float scalar scale for base weights  
-    - lora_A: float32 LoRA A matrix [rank, in_features]
-    - lora_B: float32 LoRA B matrix [out_features, rank]
-    
-    Output:
-    - merged_weight_quantized: uint8 quantized merged weights [out_features, in_features]
-    - merged_zero_point: uint8 scalar zero point
-    - merged_scale: float scalar scale
-    
-    All dimensions are dynamic and inferred at runtime.
+    Creates an ONNX LoRA merger model:
+    - quantized == True:
+      merges LoRA weights with quantized base weights
+    - quantized == False:
+      merges LoRA weights with float32 base weights
+    Inputs:
+        - weight (uint8 if quantized else float32)
+        - scale (float32) [scalar]  (only if quantized)
+        - zero_point (uint8) [scalar] (only if quantized)
+        - lora_A (float32)
+        - lora_B (float32)
+        - alpha (float32) [scalar]
+    Outputs:
+        - merged_weight (uint8 if quantized else float32)
+        - scale (float32) [scalar]  (only if quantized)
+        - zero_point (uint8) [scalar] (only if quantized)
     """
-    
-    # Define input tensors with dynamic shapes
-    inputs = [
-        helper.make_tensor_value_info(
-            "weight_quantized", 
-            TensorProto.UINT8, 
-            ["out_features", "in_features"]  # Dynamic dimensions
-        ),
-        helper.make_tensor_value_info(
-            "x_zero_point", 
-            TensorProto.UINT8, 
-            []  # scalar
-        ),
-        helper.make_tensor_value_info(
-            "x_scale", 
-            TensorProto.FLOAT, 
-            []  # scalar
-        ),
-        helper.make_tensor_value_info(
-            "lora_A", 
-            TensorProto.FLOAT, 
-            ["rank", "in_features"]  # Dynamic dimensions
-        ),
-        helper.make_tensor_value_info(
-            "lora_B", 
-            TensorProto.FLOAT, 
-            ["out_features", "rank"]  # Dynamic dimensions
-        ),
-        helper.make_tensor_value_info(
-            "lora_alpha", 
-            TensorProto.FLOAT, 
-            []  # scalar
-        )
-    ]
-    
-    # Define output tensors with dynamic shapes
-    outputs = [
-        helper.make_tensor_value_info(
-            "merged_weight_quantized", 
-            TensorProto.UINT8, 
-            ["out_features", "in_features"]  # Dynamic dimensions
-        ),
-        helper.make_tensor_value_info(
-            "merged_zero_point", 
-            TensorProto.UINT8, 
-            []
-        ),
-        helper.make_tensor_value_info(
-            "merged_scale", 
-            TensorProto.FLOAT, 
-            []
-        )
-    ]
-    
-    # Create the computation graph
+    import onnx
+    from onnx import helper, TensorProto
+
+    inputs = []
+    outputs = []
     nodes = []
-    
-    # Step 1: Dequantize the base weights
-    nodes.append(
-        helper.make_node(
+
+    if quantized:
+        # quantized inputs
+        inputs.append(helper.make_tensor_value_info("weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]))
+        inputs.append(helper.make_tensor_value_info("x_scale", TensorProto.FLOAT, []))
+        inputs.append(helper.make_tensor_value_info("x_zero_point", TensorProto.UINT8, []))
+    else:
+        # float base weights
+        inputs.append(helper.make_tensor_value_info("weight", TensorProto.FLOAT, ["out_features", "in_features"]))
+
+    # LoRA inputs
+    inputs.append(helper.make_tensor_value_info("adapter_A", TensorProto.FLOAT, ["rank", "in_features"]))
+    inputs.append(helper.make_tensor_value_info("adapter_B", TensorProto.FLOAT, ["out_features", "rank"]))
+    inputs.append(helper.make_tensor_value_info("alpha", TensorProto.FLOAT, []))
+
+    if quantized:
+        outputs.append(helper.make_tensor_value_info("merged_weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]))
+        outputs.append(helper.make_tensor_value_info("merged_scale", TensorProto.FLOAT, []))
+        outputs.append(helper.make_tensor_value_info("merged_zero_point", TensorProto.UINT8, []))
+    else:
+        outputs.append(helper.make_tensor_value_info("merged_weight", TensorProto.FLOAT, ["out_features", "in_features"]))
+
+    # 1. Dequantize if needed
+    if quantized:
+        nodes.append(helper.make_node(
             "DequantizeLinear",
             inputs=["weight_quantized", "x_scale", "x_zero_point"],
             outputs=["base_weight_fp32"],
             name="dequantize_base_weights"
-        )
-    )
-    
-    # Step 2: Compute LoRA delta = lora_B @ lora_A
-    nodes.append(
-        helper.make_node(
-            "MatMul",
-            inputs=["lora_B", "lora_A"],
-            outputs=["lora_delta"],
-            name="compute_lora_delta"
-        )
-    )
-    
-    # Step 2b: Scale the LoRA delta by alpha
-    nodes.append(
-        helper.make_node(
-            "Mul",
-            inputs=["lora_delta", "lora_alpha"],
-            outputs=["scaled_lora_delta"],
-            name="scale_lora_delta"
-        )
-    )
-    
-    # Step 3: Add scaled LoRA delta to base weights
-    nodes.append(
-        helper.make_node(
-            "Add",
-            inputs=["base_weight_fp32", "scaled_lora_delta"],
-            outputs=["merged_weight_fp32"],
-            name="add_lora_delta"
-        )
-    )
-    
-    # Step 4: Dynamically quantize the merged weights
-    nodes.append(
-        helper.make_node(
+        ))
+        base_input = "base_weight_fp32"
+    else:
+        base_input = "weight"
+
+    # 2. LoRA delta
+    nodes.append(helper.make_node(
+        "MatMul",
+        inputs=["adapter_B", "adapter_A"],
+        outputs=["lora_delta"],
+        name="compute_lora_delta"
+    ))
+    nodes.append(helper.make_node(
+        "Mul",
+        inputs=["lora_delta", "alpha"],
+        outputs=["scaled_lora_delta"],
+        name="scale_lora_delta"
+    ))
+
+    # 3. Add
+    nodes.append(helper.make_node(
+        "Add",
+        inputs=[base_input, "scaled_lora_delta"],
+        outputs=["merged_weight_fp32"],
+        name="add_lora_delta"
+    ))
+
+    # 4. Requantize if needed
+    if quantized:
+        nodes.append(helper.make_node(
             "DynamicQuantizeLinear",
             inputs=["merged_weight_fp32"],
             outputs=["merged_weight_quantized", "merged_scale", "merged_zero_point"],
-            name="quantize_merged_weights"
-        )
-    )
+            name="quantize_merged"
+        ))
+    else:
+        # output is float, rename directly
+        nodes.append(helper.make_node(
+            "Identity",
+            inputs=["merged_weight_fp32"],
+            outputs=["merged_weight"],
+            name="identity_output"
+        ))
 
-    # Create the graph
     graph = helper.make_graph(
         nodes=nodes,
-        name="LoRAMerger",
+        name="LoRAMergerModel",
         inputs=inputs,
-        outputs=outputs,
-        doc_string="Merges LoRA weights with quantized base weights and outputs quantized result with alpha scaling"
+        outputs=outputs
     )
-    
-    # Create the model
-    model = helper.make_model(
-        graph,
-        producer_name="LoRAMerger",
-        opset_imports=[helper.make_opsetid("", 11)]
-    )
-    
-    # Create the model
-    model = helper.make_model(
-        graph,
-        producer_name="LoRAMerger",
-        opset_imports=[helper.make_opsetid("", 11)]
-    )
-    
-    # Check the model
+
+    model = helper.make_model(graph, producer_name="LoRAMerger", opset_imports=[helper.make_opsetid("", 11)])
     onnx.checker.check_model(model)
-    
-    # Save the model
     onnx.save(model, output_path)
-    print(f"LoRA merger model saved to: {output_path}")
-    
+    print(f"✅ LoRA merger model saved to {output_path} with quantized={quantized}")
     return model
 
-def test_lora_merger_model(model_path="lora_merger_dynamic.onnx"):
-    """Test the LoRA merger model with sample data using various dynamic shapes."""
-    
-    # Load the model
-    session = ort.InferenceSession(model_path)
-    
-    # Test with different shapes to verify dynamic behavior
+def test_all_lora_merger_models(
+    quantized_model_path="lora_merger_quantized.onnx",
+    float_model_path="lora_merger_float.onnx"
+):
+    """
+    Tests both the quantized and float LoRA merger models on the same data.
+    """
+
+    # load both models
+    quantized_session = ort.InferenceSession(quantized_model_path)
+    float_session = ort.InferenceSession(float_model_path)
+
     test_configs = [
         {"out_features": 512, "in_features": 256, "lora_rank": 8},
         {"out_features": 1024, "in_features": 1024, "lora_rank": 16},
-        {"out_features": 2048, "in_features": 512, "lora_rank": 32},
     ]
-    
+
     for i, config in enumerate(test_configs):
-        print(f"\nTest {i+1}: {config}")
-        
         out_features = config["out_features"]
         in_features = config["in_features"]
-        lora_rank = config["lora_rank"]
-        
-        # Generate test quantized base weights
+        rank = config["lora_rank"]
+
+        print(f"\n======================")
+        print(f"[TEST CONFIG] {config}")
+        print(f"======================")
+
+        # Create a random float base weight
         base_weight_fp32 = np.random.randn(out_features, in_features).astype(np.float32) * 0.1
-        
-        # Quantize base weights manually for testing
+
+        # Quantize it for the quantized model
         scale = np.float32((base_weight_fp32.max() - base_weight_fp32.min()) / 255.0)
-        zero_point = np.uint8(np.clip(np.round(-base_weight_fp32.min() / scale), 0, 255)).astype(np.uint8)
+        zero_point = np.uint8(np.clip(np.round(-base_weight_fp32.min() / scale), 0, 255))
         weight_quantized = np.clip(np.round(base_weight_fp32 / scale) + zero_point, 0, 255).astype(np.uint8)
-        
-        # Generate LoRA weights
-        lora_A = np.random.randn(lora_rank, in_features).astype(np.float32) * 0.01
-        lora_B = np.random.randn(out_features, lora_rank).astype(np.float32) * 0.01
-        
-        # Generate LoRA alpha (for example, fixed value 16)
-        lora_alpha = np.float32(16.0)
-        
-        # Prepare inputs
-        inputs = {
+
+        # LoRA weights
+        lora_A = np.random.randn(rank, in_features).astype(np.float32) * 0.01
+        lora_B = np.random.randn(out_features, rank).astype(np.float32) * 0.01
+        alpha = np.float32(16.0)
+
+        # shared
+        expected = base_weight_fp32 + alpha * np.matmul(lora_B, lora_A)
+
+        # ---------------
+        # QUANTIZED MODEL
+        # ---------------
+        quant_inputs = {
             "weight_quantized": weight_quantized,
-            "x_zero_point": np.array(zero_point, dtype=np.uint8),
             "x_scale": np.array(scale, dtype=np.float32),
-            "lora_A": lora_A,
-            "lora_B": lora_B,
-            "lora_alpha": np.array(lora_alpha, dtype=np.float32)
+            "x_zero_point": np.array(zero_point, dtype=np.uint8),
+            "adapter_A": lora_A,
+            "adapter_B": lora_B,
+            "alpha": np.array(alpha, dtype=np.float32),
         }
-        
-        # Run inference
-        outputs = session.run(['merged_weight_quantized', 'merged_scale', 'merged_zero_point'], inputs)
-        merged_weight_quantized, merged_scale, merged_zero_point = outputs
-        
-        print(f"  Input shape: {weight_quantized.shape}")
-        print(f"  LoRA A shape: {lora_A.shape}")
-        print(f"  LoRA B shape: {lora_B.shape}")
-        print(f"  Output shape: {merged_weight_quantized.shape}")
-        print(f"  Input scale: {scale:.6f}, zero_point: {zero_point}")
-        print(f"  Output scale: {merged_scale:.6f}, zero_point: {merged_zero_point}")
-        print(f"  LoRA alpha: {lora_alpha}")
-        
-        # Verify the computation manually
-        base_dequantized = (weight_quantized.astype(np.float32) - zero_point) * scale
-        lora_delta = np.matmul(lora_B, lora_A) * lora_alpha   # apply alpha!
-        expected_merged = base_dequantized + lora_delta
-        
-        # Dequantize the output to compare
-        output_dequantized = (merged_weight_quantized.astype(np.float32) - merged_zero_point) * merged_scale
-        
-        # Check if results are close (allowing for quantization error)
-        max_diff = np.max(np.abs(expected_merged - output_dequantized))
-        print(f"  Maximum difference: {max_diff:.6f}")
-        
-        if max_diff < 0.01:  # Allow small quantization errors
-            print(f"  ✓ Test {i+1} passed!")
+        q_outputs = quantized_session.run(
+            ["merged_weight_quantized", "merged_scale", "merged_zero_point"],
+            quant_inputs
+        )
+        merged_q, merged_q_scale, merged_q_zero = q_outputs
+
+        merged_q_dequant = (merged_q.astype(np.float32) - merged_q_zero) * merged_q_scale
+
+        diff_q = np.max(np.abs(merged_q_dequant - expected))
+        print(f"[QUANTIZED]")
+        print(f"  merged_q shape: {merged_q.shape}")
+        print(f"  max diff vs expected: {diff_q:.6f}")
+        if diff_q < 0.01:
+            print("  ✅ PASS")
         else:
-            print(f"  ✗ Test {i+1} failed!")
-    
-    return outputs
+            print("  ✗ FAIL")
 
-def test_chunking_debug(model_path="chunking_debug.onnx"):
-    """Test the chunking debug model."""
-    
-    session = ort.InferenceSession(model_path)
-    
-    # Test parameters
-    N = 3
-    rank = 8
-    shared_rank = 4
-    adapter_index = 1
-    
-    # Create test data
-    intermediate = np.random.randn(N * rank, shared_rank).astype(np.float32)
-    
-    print(f"Input intermediate shape: {intermediate.shape}")
-    print(f"N={N}, rank={rank}, shared_rank={shared_rank}, adapter_index={adapter_index}")
-    
-    inputs = {
-        "intermediate": intermediate,
-        "adapter_index": np.array(adapter_index, dtype=np.int64),
-        "rank": np.array(rank, dtype=np.int64)
-    }
-    
-    outputs = session.run(None, inputs)
-    chunked_intermediate, slice_start, slice_end = outputs
-    
-    print(f"Slice start: {slice_start}, Slice end: {slice_end}")
-    print(f"Chunked intermediate shape: {chunked_intermediate.shape}")
-    
-    # Verify with numpy
-    expected_start = adapter_index * rank
-    expected_end = (adapter_index + 1) * rank
-    expected_chunk = intermediate[expected_start:expected_end, :]
-    
-    print(f"Expected slice start: {expected_start}, Expected slice end: {expected_end}")
-    print(f"Expected chunk shape: {expected_chunk.shape}")
-    
-    # Compare
-    if np.allclose(chunked_intermediate, expected_chunk):
-        print("✓ Chunking test passed!")
-    else:
-        print("✗ Chunking test failed!")
-        print(f"Max difference: {np.max(np.abs(chunked_intermediate - expected_chunk))}")
-    
-    return chunked_intermediate
+        # ---------------
+        # FLOAT MODEL
+        # ---------------
+        float_inputs = {
+            "weight": base_weight_fp32,
+            "adapter_A": lora_A,
+            "adapter_B": lora_B,
+            "alpha": np.array(alpha, dtype=np.float32),
+        }
+        f_outputs = float_session.run(["merged_weight"], float_inputs)
+        merged_f = f_outputs[0]
+        diff_f = np.max(np.abs(merged_f - expected))
+        print(f"[FLOAT]")
+        print(f"  merged_f shape: {merged_f.shape}")
+        print(f"  max diff vs expected: {diff_f:.6f}")
+        if diff_f < 1e-6:
+            print("  ✅ PASS")
+        else:
+            print("  ✗ FAIL")
 
-def create_chunking_debug_model(output_path="chunking_debug.onnx"):
-    """
-    Creates a debug model that only does the chunking part to verify shapes.
-    
-    Inputs:
-    - intermediate: float32 [N*rank, shared_rank]
-    - adapter_index: int64 scalar
-    - rank: int64 scalar
-    
-    Outputs:
-    - chunked_intermediate: float32 [rank, shared_rank]
-    - slice_start: int64 scalar
-    - slice_end: int64 scalar
-    """
-
-    inputs = [
-        helper.make_tensor_value_info("intermediate", TensorProto.FLOAT, ["n_times_rank", "shared_rank"]),
-        helper.make_tensor_value_info("adapter_index", TensorProto.INT64, []),
-        helper.make_tensor_value_info("rank", TensorProto.INT64, [])
-    ]
-
-    outputs = [
-        helper.make_tensor_value_info("chunked_intermediate", TensorProto.FLOAT, ["rank", "shared_rank"]),
-        helper.make_tensor_value_info("slice_start", TensorProto.INT64, []),
-        helper.make_tensor_value_info("slice_end", TensorProto.INT64, [])
-    ]
-
-    nodes = []
-
-    # Step 1: Calculate slice boundaries
-    # slice_start = adapter_index * rank
-    nodes.append(
-        helper.make_node(
-            "Mul",
-            inputs=["adapter_index", "rank"],
-            outputs=["slice_start"],
-            name="compute_slice_start"
-        )
-    )
-
-    # slice_end = slice_start + rank = (adapter_index + 1) * rank
-    nodes.append(
-        helper.make_node(
-            "Add",
-            inputs=["slice_start", "rank"],
-            outputs=["slice_end"],
-            name="compute_slice_end"
-        )
-    )
-
-    # Step 2: Prepare slice parameters as 1-D arrays
-    # We need to convert scalars to 1-D arrays for the Slice operation
-    
-    # Convert slice_start and slice_end to 1-D arrays
-    nodes.append(
-        helper.make_node(
-            "Unsqueeze",
-            inputs=["slice_start"],
-            outputs=["slice_start_1d"],
-            axes=[0],
-            name="unsqueeze_slice_start"
-        )
-    )
-    
-    nodes.append(
-        helper.make_node(
-            "Unsqueeze",
-            inputs=["slice_end"],
-            outputs=["slice_end_1d"],
-            axes=[0],
-            name="unsqueeze_slice_end"
-        )
-    )
-    
-    # Create axes array [0] to specify we're slicing along dimension 0
-    nodes.append(
-        helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=["axes_0"],
-            value=helper.make_tensor("axes_0_tensor", TensorProto.INT64, [1], [0])
-        )
-    )
-
-    # Step 3: Slice the intermediate matrix
-    # intermediate[slice_start:slice_end, :] -> [rank, shared_rank]
-    nodes.append(
-        helper.make_node(
-            "Slice",
-            inputs=["intermediate", "slice_start_1d", "slice_end_1d", "axes_0"],
-            outputs=["chunked_intermediate"],
-            name="slice_intermediate"
-        )
-    )
-
-    # Create the graph
-    graph = helper.make_graph(
-        nodes=nodes,
-        name="Chunking_Debug",
-        inputs=inputs,
-        outputs=outputs,
-        doc_string="Debug model for chunking intermediate matrix"
-    )
-
-    # Create the model
-    model = helper.make_model(
-        graph,
-        producer_name="Chunking_Debug",
-        opset_imports=[helper.make_opsetid("", 11)]
-    )
-
-    # Validate and save
-    onnx.checker.check_model(model)
-    onnx.save(model, output_path)
-    print(f"Chunking debug model saved to {output_path}")
-    return model
-
-def create_mars_merger_model(output_path="mars_merger_fixed.onnx"):
+def create_mars_merger_model(output_path="mars_merger_model.onnx", quantized=True):
     """
     Creates a fixed ONNX model that merges PEFT (MARS) weights with quantized base weights.
     
@@ -683,197 +486,173 @@ def create_mars_merger_model(output_path="mars_merger_fixed.onnx"):
         - merged_scale: Scale factor for merged weight quantization (FLOAT scalar)
     """
     
+# Dynamic inputs depending on quantized or not
+    if quantized:
+        inputs = [
+            helper.make_tensor_value_info("weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]),
+            helper.make_tensor_value_info("x_zero_point", TensorProto.UINT8, []),
+            helper.make_tensor_value_info("x_scale", TensorProto.FLOAT, []),
+        ]
+        outputs = [
+            helper.make_tensor_value_info("merged_weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]),
+            helper.make_tensor_value_info("merged_zero_point", TensorProto.UINT8, []),
+            helper.make_tensor_value_info("merged_scale", TensorProto.FLOAT, [])
+        ]
+    else:
+        inputs = [
+            helper.make_tensor_value_info("weight", TensorProto.FLOAT, ["out_features", "in_features"]),
+        ]
+        outputs = [
+            helper.make_tensor_value_info("merged_weight", TensorProto.FLOAT, ["out_features", "in_features"]),
+        ]
 
-    inputs = [
-        helper.make_tensor_value_info("weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]),
-        helper.make_tensor_value_info("x_zero_point", TensorProto.UINT8, []),
-        helper.make_tensor_value_info("x_scale", TensorProto.FLOAT, []),
+    # common inputs regardless of quantized or not
+    common_inputs = [
         helper.make_tensor_value_info("shared_A", TensorProto.FLOAT, ["shared_rank", "in_features"]),
         helper.make_tensor_value_info("intermediate", TensorProto.FLOAT, ["n_times_rank", "shared_rank"]),
         helper.make_tensor_value_info("adapter_B", TensorProto.FLOAT, ["out_features", "rank"]),
         helper.make_tensor_value_info("adapter_index", TensorProto.INT64, []),
         helper.make_tensor_value_info("rank", TensorProto.INT64, []),
-        helper.make_tensor_value_info("alpha", TensorProto.FLOAT, [])
+        helper.make_tensor_value_info("alpha", TensorProto.FLOAT, []),
     ]
-
-    outputs = [
-        helper.make_tensor_value_info("merged_weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]),
-        helper.make_tensor_value_info("merged_zero_point", TensorProto.UINT8, []),
-        helper.make_tensor_value_info("merged_scale", TensorProto.FLOAT, [])
-    ]
+    inputs.extend(common_inputs)
 
     nodes = []
 
-    # Step 1: Dequantize base weights
-    nodes.append(
-        helper.make_node(
-            "DequantizeLinear",
-            inputs=["weight_quantized", "x_scale", "x_zero_point"],
-            outputs=["base_weight_fp32"],
-            name="dequantize_base_weights"
+    # Step 1: get base_weight_fp32
+    if quantized:
+        nodes.append(
+            helper.make_node(
+                "DequantizeLinear",
+                inputs=["weight_quantized", "x_scale", "x_zero_point"],
+                outputs=["base_weight_fp32"],
+                name="dequantize_base_weights"
+            )
         )
-    )
+    else:
+        # just rename directly
+        nodes.append(
+            helper.make_node(
+                "Identity",
+                inputs=["weight"],
+                outputs=["base_weight_fp32"],
+                name="pass_through_base_weight"
+            )
+        )
 
-    # Step 2: Calculate slice boundaries for chunking intermediate matrix
-    # slice_start = adapter_index * rank
+    # Step 2: calculate slice boundaries
     nodes.append(
-        helper.make_node(
-            "Mul",
-            inputs=["adapter_index", "rank"],
-            outputs=["slice_start"],
-            name="compute_slice_start"
-        )
+        helper.make_node("Mul", ["adapter_index", "rank"], ["slice_start"], name="compute_slice_start")
     )
-
-    # slice_end = slice_start + rank = (adapter_index + 1) * rank
     nodes.append(
-        helper.make_node(
-            "Add",
-            inputs=["slice_start", "rank"],
-            outputs=["slice_end"],
-            name="compute_slice_end"
-        )
+        helper.make_node("Add", ["slice_start", "rank"], ["slice_end"], name="compute_slice_end")
     )
-
-    # Step 2: Prepare slice parameters as 1-D arrays
-    # We need to convert scalars to 1-D arrays for the Slice operation
-    
-    # Convert slice_start and slice_end to 1-D arrays
     nodes.append(
-        helper.make_node(
-            "Unsqueeze",
-            inputs=["slice_start"],
-            outputs=["slice_start_1d"],
-            axes=[0],
-            name="unsqueeze_slice_start"
-        )
+        helper.make_node("Unsqueeze", ["slice_start"], ["slice_start_1d"], axes=[0], name="unsqueeze_slice_start")
     )
-    
     nodes.append(
-        helper.make_node(
-            "Unsqueeze",
-            inputs=["slice_end"],
-            outputs=["slice_end_1d"],
-            axes=[0],
-            name="unsqueeze_slice_end"
-        )
+        helper.make_node("Unsqueeze", ["slice_end"], ["slice_end_1d"], axes=[0], name="unsqueeze_slice_end")
     )
-    
-    # Create axes array [0] to specify we're slicing along dimension 0
     nodes.append(
         helper.make_node(
-            "Constant",
-            inputs=[],
-            outputs=["axes_0"],
+            "Constant", [], ["axes_0"],
             value=helper.make_tensor("axes_0_tensor", TensorProto.INT64, [1], [0])
         )
     )
-
-    # Step 3: Slice the intermediate matrix to get the chunk
-    # intermediate[adapter_index*rank:(adapter_index+1)*rank, :] -> [rank, shared_rank]
     nodes.append(
         helper.make_node(
-            "Slice",
-            inputs=["intermediate", "slice_start_1d", "slice_end_1d", "axes_0"],
-            outputs=["chunked_intermediate"],
-            name="slice_intermediate"
+            "Slice", ["intermediate", "slice_start_1d", "slice_end_1d", "axes_0"],
+            ["chunked_intermediate"], name="slice_intermediate"
         )
     )
 
-    # Step 4: Matrix multiplications following the correct order:
-    # adapter_B[out_features, rank] @ chunked_intermediate[rank, shared_rank] @ shared_A[shared_rank, in_features]
-    
-    # First multiply: adapter_B @ chunked_intermediate
-    # [out_features, rank] @ [rank, shared_rank] = [out_features, shared_rank]
+    # Step 3: adapter_B @ chunked_intermediate
     nodes.append(
-        helper.make_node(
-            "MatMul",
-            inputs=["adapter_B", "chunked_intermediate"],
-            outputs=["adapter_times_chunk"],
-            name="adapter_chunk_matmul"
-        )
+        helper.make_node("MatMul", ["adapter_B", "chunked_intermediate"], ["adapter_times_chunk"], name="adapter_chunk_matmul")
     )
 
-    # Then multiply result @ shared_A
-    # [out_features, shared_rank] @ [shared_rank, in_features] = [out_features, in_features]
+    # Step 4: (adapter_B @ chunked) @ shared_A
     nodes.append(
-        helper.make_node(
-            "MatMul",
-            inputs=["adapter_times_chunk", "shared_A"],
-            outputs=["lora_delta_prealpha"],
-            name="final_matmul"
-        )
+        helper.make_node("MatMul", ["adapter_times_chunk", "shared_A"], ["lora_delta_prealpha"], name="final_matmul")
     )
 
-    # Step 5: Apply alpha scaling
+    # Step 5: alpha scaling
     nodes.append(
-        helper.make_node(
-            "Mul",
-            inputs=["lora_delta_prealpha", "alpha"],
-            outputs=["lora_delta"],
-            name="scale_alpha"
-        )
+        helper.make_node("Mul", ["lora_delta_prealpha", "alpha"], ["lora_delta"], name="scale_alpha")
     )
 
-    # Step 6: Add LoRA delta to base weights
+    # Step 6: add LoRA delta
     nodes.append(
-        helper.make_node(
-            "Add",
-            inputs=["base_weight_fp32", "lora_delta"],
-            outputs=["merged_weight_fp32"],
-            name="add_delta"
-        )
+        helper.make_node("Add", ["base_weight_fp32", "lora_delta"], ["merged_weight_fp32"], name="add_delta")
     )
 
-    # Step 7: Quantize the merged weights
-    nodes.append(
-        helper.make_node(
-            "DynamicQuantizeLinear",
-            inputs=["merged_weight_fp32"],
-            outputs=["merged_weight_quantized", "merged_scale", "merged_zero_point"],
-            name="quantize_merged"
+    # Step 7: quantization if requested
+    if quantized:
+        nodes.append(
+            helper.make_node(
+                "DynamicQuantizeLinear",
+                inputs=["merged_weight_fp32"],
+                outputs=["merged_weight_quantized", "merged_scale", "merged_zero_point"],
+                name="quantize_merged"
+            )
         )
-    )
+    else:
+        # just output the floating-point
+        nodes.append(
+            helper.make_node(
+                "Identity",
+                inputs=["merged_weight_fp32"],
+                outputs=["merged_weight"],
+                name="identity_output"
+            )
+        )
 
-    # Create the graph
+    # put together the graph
     graph = helper.make_graph(
         nodes=nodes,
         name="MARS Merger",
         inputs=inputs,
         outputs=outputs,
-        doc_string="MARS merger model for merging adapters."
+        doc_string="MARS merger model for merging adapters (quantized or float)."
     )
 
-    # Create the model with detailed metadata
     model = helper.make_model(
         graph,
         producer_name="MARS_Merger_v1.0",
-        producer_version="1.0.0",         
-        doc_string="MARS (Multi-Adapter Rank Sharing) weight merger for PEFT quantized models. Merges adapter weights with quantized base weights using shared decomposition.",
+        producer_version="1.0.0",
+        doc_string="MARS (Multi-Adapter Rank Sharing) weight merger for PEFT models.",
         model_version=1,
         domain="com.martinkorelic.mars",
         opset_imports=[helper.make_opsetid("", 11)]
     )
 
-    # Validate and save
     onnx.checker.check_model(model)
     onnx.save(model, output_path)
-    print(f"MARS merger model saved to {output_path}")
+    if quantized:
+        print(f"Quantized MARS merger model saved to {output_path}")
+    else:
+        print(f"MARS merger model saved to {output_path}")
     return model
 
-def test_mars_merger_model(model_path="mars_merger_fixed.onnx"):
-    """Test the fixed Mars merger model with sample data."""
+def test_mars_merger_model(
+    quantized_model_path="mars_merger_fixed.onnx",
+    nonquantized_model_path="mars_merger_nonquant.onnx"
+):
+    """
+    Test both the quantized and non-quantized Mars merger models with sample data.
+    """
 
-    session = ort.InferenceSession(model_path)
+    q_session = ort.InferenceSession(quantized_model_path)
+    nq_session = ort.InferenceSession(nonquantized_model_path)
 
     test_configs = [
         {"out_features": 512, "in_features": 256, "shared_rank": 4, "rank": 8, "N": 3},
-        {"out_features": 1024, "in_features": 512, "shared_rank": 8, "rank": 16, "N": 3},
         {"out_features": 256, "in_features": 128, "shared_rank": 2, "rank": 4, "N": 5},
     ]
 
     for i, config in enumerate(test_configs):
-        print(f"\nTest {i+1}: {config}")
+        print(f"\n=== Test {i+1}: {config} ===")
+
         of = config["out_features"]
         inf = config["in_features"]
         shared_rank = config["shared_rank"]
@@ -882,46 +661,69 @@ def test_mars_merger_model(model_path="mars_merger_fixed.onnx"):
 
         # Generate base weight and quantize it with better precision
         base_weight_fp32 = np.random.randn(of, inf).astype(np.float32) * 0.1
-        
-        # Improved quantization with proper scale and zero point calculation
+
+        # --- QUANTIZED TEST ---
+        print("\n[ Quantized model test ]")
+
         weight_min = float(base_weight_fp32.min())
         weight_max = float(base_weight_fp32.max())
-        
-        # Ensure we have a reasonable range
         if weight_max - weight_min == 0:
             weight_max = weight_min + 1e-6
-            
+
         scale = np.float32((weight_max - weight_min) / 255.0)
         zero_point = np.uint8(np.clip(np.round(-weight_min / scale), 0, 255))
-        
-        # Quantize
+
         weight_quantized = np.clip(np.round(base_weight_fp32 / scale) + zero_point, 0, 255).astype(np.uint8)
-        
-        # Verify quantization round-trip
-        dequantized_check = (weight_quantized.astype(np.float32) - zero_point) * scale
-        quant_error = np.max(np.abs(base_weight_fp32 - dequantized_check))
-        
-        print(f"  Quantization check - Max error: {quant_error:.6f}")
-        print(f"  Scale: {scale:.6f}, Zero point: {zero_point}")
 
-        # Generate MARS components
-        shared_A = np.random.randn(shared_rank, inf).astype(np.float32) * 0.01
-        intermediate = np.random.randn(N * rank, shared_rank).astype(np.float32) * 0.01
-        adapter_B = np.random.randn(of, rank).astype(np.float32) * 0.01
-        alpha = np.float32(16.0)
-        adapter_index = np.int64(1)  # Test with the second chunk
-
-        print(f"  Input shapes:")
-        print(f"    shared_A: {shared_A.shape}")
-        print(f"    intermediate: {intermediate.shape}")
-        print(f"    adapter_B: {adapter_B.shape}")
-        print(f"    adapter_index: {adapter_index}, rank: {rank}")
-
-        # Prepare inputs
-        inputs = {
+        inputs_q = {
             "weight_quantized": weight_quantized,
             "x_zero_point": np.array(zero_point, dtype=np.uint8),
             "x_scale": np.array(scale, dtype=np.float32),
+            "shared_A": np.random.randn(shared_rank, inf).astype(np.float32) * 0.01,
+            "intermediate": np.random.randn(N * rank, shared_rank).astype(np.float32) * 0.01,
+            "adapter_B": np.random.randn(of, rank).astype(np.float32) * 0.01,
+            "alpha": np.array(16.0, dtype=np.float32),
+            "adapter_index": np.array(1, dtype=np.int64),
+            "rank": np.array(rank, dtype=np.int64)
+        }
+
+        # reuse
+        shared_A = inputs_q["shared_A"]
+        intermediate = inputs_q["intermediate"]
+        adapter_B = inputs_q["adapter_B"]
+        alpha = inputs_q["alpha"]
+        adapter_index = inputs_q["adapter_index"]
+
+        try:
+            outputs_q = q_session.run(None, inputs_q)
+            merged_weight_quantized, merged_scale, merged_zero_point = outputs_q[0], outputs_q[2], outputs_q[1]
+
+            # dequantize
+            merged_dequantized = (merged_weight_quantized.astype(np.float32) - merged_zero_point) * merged_scale
+
+            # reference
+            chunk_start = adapter_index * rank
+            chunk_end = (adapter_index + 1) * rank
+            chunked_intermediate = intermediate[chunk_start:chunk_end, :]
+            delta = adapter_B @ chunked_intermediate @ shared_A * alpha
+            expected = base_weight_fp32 + delta
+
+            max_diff = np.max(np.abs(expected - merged_dequantized))
+            rel_error = max_diff / (np.max(np.abs(expected)) + 1e-8)
+
+            print(f"  Quantized max diff: {max_diff:.6f}, relative error: {rel_error:.6f}")
+            if rel_error < 0.1:
+                print("  ✓ Quantized test passed")
+            else:
+                print("  ✗ Quantized test failed")
+        except Exception as e:
+            print(f"  ✗ Quantized test error: {e}")
+
+        # --- NON-QUANTIZED TEST ---
+        print("\n[ Non-quantized model test ]")
+
+        inputs_nq = {
+            "weight": base_weight_fp32,
             "shared_A": shared_A,
             "intermediate": intermediate,
             "adapter_B": adapter_B,
@@ -930,90 +732,53 @@ def test_mars_merger_model(model_path="mars_merger_fixed.onnx"):
             "rank": np.array(rank, dtype=np.int64),
         }
 
-        # Run the model
         try:
-            outputs = session.run(None, inputs)
-            
-            # Extract outputs in the correct order as defined in the ONNX model
-            # DynamicQuantizeLinear outputs: [quantized_tensor, scale, zero_point]
-            merged_weight_quantized = outputs[0]
-            merged_zero_point = outputs[1]
-            merged_scale = outputs[2]
-            
-            # Convert to scalar values if they're single-element arrays
-            if isinstance(merged_scale, np.ndarray) and merged_scale.size == 1:
-                merged_scale_val = merged_scale.item()
-            else:
-                merged_scale_val = merged_scale
-                
-            if isinstance(merged_zero_point, np.ndarray) and merged_zero_point.size == 1:
-                merged_zero_point_val = merged_zero_point.item()
-            else:
-                merged_zero_point_val = merged_zero_point
+            outputs_nq = nq_session.run(None, inputs_nq)
+            merged_fp32 = outputs_nq[0]
 
-            # Compute reference result
-            base_dequantized = (weight_quantized.astype(np.float32) - zero_point) * scale
-            
-            # Compute reference following the correct order:
-            # adapter_B @ intermediate_chunk @ shared_A
+            # expected
             chunk_start = adapter_index * rank
             chunk_end = (adapter_index + 1) * rank
-            chunked_intermediate = intermediate[chunk_start:chunk_end, :]  # [rank, shared_rank]
-            
-            print(f"    chunked_intermediate shape: {chunked_intermediate.shape}")
-            
-            # Matrix multiplication chain:
-            # adapter_B @ chunked_intermediate = [out_features, rank] @ [rank, shared_rank] = [out_features, shared_rank]
-            temp = adapter_B @ chunked_intermediate  # [out_features, shared_rank]
-            print(f"    temp (adapter_B @ chunked_intermediate) shape: {temp.shape}")
-            
-            # temp @ shared_A = [out_features, shared_rank] @ [shared_rank, in_features] = [out_features, in_features]
-            lora_delta = temp @ shared_A
-            print(f"    lora_delta shape: {lora_delta.shape}")
-            
-            lora_delta *= alpha
-            
-            expected_merged = base_dequantized + lora_delta
-            
-            # Compare with model output (dequantize model output for comparison)
-            model_dequantized = (merged_weight_quantized.astype(np.float32) - merged_zero_point_val) * merged_scale_val
-            
-            # Debug info
-            print(f"  Expected merged range: [{expected_merged.min():.6f}, {expected_merged.max():.6f}]")
-            print(f"  Model merged range: [{model_dequantized.min():.6f}, {model_dequantized.max():.6f}]")
-            print(f"  Model quantization scale: {merged_scale_val:.6f}, zero_point: {merged_zero_point_val}")
-            
-            max_diff = np.max(np.abs(expected_merged - model_dequantized))
-            relative_error = max_diff / (np.max(np.abs(expected_merged)) + 1e-8)
-            
-            print(f"  Max absolute difference: {max_diff:.6f}")
-            print(f"  Relative error: {relative_error:.6f}")
-            
-            # More lenient tolerance for quantization errors
-            if relative_error < 0.1:  # 10% relative error tolerance due to quantization
-                print(f"  ✓ Test {i+1} passed!")
-            else:
-                print(f"  ✗ Test {i+1} failed!")
-                print(f"    Expected shape: {expected_merged.shape}")
-                print(f"    Model output shape: {model_dequantized.shape}")
-                
-                # Let's also test without the final quantization step
-                # by comparing the float32 merged weights before quantization
-                print(f"  Debugging: Testing intermediate float32 values...")
-                
-        except Exception as e:
-            print(f"  ✗ Test {i+1} failed with error: {e}")
+            chunked_intermediate = intermediate[chunk_start:chunk_end, :]
+            delta = adapter_B @ chunked_intermediate @ shared_A * alpha
+            expected = base_weight_fp32 + delta
 
-    return outputs if 'outputs' in locals() else None
+            max_diff = np.max(np.abs(expected - merged_fp32))
+            rel_error = max_diff / (np.max(np.abs(expected)) + 1e-8)
+
+            print(f"  Non-quantized max diff: {max_diff:.6f}, relative error: {rel_error:.6f}")
+            if rel_error < 1e-4:
+                print("  ✓ Non-quantized test passed")
+            else:
+                print("  ✗ Non-quantized test failed")
+        except Exception as e:
+            print(f"  ✗ Non-quantized test error: {e}")
+
+    return
 
 if __name__ == "__main__":
 
-    # Create the basic LoRA merger model
     print("Creating basic LoRA merger model with dynamic shapes...")
+    create_lora_merger_model("lora_qmerger_model.onnx", quantized=True)
+    create_lora_merger_model("lora_merger_model.onnx", quantized=False)
+
+    print("\nTesting basic LoRA merger model...")
+    test_all_lora_merger_models(
+        quantized_model_path="lora_qmerger_model.onnx",
+        float_model_path="lora_merger_model.onnx"
+    )
+
+    # Create the basic LoRA merger model
+    print("Creating basic MARS merger model with dynamic shapes...")
     basic_model = create_mars_merger_model(
-        output_path="mars_merger.onnx"
+        output_path="mars_qmerger_model.onnx",
+        quantized=True
+    )
+    basic_model = create_mars_merger_model(
+        output_path="mars_merger_model.onnx",
+        quantized=False
     )
     
     # Test the basic model
     print("\nTesting basic MARS merger model...")
-    test_results = test_mars_merger_model("mars_merger.onnx")
+    test_results = test_mars_merger_model("mars_qmerger_model.onnx", "mars_merger_model.onnx")

@@ -12,6 +12,8 @@ from transformers import PreTrainedTokenizer
 from peft import PeftModel
 from peft.tuners.lora import LoraLayer
 
+from optimization.mars.layerv7 import MarsLayer
+
 @dataclass
 class DataCollatorForSupervisedDataset:
     """Dynamically pads input sequences for supervised fine-tuning."""
@@ -406,13 +408,21 @@ def create_mars_adapter_mapping(model, shared_qkv=['q', 'k', 'v'], shared_mlp_en
     # For each base layer, find its adapters
     for base_layer_name, parent_path in base_layer_contexts.items():
         adapters = {}
+
+        # Prefix renaming if needed
+        if base_layer_name.startswith('base_model.model.model.'):
+            base_layer_name = base_layer_name.replace('base_model.model.model.', 'backbone.model.')
         
         # Look for adapters in the parent context
         for module_name, module in all_modules.items():
             # Skip if not in the same parent context
             if not module_name.startswith(parent_path + "."):
                 continue
-                
+            
+            # Prefix renaming if needed
+            if module_name.startswith('base_model.model.model.'):
+                module_name.replace('base_model.model.model.', 'backbone.model.')
+
             # Get the relative path from parent
             relative_path = module_name[len(parent_path) + 1:]
             
@@ -449,7 +459,14 @@ def create_mars_adapter_mapping(model, shared_qkv=['q', 'k', 'v'], shared_mlp_en
             elif relative_path == "up_project.mars":
                 canonical_name = register_unique_module(module, module_name)
                 adapters["adapter_B"] = canonical_name
-            
+
+                if hasattr(module, 'rank'):
+                    adapters["rank"] = int(module.rank)
+                else:
+                    print(f'[WARNING] Could not find rank in {module_name}')
+                if hasattr(module, 'alpha'):
+                    adapters["alpha"] = float(module.alpha)
+
             # Rule 4: down_project.mars -> "adapter_A"
             elif relative_path == "down_project.mars":
                 canonical_name = register_unique_module(module, module_name)
@@ -470,6 +487,9 @@ def create_mars_adapter_mapping(model, shared_qkv=['q', 'k', 'v'], shared_mlp_en
 
         if adapters:
             mapping[base_layer_name] = adapters
+
+    #with open('base_mapping.json', 'w') as f:
+    #    json.dump(mapping, f)
 
     return mapping
 
