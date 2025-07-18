@@ -195,7 +195,7 @@ AAR package can be found in `"onnxruntime-genai/build/Android/RelWithDebInfo/src
 - Building ONNX Runtime with NNAPI support
 
 ```
-./build.sh --parallel --build_java --android --android_ndk_path=$ANDROID_NDK --android_api=24 --android_run_emulator --use_nnapi --build_shared_lib --android_abi arm64-v8a --enable_training_apis
+./build.sh --parallel --build_java --android --android_ndk_path=$ANDROID_NDK --android_api=24 --android_run_emulator --use_nnapi --use_xnnpack --build_shared_lib --android_abi arm64-v8a --enable_training_apis
 ```
 
 - Checking whether the model is usable with mobile execution providers
@@ -203,6 +203,27 @@ AAR package can be found in `"onnxruntime-genai/build/Android/RelWithDebInfo/src
 ```
 python -m onnxruntime.tools.check_onnx_model_mobile_usability model.onnx --log_level info
 ```
+
+- Problems when converting the int4/uint4 models to training models
+
+Checkpoint state does not support holding int4/uint4 weights.
+DequantizeLinear node is extremely slow with uint8/int8 input weights. Using int4 input weights are faster than uint8/int8.
+UInt8 is a big problem for the model, slows down inference and training significantly. Tested the same block quantization with uint8/int8, as it is done with int4 and still the results were bad. This indicates that maybe ONNX Runtime is not properly optimized for int8/uint8 conversion and computation.
+
+- Building `protobuf` static library
+
+
+Get the protobuf v3.12.0 - v3.12.4 github repository
+```
+mkdir build-android
+
+cd build-android
+
+cmake ../cmake -G Ninja   -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake   -DANDROID_ABI=arm64-v8a   -DANDROID_PLATFORM=android-21   -DANDROID_STL=c++_shared   -DCMAKE_BUILD_TYPE=Release   -DCMAKE_POSITION_INDEPENDENT_CODE=ON   -Dprotobuf_BUILD_TESTS=OFF   -Dprotobuf_BUILD_PROTOC=OFF   -Dprotobuf_BUILD_SHARED_LIBS=OFF   -Dprotobuf_LITE=ON -Dprotobuf_BUILD_TESTS=OFF
+
+ninja
+```
+
 
 There is also an option to build for both platforms:
 

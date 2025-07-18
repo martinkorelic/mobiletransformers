@@ -20,6 +20,8 @@ import yaml
 from trainer.utils import DataCollatorForSupervisedDataset, taskname_to_deepeval_preprocess_function
 from tools.parser_config import TASK_NAME_TO_DATASET, TRAIN_CONFIG, ARTIFACT_CONFIG, ARTIFACT_VALIDATOR_CONFIG
 
+from onnx._custom_element_types import int4, uint4
+
 from trainer.utils import (
     process_sample_dolly,
     process_sample_alpaca,
@@ -287,11 +289,29 @@ class ORTTrainer:
                 input_ids_np = batch['input_ids']
                 position_ids = self.create_position_ids(input_ids_np, padding_idx=self.data_curator.tokenizer.pad_token_id)
 
+                # Use ONNX's predefined int4 dtype
+                int4_values = np.random.randint(-8, 8, size=(2048, 256), dtype=np.int8)
+
+                # 2. Cast to ONNX's int4 dtype
+                int4_array = int4_values.view(dtype=uint4)  # This dtype has metadata for ONNX
+
+                # 3. Convert to TensorProto using from_array
+                tensor_proto = numpy_helper.from_array(int4_array, name="int4_tensor")
+
+                # 4. (Optional) Convert back to NumPy and verify
+                restored = numpy_helper.to_array(tensor_proto)
+
+                # 5. Sanity check
+                print("Original shape:", int4_array.shape)
+                print("Proto type:", tensor_proto.data_type == TensorProto.INT4)
+                print("Roundtrip match:", np.all(restored == int4_values))
+
                 inputs = {
                     "input_ids": batch["input_ids"],
                     "attention_mask": batch["attention_mask"],
                     "position_ids": position_ids,
-                    "labels": batch['labels']
+                    "labels": batch['labels'],
+                    "backbone.model.layers.0.self_attn.v_proj.base_layer.weight_DQ_Q4": int4_array
                 }
 
                 self.model.train()

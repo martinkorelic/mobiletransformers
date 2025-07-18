@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import numpy as np
-import netron
 from transformers import AutoTokenizer, AutoConfig
 
 import onnx
@@ -70,7 +69,8 @@ def gen_artifacts(train_dir,
                                 # In the case of inference model, we don't need it
                                 #loss = CausalLMCE(),
                                 optimizer = artifacts.OptimType.AdamW,
-                                artifact_directory = artifact_dir)
+                                artifact_directory = artifact_dir
+                                )
     
     # Export training configs
     with open(f'{artifact_dir}/{train_cfg_file}', "w", encoding="utf-8") as f:
@@ -225,12 +225,6 @@ def onnx_infer(model_id, model_path="inf_model_onnx_gemma_nonq.onnx", with_past=
     prompt = "Hello, this is a message for the world. How is your day?"
 
     print(generate_tokens_onnx(prompt, tokenizer, session, config, with_past=with_past, max_length=max_length))
-
-def view_model(onnx_model):
-    """
-    View the model with Netron.
-    """
-    netron.start(onnx_model)
 
 def onnx_segment_weights(model_path, output_path):
     """

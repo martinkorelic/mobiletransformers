@@ -1,6 +1,11 @@
 ###################### TRAINING BUILDER CONFIGURATION ######################
 TRAIN_BUILDER:
-  model_id: "TinyLlama/TinyLlama_v1.1" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0" #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  # Some SLM to choose from:
+
+  # TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  # cjvt/GaMS-2B-Instruct
+  # TinyLlama/TinyLlama_v1.1
+  model_id: "cjvt/GaMS-2B-Instruct"  #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
   output: "./build/train_models"
 
   training_mode: true
@@ -20,13 +25,17 @@ TRAIN_BUILDER:
   lora_rank: 8
   lora_alpha: 8
   quantize: true
-  # Weight types for quantizing (dynamic quantization can only use UInt8)
+  # Weight types for quantizing (dynamic quantization can only use UInt8, so this field does not change anything for dynamic quantization)
   weight_type: "QInt8"
   extra_options:
     postprocess: false
+    # ONNX opset version 21 is not supported. by 'torch.onnx.export()'.
+    # The highest opset version supported is 20. To use a newer opset version, consider 'torch.onnx.export(..., dynamo=True)'.
     opset: 20
     # Any extra layers to exclude from quantization
     exclude_extra_layers:
+
+      # Important layers and trainable layers
       - embed_tokens
       - lm_head
       - mixture
@@ -34,9 +43,11 @@ TRAIN_BUILDER:
       - lora
       - mars
       - shared
-      - gate
-      - o_proj
-      - q_proj
+
+      # Excluded base layers here
+      #- gate
+      #- o_proj
+      #- q_proj
     # Quantize only specific node with keywords in exclude_specific_layers
     exclude_specific: false
     exclude_specific_layers:
@@ -51,7 +62,12 @@ TRAIN_BUILDER:
   lora-xs:
     config: config
   mars:
-    optimization_level: 1
+    #  Optimization level to enable with other configurations:
+    #  0 - fully trainable all layers and no quantization
+    #  1 - fully trainable layers with partial quantization (specified in `modules_to_quantize`)
+    #  2 - fully trainable layers with full quantization
+    #  3 - partial trainable layers (frozen and fused down projection layers) with full quantization
+    optimization_level: 3
     modules_to_preserve_errors:
       - q
     modules_to_quantize:
@@ -75,9 +91,15 @@ INFERENCE_BUILDER:
 
   # Specify whether to use LoRA and apply non-quantization to TRAIN_BUILDER.lora_target nodes.
   use_lora: false
-  use_qdq: true
   force_unpacked_matmul: true
-  dynamic_quantize: false
+
+  # Combinations of quantized model weights (inputs)
+  # - DequantizeLinear of uint8 (dynamic_quantize=true + force_transpose_inputs=true + use_qdq=true)
+  # - DequantizeLinear of int4 (force_transpose_inputs=false + use_qdq=true)
+  # - MatMulNBits operator of int8 (all false)
+  dynamic_quantize: true
+  force_transpose_inputs: true
+  use_qdq: true
 
   prompt_templates: false
   export_tokenizer: false
@@ -93,22 +115,25 @@ ARTIFACT_BUILDER:
   # This will join path with the TRAIN_BUILDER.output/train_model
   training_model: "quant_model.onnx"
 
-  # This will join path with the INFERENCE_BUILDER.output/inference_model
+  # This will join path with the INFERENCE_BUILDER.output/inference_models
   inference_model: "model.onnx"
 
+  # NOTE: Use trainer.builder to build the training model first
   gen_train_artifacts: false
 
-  # NOTE: If the ONNX Runtime versions do not match, you need to use inference.builder to build inference model
+  # NOTE: Use inference.builder to build inference model first
   gen_inference_artifacts: true
 
   export_inference_config: true
   export_tokenizer: true
-  export_merger: true
+  export_merger: false
 
   test_training: false
   test_eval: false
   
   inference_config:
+    # Currently only native works for the application
+    # TODO: Fix switching
     type: "genai" # "native", "genai"
     maxSequenceLength: 128
     trackMetrics: true
@@ -129,6 +154,8 @@ ARTIFACT_BUILDER:
       # "low_mem" - disables ONNX Runtime memory arena and pattern 
       # "high_perf" - enables ONNX Runtime memory arena and pattern 
       memoryConfigId: low_mem
+      # Execution Provider
+      executionProvider: cpu # xnnpack, nnapi, cpu 
   
   train_config:
     trainFile: logiqa_train
@@ -163,6 +190,8 @@ ARTIFACT_BUILDER:
       # "low_mem" - disables ONNX Runtime memory arena and pattern 
       # "high_perf" - enables ONNX Runtime memory arena and pattern 
       memoryConfigId: low_mem
+      # Execution Provider
+      executionProvider: cpu # xnnpack, cpu 
 
   # Exports the dataset inside the train directory
   export_dataset: true
@@ -173,8 +202,16 @@ ARTIFACT_BUILDER:
 ###################### ARTIFACT VALIDATOR CONFIGURATION ######################
 ARTIFACT_VALIDATOR:
 
+  # Make sure to set model id as well
+  # TODO: add to metadata or config
+
   # Input path for inference model will be generated as:
   # ARTIFACT_BUILDER.build_path/inference/ARTIFACT_BUILDER.inference_config.output_inference_model
+  
+  # Uncomment if you want to overwrite it
+  inference_artifact_dir: build/inference-GaMS-2B-Instruct
+  inference_artifact_name: quant_model.onnx
+  tokenizer_dir: build/tokenizer-GaMS-2B-Instruct
 
   # Inference validation
   test_generation: true
@@ -184,10 +221,10 @@ ARTIFACT_VALIDATOR:
 
   test_generation_config:
     type: native
-    prompt: "Please describe to me what a bird looks like. Please be precise and informative." # Prompt for test generation
+    prompt: "Počutim se slabo. Kako mi lahko pomagaš?" # Prompt for test generation
     decode_between: true # Whether to decode the text while it's generating
     max_length : 64 # Max length of test sequence to generate
-    sampling: "top_k" # Sampling method
+    sampling: "greedy" # Sampling method
     temperature: 0.7 # Temperature for sampling
     top_k: 10 # Top K for sampling
     top_p: 0.9 # Top P for sampling

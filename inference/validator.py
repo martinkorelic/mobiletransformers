@@ -231,6 +231,9 @@ def parse_arguments():
             # Convert to the correct type
             if hasattr(args, key):
                 setattr(args, key, value)
+            if key in extra_args:
+                extra_args[key] = value
+            
 
     else:
         user_test_generation_config = parse_extra_options(args.test_generation_config)
@@ -245,6 +248,8 @@ if __name__ == "__main__":
     print(f"{ARTIFACT_VALIDATOR_CONFIG} arguments:")
     for arg, value in vars(args).items():
         print(f"{arg}: {value}")
+
+    print(extra_args)
 
     validate_generation(
         model_id=args.model_id,

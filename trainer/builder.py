@@ -32,7 +32,7 @@ def add_peft_type(name, value):
 add_peft_type("MARS", "MARS")
 PEFT_TYPE_TO_MODEL_MAPPING[PeftType("MARS")] = MarsModel
 
-from onnxruntime.quantization import quantize_dynamic, QuantType, QuantFormat
+from onnxruntime.quantization import quantize_dynamic, QuantType, QuantFormat, quantize_static
 #from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer, DefaultWeightOnlyQuantConfig
 
 from onnxruntime.transformers.onnx_model import OnnxModel

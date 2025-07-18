@@ -151,6 +151,9 @@ def onnx_matmul_quantization(onnx_model_path, onnx_model_quant_output, block_siz
 
     # Exclude trainable nodes
     for param in onnx_model.graph.node:
+        #if "/backbone/model/layers.0/self_attn/v_proj/base_layer/" in param.name:
+        #    continue
+        #nodes_to_not_quantize.append(param.name)
         if any((allowed_layer in param.name for allowed_layer in exclude_weights)):
             nodes_to_not_quantize.append(param.name)
         if any(allowed_layer in param.name for allowed_layer in exclude_extra_layers):
@@ -174,6 +177,6 @@ if __name__ == "__main__":
     model = onnx.load('build/train_models/model.onnx')
 
     fused_model = fuse_base_layer_transpose_matmul(model)
-    onnx.save_model(fused_model, 'quantization_ready.onnx', save_as_external_data=True)
+    onnx.save_model(fused_model, 'build/train_models/temp_model.onnx', save_as_external_data=True)
 
-    #onnx_matmul_quantization('quantization_ready.onnx', 'build/train_models/quant_model.onnx')
+    onnx_matmul_quantization('build/train_models/temp_model.onnx', 'build/train_models/quant_model_int4.onnx')

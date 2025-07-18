@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .train-venv/
 .ort-venv/
+.ort-1.23/
 build/
 onnx_models/
 .env
@@ -11,3 +12,4 @@ results/
 merged_models/
 data/
 experiment/
+dist/

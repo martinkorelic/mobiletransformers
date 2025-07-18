@@ -442,7 +442,7 @@ def create_mars_merger_model(output_path="mars_merger_model.onnx", quantized=Tru
     """
     Creates a fixed ONNX model that merges PEFT (MARS) weights with quantized base weights.
     
-    MARS (Multi-Adapter Routing with Shared components) is a parameter-efficient fine-tuning method
+    MARS (Multi Adapter Rank Sharing) is a parameter-efficient fine-tuning method
     that decomposes adapter weights into shared and adapter-specific components.
     
     The mathematical operation performed is:

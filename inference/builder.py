@@ -312,7 +312,8 @@ class Model:
                 "non_quant_nodes_keywords": extra_options.get("non_quant_nodes", ())
             },
             "use_qdq": extra_options.get("use_qdq", False),           # Use QDQ format
-            "dynamic_quantize": extra_options.get("dynamic_quantize", False)
+            "dynamic_quantize": extra_options.get("dynamic_quantize", False),
+            "force_transpose_inputs": extra_options.get("force_transpose_inputs", False),
         }
 
         if self.quant_type is not None:
@@ -455,6 +456,7 @@ class Model:
         if self.onnx_dtype == "int4" and not already_quantized_in_qdq_format:
             # Save the model beforehand, because it's easier to quantize dynamically afterwards
             if self.quant_attrs["dynamic_quantize"]:
+                print("Running dynamic quantization...")
                 # Save ONNX model with only one external data file and delete any existing duplicate copies
                 out_path = os.path.join(out_dir, self.filename)
                 data_path = os.path.join(out_dir, os.path.basename(out_path) + ".data")
@@ -531,7 +533,7 @@ class Model:
 
             return model
         
-        print("Quantizing...")
+        print("Quantizing with MatMul4BitsQuantizer...")
 
         quant = MatMul4BitsQuantizer(
             model=model,
@@ -808,49 +810,48 @@ class Model:
     
     def make_matmul_fp16_or_fp32(self, matmul, name, root_input, **kwargs):
 
-        weight = name[1:].replace("/", ".") + ".weight"
+        if self.quant_attrs["force_transpose_inputs"]:
+            weight = name[1:].replace("/", ".") + ".weight"
+            # Store the original weight data without transposing
+            self.make_external_tensor(matmul.weight.detach().numpy().astype(self.to_numpy_dtype[self.io_dtype]), weight)
 
-        self.make_external_tensor(matmul.weight.detach().numpy().transpose().astype(self.to_numpy_dtype[self.io_dtype]), weight)
+            # Create transpose node to transpose the weight
+            weight_transpose_name = f"{name}/weight_transpose"
+            original_weight_shape = matmul.weight.shape  # [out_features, in_features]
+            transposed_weight_shape = [original_weight_shape[1], original_weight_shape[0]]  # [in_features, out_features]
+            
+            self.make_transpose(
+                name=weight_transpose_name,
+                root_input=weight,
+                dtype=self.io_dtype,
+                shape=transposed_weight_shape,
+                perm=[1, 0]  # Transpose dimensions 0 and 1
+            )
 
-        last_dim = matmul.weight.shape[0]
+            last_dim = matmul.weight.shape[0]
+            output = "logits" if kwargs.get("logits", False) else f"{name}/output_0"
+            
+            # Use the transposed weight output in MatMul
+            transposed_weight_output = f"{weight_transpose_name}/output_0"
+            self.make_node("MatMul", inputs=[root_input, transposed_weight_output], outputs=[output], name=name)
+            self.make_value_info(output, self.io_dtype, shape=['batch_size', 'sequence_length', last_dim])
 
-        output = "logits" if kwargs.get("logits", False) else f"{name}/output_0"
+            return name
+        else:
 
-        self.make_node("MatMul", inputs=[root_input, weight], outputs=[output], name=name)
+            weight = name[1:].replace("/", ".") + ".weight"
 
-        self.make_value_info(output, self.io_dtype, shape=['batch_size', 'sequence_length', last_dim])
+            self.make_external_tensor(matmul.weight.detach().numpy().transpose().astype(self.to_numpy_dtype[self.io_dtype]), weight)
+
+            last_dim = matmul.weight.shape[0]
+
+            output = "logits" if kwargs.get("logits", False) else f"{name}/output_0"
+
+            self.make_node("MatMul", inputs=[root_input, weight], outputs=[output], name=name)
+
+            self.make_value_info(output, self.io_dtype, shape=['batch_size', 'sequence_length', last_dim])
 
         return name
-
-    """"
-    def make_matmul_fp16_or_fp32(self, matmul, name, root_input, **kwargs):
-        weight = name[1:].replace("/", ".") + ".weight"
-        # Store the original weight data without transposing
-        self.make_external_tensor(matmul.weight.detach().numpy().astype(self.to_numpy_dtype[self.io_dtype]), weight)
-
-        # Create transpose node to transpose the weight
-        weight_transpose_name = f"{name}/weight_transpose"
-        original_weight_shape = matmul.weight.shape  # [out_features, in_features]
-        transposed_weight_shape = [original_weight_shape[1], original_weight_shape[0]]  # [in_features, out_features]
-        
-        self.make_transpose(
-            name=weight_transpose_name,
-            root_input=weight,
-            dtype=self.io_dtype,
-            shape=transposed_weight_shape,
-            perm=[1, 0]  # Transpose dimensions 0 and 1
-        )
-
-        last_dim = matmul.weight.shape[0]
-        output = "logits" if kwargs.get("logits", False) else f"{name}/output_0"
-        
-        # Use the transposed weight output in MatMul
-        transposed_weight_output = f"{weight_transpose_name}/output_0"
-        self.make_node("MatMul", inputs=[root_input, transposed_weight_output], outputs=[output], name=name)
-        self.make_value_info(output, self.io_dtype, shape=['batch_size', 'sequence_length', last_dim])
-
-        return name
-    """
     
     def make_matmul_int4(self, matmul, basename, root_input, **kwargs):
         if not hasattr(matmul, "qweight"):
@@ -3422,6 +3423,7 @@ if __name__ == '__main__':
         extra_options["export_genai_config"] = config_dict[INFERENCE_CONFIG]["export_genai_config"]
         extra_options["use_qdq"] = config_dict[INFERENCE_CONFIG]["use_qdq"]
         extra_options["dynamic_quantize"] = config_dict[INFERENCE_CONFIG]["dynamic_quantize"]
+        extra_options["force_transpose_inputs"] = config_dict[INFERENCE_CONFIG]["force_transpose_inputs"]
 
         for key, value in config_dict[INFERENCE_CONFIG].items():
             
