@@ -526,7 +526,7 @@ class Model:
                 model_input='build/inference_models/model.onnx',
                 model_output='build/inference_models/quant_model.onnx',
                 per_channel=True,
-                use_external_data_format=True,
+                #use_external_data_format=True,
                 weight_type=QuantType.QUInt8,
                 reduce_range=False
             )

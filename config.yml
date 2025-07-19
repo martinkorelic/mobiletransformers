@@ -116,7 +116,7 @@ ARTIFACT_BUILDER:
   training_model: "quant_model.onnx"
 
   # This will join path with the INFERENCE_BUILDER.output/inference_models
-  inference_model: "model.onnx"
+  inference_model: "quant_model.onnx"
 
   # NOTE: Use trainer.builder to build the training model first
   gen_train_artifacts: false
@@ -222,9 +222,9 @@ ARTIFACT_VALIDATOR:
   # ARTIFACT_BUILDER.build_path/inference/ARTIFACT_BUILDER.inference_config.output_inference_model
   
   # Uncomment if you want to overwrite it
-  inference_artifact_dir: build/inference-GaMS-2B-Instruct
+  inference_artifact_dir: build/inference/
   inference_artifact_name: quant_model.onnx
-  tokenizer_dir: build/tokenizer-GaMS-2B-Instruct
+  tokenizer_dir: build/tokenizer-TinyLlama-1.1B-Chat-v1.0
 
   # Inference validation
   test_generation: true

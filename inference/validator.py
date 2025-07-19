@@ -220,7 +220,7 @@ def parse_arguments():
         # Specific
         setattr(args, "model_id", config_dict[TRAIN_CONFIG]["model_id"])
         setattr(args, "inference_artifact_dir", os.path.join(config_dict[ARTIFACT_CONFIG]["build_path"], "inference"))
-        setattr(args, "inference_artifact_name", f'{config_dict[ARTIFACT_CONFIG]["inference_config"]["output_inference_model"]}.onnx')
+        setattr(args, "inference_artifact_name", f'{config_dict[ARTIFACT_CONFIG]["inference_export_config"]["output_inference_model"]}.onnx')
 
         extra_args['tokenizer_dir'] = os.path.join(config_dict[ARTIFACT_CONFIG]["build_path"], "tokenizer")
         extra_args['temp_weights_dir'] = os.path.join(config_dict[ARTIFACT_CONFIG]["build_path"], "train", "temp_weights")

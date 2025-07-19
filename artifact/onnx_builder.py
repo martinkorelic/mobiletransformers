@@ -19,6 +19,7 @@ import onnx
 from onnx import helper, TensorProto, numpy_helper
 from onnxruntime.training import onnxblock, artifacts
 from onnxruntime.training.api import CheckpointState, Module, Optimizer
+from onnx.external_data_helper import convert_model_to_external_data, write_external_data_tensors, set_external_data
 
 import onnxruntime as rt
 from onnxruntime import InferenceSession, SessionOptions
@@ -172,7 +173,82 @@ def onnx_checktrain(model_dir,
         # Load and test inference if needed
         if test_inference:
             onnx_infer(model_id, f"{model_dir}/{inference_model_path}", with_past=False, max_length=max_sequence_length)
+
+def force_dequantize_external_and_save(model, output_path, external_data_filename=None):
+    """
+    Force DequantizeLinear x_scale and x_zero_point tensors to be external and save the model.
     
+    Args:
+        model: Loaded ONNX model (onnx.ModelProto)
+        output_path: Path where to save the modified model
+        external_data_filename: Name of external data file (optional, defaults to model_name.onnx.data)
+    
+    Returns:
+        int: Number of tensors that were forced to external
+    """
+    if external_data_filename is None:
+        model_name = os.path.splitext(os.path.basename(output_path))[0]
+        external_data_filename = f'{model_name}.onnx.data'
+    
+    forced_count = 0
+    
+    # Force DequantizeLinear tensors to external manually BEFORE converting everything else
+    for initializer in model.graph.initializer:
+        # Check if initializer name ends with x_scale or x_zero_point
+        is_dequant_tensor = (initializer.name.endswith('weight_scale') or 
+                           initializer.name.endswith('weight_zero_point'))
+        
+        if is_dequant_tensor and initializer.data_location != onnx.TensorProto.EXTERNAL:
+            #print(f"Forcing DequantizeLinear tensor to external: {initializer.name}")
+            
+            # Convert tensor data to raw_data format first
+            # This ensures the tensor has raw_data field that set_external_data expects
+            if not initializer.HasField("raw_data"):
+                # Convert using numpy helper to preserve exact data type and format
+                tensor_array = onnx.numpy_helper.to_array(initializer)
+                
+                # Clear all existing data fields first
+                initializer.ClearField("float_data")
+                initializer.ClearField("int32_data") 
+                initializer.ClearField("int64_data")
+                initializer.ClearField("string_data")
+                initializer.ClearField("uint64_data")
+                initializer.ClearField("double_data")
+                initializer.ClearField("raw_data")
+                
+                # Set raw_data with the binary representation
+                initializer.raw_data = tensor_array.tobytes()
+            
+            # Now use the proper ONNX function to set external data
+            onnx.external_data_helper.set_external_data(
+                tensor=initializer,
+                location=external_data_filename
+            )
+            forced_count += 1
+            
+            # Now use the proper ONNX function to set external data
+            set_external_data(
+                tensor=initializer,
+                location=external_data_filename
+            )
+            
+            forced_count += 1
+    
+    # Convert all OTHER tensors to external data (this won't affect already external ones)
+    convert_model_to_external_data(
+        model, 
+        location=external_data_filename, 
+        size_threshold=0,
+        all_tensors_to_one_file=True
+    )
+    
+    # Write external data to file
+    output_dir = os.path.dirname(output_path)
+    if not output_dir:
+        output_dir = "."
+    
+    return write_external_data_tensors(model, output_dir)
+
 def onnx_export_dummy_model(model_output="tokenizer.onnx"):
     """
     Creates a fake dummy model for the tokenization process with GenAI.
@@ -363,7 +439,9 @@ def gen_genai(model_id,
             onnx.StringStringEntryProto(key="num_layers", value=str(num_layers))
         )
 
-    # We set size threshold to 0 to force all tensors to be saved as externally and later to be replaced easily
+    # We set size threshold to 0 to force all tensors to be saved as externally and later to be replaced easily in inference session
+    print("[INFO] Forcing external initializers...")
+    model = force_dequantize_external_and_save(model, new_model_namepath)
     onnx.save(model, new_model_namepath, save_as_external_data=True, location=f'{new_model_name}.onnx.data', size_threshold=0)
 
     if large_model:
@@ -465,7 +543,7 @@ def convert_pipeline(model_id,
         print("[INFO] Training check completed.")
     
     # Export generative AI model
-    if gen_inference_artifacts and inference_export_config["type"] == "genai":
+    if gen_inference_artifacts and inference_config["type"] == "genai":
         gen_genai(model_id=model_id,
                   model_path=f'{inference_dir}/{inference_model_name}',
                   training_config=f'{train_dir}/training_config.json',
