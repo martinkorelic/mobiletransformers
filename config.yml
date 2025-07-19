@@ -5,7 +5,7 @@ TRAIN_BUILDER:
   # TinyLlama/TinyLlama-1.1B-Chat-v1.0
   # cjvt/GaMS-2B-Instruct
   # TinyLlama/TinyLlama_v1.1
-  model_id: "cjvt/GaMS-2B-Instruct"  #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  model_id: "TinyLlama/TinyLlama_v1.1"  #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
   output: "./build/train_models"
 
   training_mode: true
@@ -130,19 +130,28 @@ ARTIFACT_BUILDER:
 
   test_training: false
   test_eval: false
+
+  # Whether to include trainable weights as model input
+
+  inference_export_config:
+    weight_input : false
+    # Whether to include the model metadata
+    include_metadata: true
+    opset: 20
+    output_inference_model: "quant_model"
   
   inference_config:
     # Currently only native works for the application
+    
+    modelName: tinyllama # Model name
+    onnxName: quant_model
     # TODO: Fix switching
     type: "genai" # "native", "genai"
     maxSequenceLength: 128
     trackMetrics: true
     timeStepUpdate: 5
-    systemPrompt: ""
-    output_inference_model: "quant_model"
-    opset: 20
-    weight_input : false # Whether to include trainable weights as model input
-    include_metadata: true # Whether to include the model metadata
+    systemPrompt: null
+    loadMergedWeights: true
     deviceOptions:
       enableProfiling: false
       # Core config id - sets inter / intra op threads
@@ -158,6 +167,8 @@ ARTIFACT_BUILDER:
       executionProvider: cpu # xnnpack, nnapi, cpu 
   
   train_config:
+    modelName: tinyllama # Model name
+    onnxName: quant_model
     trainFile: logiqa_train
     taskName: logiqa
     batchSize: 1
@@ -169,6 +180,8 @@ ARTIFACT_BUILDER:
     maxSequenceLength: 512
     maxDatasetLength: 256
     datasetBatchSize: 64
+    mergedWeightsAtEnd: true
+    saveModelAtEnd: true
     schedulerType: linear # "linear", "cosine"
     schedulerOptions:
       # Cosine options

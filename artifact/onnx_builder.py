@@ -363,7 +363,8 @@ def gen_genai(model_id,
             onnx.StringStringEntryProto(key="num_layers", value=str(num_layers))
         )
 
-    onnx.save(model, new_model_namepath, save_as_external_data=True, location=f'{new_model_name}.onnx.data')
+    # We set size threshold to 0 to force all tensors to be saved as externally and later to be replaced easily
+    onnx.save(model, new_model_namepath, save_as_external_data=True, location=f'{new_model_name}.onnx.data', size_threshold=0)
 
     if large_model:
         # Wait so it finishes writing to disk
@@ -415,8 +416,9 @@ def convert_pipeline(model_id,
                     test_training = True,
                     test_eval = True,
                     test_generation = True,
-                    inference_config = {},
+                    inference_export_config = {},
                     test_generation_config = {},
+                    inference_config = {},
                     train_config = {},
                     export_tokenizer = True, 
                     export_dataset = True,
@@ -463,17 +465,17 @@ def convert_pipeline(model_id,
         print("[INFO] Training check completed.")
     
     # Export generative AI model
-    if gen_inference_artifacts and inference_config["type"] == "genai":
+    if gen_inference_artifacts and inference_export_config["type"] == "genai":
         gen_genai(model_id=model_id,
                   model_path=f'{inference_dir}/{inference_model_name}',
                   training_config=f'{train_dir}/training_config.json',
-                  new_model_name=inference_config["output_inference_model"],
+                  new_model_name=inference_export_config["output_inference_model"],
                   new_model_path=f'{build_dir}/inference',
                   large_model=large_model,
                   #test_generation=test_generation,
-                  weight_input=inference_config["weight_input"],
-                  include_metadata=inference_config["include_metadata"],
-                  opset_version=inference_config["opset"],
+                  weight_input=inference_export_config["weight_input"],
+                  include_metadata=inference_export_config["include_metadata"],
+                  opset_version=inference_export_config["opset"],
                   #test_generation_config=test_generation_config,
                   check_model=inference_config["type"] == "native")
         print("[INFO] Generated the artifact inference model graph.")
@@ -651,6 +653,18 @@ def parse_arguments():
         help="Exports the merger model for adapters."
     )
     parser.add_argument(
+        "--inference_export_config",
+        type=str,
+        nargs="*",
+        metavar="KEY=VALUE",
+        default=[],
+        help=textwrap.dedent("""\
+         Key value pairs for various options. Currently supports:
+            ...
+            """
+            )
+    )
+    parser.add_argument(
         "--inference_config",
         type=str,
         nargs="*",
@@ -658,12 +672,7 @@ def parse_arguments():
         default=[],
         help=textwrap.dedent("""\
          Key value pairs for various options. Currently supports:
-            type: genai/native : Type of inference model. If "native" we can perform model checking and other options. If "genai" we cannot perform model checking.
-            output_inference_model = name : Name of the inference model to generate.
-            opset = 20 : Opset version for model operators.
-            weight_input = false : Whether to include trainable weights as model input
-            include_metadata = true : Whether to include the model metadata (this is automatically added if the model type is native).
-            gen_config_file = genai_config.json : # Name of the generation config file included in the same directory as inference model (if included this overwrites the test_generation_config options).
+            ... TODO add description
             """
             )
     )
@@ -744,7 +753,7 @@ def parse_arguments():
         extra_args["train_builder_config"] = config_dict[TRAIN_CONFIG]
     else:
         user_inference_config = parse_extra_options(args.inference_config)
-        args.inference_config = {**default_user_inference_config, **user_inference_config}
+        args.inference_export_config = {**default_user_inference_config, **user_inference_config}
         #user_test_generation_config = parse_extra_options(args.test_generation_config)
         #args.test_generation_coinfig = {**default_test_generation_config, **user_test_generation_config}
 
@@ -772,9 +781,10 @@ if __name__ == "__main__":
         test_eval=args.test_eval,
         # We avoid testing generation in this script due to package conflicts
         #test_generation=args.test_generation,
-        inference_config=args.inference_config,
+        inference_export_config=args.inference_export_config,
         #test_generation_config=args.test_generation_config
         export_tokenizer=args.export_tokenizer,
+        inference_config=args.inference_config,
         train_config=args.train_config,
         export_dataset=args.export_dataset,
         export_inference_config=args.export_inference_config,

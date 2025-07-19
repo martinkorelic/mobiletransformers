@@ -10,7 +10,7 @@ This uses optimizations prepared by ONNX GenAI framework and exposes the needed 
 """
 
 from onnx import helper, numpy_helper, TensorProto, external_data_helper, save_model
-import onnx
+from onnx.external_data_helper import convert_model_to_external_data
 from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer, QuantFormat
 from onnxruntime.quantization import QuantFormat, QuantType, quantize_dynamic, quantize_static
 from onnxruntime.quantization.onnx_quantizer import ONNXQuantizer, QuantizationMode
