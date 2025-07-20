@@ -184,7 +184,7 @@ def force_dequantize_external_and_save(model, output_path, external_data_filenam
         external_data_filename: Name of external data file (optional, defaults to model_name.onnx.data)
     
     Returns:
-        int: Number of tensors that were forced to external
+        model : The new inference model with external initializers
     """
     if external_data_filename is None:
         model_name = os.path.splitext(os.path.basename(output_path))[0]
@@ -442,6 +442,7 @@ def gen_genai(model_id,
     # We set size threshold to 0 to force all tensors to be saved as externally and later to be replaced easily in inference session
     print("[INFO] Forcing external initializers...")
     model = force_dequantize_external_and_save(model, new_model_namepath)
+    print("[INFO] Saving the model...")
     onnx.save(model, new_model_namepath, save_as_external_data=True, location=f'{new_model_name}.onnx.data', size_threshold=0)
 
     if large_model:
@@ -542,8 +543,8 @@ def convert_pipeline(model_id,
                         test_evaluate=test_eval)
         print("[INFO] Training check completed.")
     
-    # Export generative AI model
-    if gen_inference_artifacts and inference_config["type"] == "genai":
+    # Export native inference model
+    if gen_inference_artifacts and inference_config["type"] == "native":
         gen_genai(model_id=model_id,
                   model_path=f'{inference_dir}/{inference_model_name}',
                   training_config=f'{train_dir}/training_config.json',
@@ -555,23 +556,18 @@ def convert_pipeline(model_id,
                   include_metadata=inference_export_config["include_metadata"],
                   opset_version=inference_export_config["opset"],
                   #test_generation_config=test_generation_config,
-                  check_model=inference_config["type"] == "native")
+                  check_model=inference_export_config["check_model"])
         print("[INFO] Generated the artifact inference model graph.")
 
         # Move the rest of the files
         move_files_excluding(inference_dir, f'{build_dir}/inference', exclude_files=[inference_model_name])
         print(f"[INFO] Moved the rest of generation configuration files to: {build_dir}/inference")
 
-    # Export native inference model
     # NOTE: If the ONNX Runtime versions do not match, you need to use inference.builder to build inference model
-    elif gen_inference_artifacts and inference_config["type"] == "native":
-
-        # Export native inference model (only from config.yml configurations)
-        gen_args = [
-            "python", "-m", "inference.builder",
-            "--config", config_file_path
-        ]
-        subprocess.run(gen_args, check=True)
+    elif gen_inference_artifacts and inference_config["type"] == "genai":
+        raise ValueError("GenAI inference graph currently not supported.")
+    else:
+        raise ValueError("Unrecognized inference type")
 
     # Export generation configuration
     if export_inference_config:
@@ -595,7 +591,6 @@ def convert_pipeline(model_id,
             create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx', quantized=True)
             create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx', quantized=False)
         elif peft_method == "mars":
-
             # We need both quantized and non-quantized merger models
             if 'optimization_level' in kwargs["train_builder_config"][peft_method] and kwargs["train_builder_config"][peft_method]['optimization_level'] <= 1:
                 create_mars_merger_model(f'{build_dir}/train/mars_merger_model.onnx', quantized=False)
@@ -604,6 +599,8 @@ def convert_pipeline(model_id,
             # We also need basic LoRA merger models for this PEFT method
             create_lora_merger_model(f'{build_dir}/train/lora_qmerger_model.onnx', quantized=True)
             create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx', quantized=False)
+        else:
+            raise ValueError("Unsupported PEFT method.")
 
     # Clean the generated models if needed
     if delete_models:

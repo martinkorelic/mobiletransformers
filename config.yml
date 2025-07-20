@@ -1,14 +1,16 @@
 ###################### TRAINING BUILDER CONFIGURATION ######################
 TRAIN_BUILDER:
   # Some SLM to choose from:
-
   # TinyLlama/TinyLlama-1.1B-Chat-v1.0
   # cjvt/GaMS-2B-Instruct
   # TinyLlama/TinyLlama_v1.1
-  model_id: "TinyLlama/TinyLlama_v1.1"  #"microsoft/Phi-3-mini-4k-instruct" #"TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  # microsoft/Phi-3-mini-4k-instruct
+  model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
   output: "./build/train_models"
 
   training_mode: true
+
+  # Currently supported PEFT methods:
   # lora, lora-xs, mars
   train_method: mars
 
@@ -97,9 +99,9 @@ INFERENCE_BUILDER:
   # - DequantizeLinear of uint8 (dynamic_quantize=true + force_transpose_inputs=true + use_qdq=true)
   # - DequantizeLinear of int4 (force_transpose_inputs=false + use_qdq=true)
   # - MatMulNBits operator of int8 (all false)
-  dynamic_quantize: true
-  force_transpose_inputs: true
-  use_qdq: true
+  dynamic_quantize: false
+  force_transpose_inputs: false
+  use_qdq: false
 
   prompt_templates: false
   export_tokenizer: false
@@ -116,7 +118,7 @@ ARTIFACT_BUILDER:
   training_model: "quant_model.onnx"
 
   # This will join path with the INFERENCE_BUILDER.output/inference_models
-  inference_model: "quant_model.onnx"
+  inference_model: "model.onnx"
 
   # NOTE: Use trainer.builder to build the training model first
   gen_train_artifacts: false
@@ -131,27 +133,31 @@ ARTIFACT_BUILDER:
   test_training: false
   test_eval: false
 
-  # Whether to include trainable weights as model input
-
   inference_export_config:
+  # Whether to include trainable weights as model input
     weight_input : false
     # Whether to include the model metadata
     include_metadata: true
     opset: 20
     output_inference_model: "quant_model"
+    check_model : false
   
   inference_config:
     # Currently only native works for the application
     
     modelName: tinyllama # Model name
     onnxName: quant_model
-    # TODO: Fix switching
-    type: "genai" # "native", "genai"
+    type: "native" # "native", "genai"
     maxSequenceLength: 128
     trackMetrics: true
     timeStepUpdate: 5
     systemPrompt: null
     loadMergedWeights: true
+    sampling:
+      method: greedy # top_k, top_p
+      temperature: 1 # Temperature for sampling
+      topK: 10 # Top K for sampling
+      topP: 0.9 # Top P for sampling
     deviceOptions:
       enableProfiling: false
       # Core config id - sets inter / intra op threads
@@ -161,8 +167,10 @@ ARTIFACT_BUILDER:
       coreConfigId: opt2
       # Memory config id
       # "low_mem" - disables ONNX Runtime memory arena and pattern 
-      # "high_perf" - enables ONNX Runtime memory arena and pattern 
-      memoryConfigId: low_mem
+      # "high_perf" - enables ONNX Runtime memory arena and pattern
+      
+      # IMPORTANT: Using "low_mem" currently crashes the inference session on device
+      memoryConfigId: high_perf
       # Execution Provider
       executionProvider: cpu # xnnpack, nnapi, cpu 
   
@@ -222,8 +230,8 @@ ARTIFACT_VALIDATOR:
   # ARTIFACT_BUILDER.build_path/inference/ARTIFACT_BUILDER.inference_config.output_inference_model
   
   # Uncomment if you want to overwrite it
-  inference_artifact_dir: build/inference/
-  inference_artifact_name: quant_model.onnx
+  #inference_artifact_dir: build/inference/
+  #inference_artifact_name: quant_model.onnx
   tokenizer_dir: build/tokenizer-TinyLlama-1.1B-Chat-v1.0
 
   # Inference validation
@@ -234,13 +242,14 @@ ARTIFACT_VALIDATOR:
 
   test_generation_config:
     type: native
-    prompt: "Počutim se slabo. Kako mi lahko pomagaš?" # Prompt for test generation
+    prompt: "Describe to me what a bird looks like. Be concise." # Prompt for test generation
     decode_between: true # Whether to decode the text while it's generating
     max_length : 64 # Max length of test sequence to generate
-    sampling: "greedy" # Sampling method
-    temperature: 0.7 # Temperature for sampling
-    top_k: 10 # Top K for sampling
-    top_p: 0.9 # Top P for sampling
+    sampling:
+      method: top_p # greedy, top_k, top_p
+      temperature: 1 # Temperature for sampling
+      topK: 50 # Top K for sampling
+      topP: 0.9 # Top P for sampling
     hf_tokenizer: False # Whether to use the HF tokenizer or local tokenizer files
 
   # Test loading the merged adapters into model

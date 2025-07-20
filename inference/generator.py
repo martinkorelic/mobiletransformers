@@ -16,10 +16,12 @@ def generate_tokens_onnx(tokenizer,
                          prompt="Hello, how is your day?",
                          output_name="logits",
                          max_length=100,
-                         sampling="greedy",
-                         temperature=1.0,
-                         top_p=0.9,
-                         top_k=50,
+                         sampling={
+                            "method": "greedy",
+                            "temperature" : 1.0,
+                            "topP" : 0.9,
+                            "topK": 50
+                         },
                          decode_between=True,
                          **kwargs):
     """
@@ -28,6 +30,7 @@ def generate_tokens_onnx(tokenizer,
     """
 
     print(prompt)
+    print(sampling)
 
     input_ids = tokenizer(prompt, return_attention_mask=True, return_tensors="np")
 
@@ -56,7 +59,7 @@ def generate_tokens_onnx(tokenizer,
     start_time = time.time()
     num_decode = 0
     for _ in range(max_length):
-        print(token_input_ids)
+
         model_inputs = {
             "input_ids": token_input_ids,
             "attention_mask": attention_mask,
@@ -83,9 +86,10 @@ def generate_tokens_onnx(tokenizer,
             past_key_values = present_kv
         
         # Get the last token logits and apply temperature
-        logits = logits[:, -1, :] / temperature
+        logits = logits[:, -1, :] / sampling["temperature"]
 
-        if sampling=="top_k":
+        if sampling["method"]=="top_k":
+            top_k = sampling["topK"]
             # Apply top-k filtering
             top_k_values, top_k_indices = np.partition(logits[0], -top_k)[-top_k:], np.argpartition(logits[0], -top_k)[-top_k:]
             filtered_logits = np.full_like(logits[0], -float('Inf'))
@@ -95,9 +99,10 @@ def generate_tokens_onnx(tokenizer,
             probabilities = np.exp(filtered_logits - np.max(filtered_logits))  # Stability improvement
             probabilities /= np.sum(probabilities)
             next_token_id = np.random.choice(len(probabilities), p=probabilities)
-        elif sampling == "greedy":
+        elif sampling["method"] == "greedy":
             next_token_id = np.argmax(logits[0])
-        elif sampling == "top_p":
+        elif sampling["method"] == "top_p":
+            top_p = sampling["topP"]
             # Sort logits by probability
             sorted_logits = np.sort(logits[0])[::-1]
             sorted_indices = np.argsort(logits[0])[::-1]

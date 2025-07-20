@@ -62,7 +62,7 @@ def validate_generation(model_id, model_name, model_dir, test_generation, test_g
                 print(test_generation_config["prompt"])
 
         sess_options = SessionOptions()    
-        sess_options.enable_profiling = True
+        sess_options.enable_profiling = False
         sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
 
         # Optionally enable other optimizations
