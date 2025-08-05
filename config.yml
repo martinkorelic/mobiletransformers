@@ -5,7 +5,7 @@ TRAIN_BUILDER:
   # cjvt/GaMS-2B-Instruct
   # TinyLlama/TinyLlama_v1.1
   # microsoft/Phi-3-mini-4k-instruct
-  model_id: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  model_id: TinyLlama/TinyLlama-1.1B-Chat-v1.0
   output: "./build/train_models"
 
   training_mode: true
@@ -230,8 +230,8 @@ ARTIFACT_VALIDATOR:
   # ARTIFACT_BUILDER.build_path/inference/ARTIFACT_BUILDER.inference_config.output_inference_model
   
   # Uncomment if you want to overwrite it
-  #inference_artifact_dir: build/inference/
-  #inference_artifact_name: quant_model.onnx
+  inference_artifact_dir: build/inference-TinyLlama-1.1B-Chat-v1.0-DQ-int4
+  inference_artifact_name: quant_model.onnx
   tokenizer_dir: build/tokenizer-TinyLlama-1.1B-Chat-v1.0
 
   # Inference validation
@@ -242,11 +242,11 @@ ARTIFACT_VALIDATOR:
 
   test_generation_config:
     type: native
-    prompt: "Describe to me what a bird looks like. Be concise." # Prompt for test generation
+    prompt: "Zdravo" # Prompt for test generation
     decode_between: true # Whether to decode the text while it's generating
     max_length : 64 # Max length of test sequence to generate
     sampling:
-      method: top_p # greedy, top_k, top_p
+      method: greedy # greedy, top_k, top_p
       temperature: 1 # Temperature for sampling
       topK: 50 # Top K for sampling
       topP: 0.9 # Top P for sampling
