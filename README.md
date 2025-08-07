@@ -1,105 +1,134 @@
-# On-device LLM framework for Fine-Tuning and Inference
+# 📱 ORTransformersMobile: An On-Device LLM Framework for Fine-Tuning and Inference
 
-This is a framework for generating ONNX training and inference model from Huggingface / local LLM models and deploying them on-device for training and inference. This framework currently supports:
-- PEFT training methods and improved inference methods for text generation task
-- Deployment of the models into ready application for on-device LLM **Fine-Tuning** and **Inference / Generation**
-- Includes **ONNX GenAI** and **native generation** for on-device inference
-- **Ready-to-go Android application** for on-device LLM Fine-Tuning and Generation
-- ~~Merging of finetuned adapters into inference model for generation~~
+**ORTransformersMobile** is a modular framework designed for fully **on-device execution** of large and small language models (LLM / SLM) on mobile and edge devices.  
+Built on top of **ONNX Runtime**, it leverages hardware-accelerated execution providers such as **XNNPACK**, **NNAPI**, and **QNN** for efficient inference and training on Android and similar platforms.
 
-## TODOs
-
-### On-device
-- [ ] Create PEFT specific adapter merging methods into inference model
-- [x] Custom tokenizer that is not dependent on ONNX GenAI framework
-- [ ] Create implementation that will load and save adapters on-device (using [ONNX Runtime LoraAdapters](https://onnxruntime.ai/docs/api/c/struct_ort_1_1_lora_adapter.html)?)
-
-### Script
-- [ ] Add metadata to the training model
-- [ ] Add profiling to the inference validator
-- [ ] Add other PEFT training methods
-- [ ] Validator for on-device training
-- [ ] Simulator for on-device training, merging and inference
-- [ ] (Android) Script for deployment of the models on-device
-
-### Roadmap
-- [ ] (On-device) Add application support for iOS (including CoreML)
-- [ ] (On-device) Add optimization methods for RLHF (?)
-- [ ] (On-device) RAG implementation (?)
-
-## Usage
-
-### Pre-requisites
-To start using with your own models or other custom models please configure the two files before running the pipeline in offline phase:
-- `config.yml` - All configurations related to the model customization and pipeline configurations
-- `pipeline.sh` - Configuration and pipeline executing of the scripts
-- `.env` - Create your own environment file in the root folder with the following variables:
-
-```ini
-# Huggingface token
-HF_TOKEN=...
-
-# Path to Huggingface model cache directory (optional)
-HF_CACHE=/path/to/.cache/huggingface/hub
-```
-
-Refer to configuration file `config.yml` for all descriptions about the configurations. Read about all the separate script usage in the following sections.
-
-### Training model builder
-
-Script that fetches the Huggingface LLM model and converts it into a ONNX graph compatible for artifact training generation.
-
-Usage example (use `--help` to get details about the arguments):
-```sh
-python -m trainer.builder --config_file config.yml
-```
-
-### Inference model builder
-
-Script that fetches the Huggingface LLM model and converts it into a ONNX graph compatible for artifact inference generation.
-This uses optimizations prepared by ONNX GenAI framework and exposes the needed adapters for on-device loading of newly updated parameters.
-
-Usage example (use `--help` to get details about the arguments):
-```sh
-python -m inference.builder --config_file config.yml
-```
-
-### Artifact builder
-
-Script that creates the training and inference model artifacts which can be deployed to the device. The models are utilized by the on-device application.
-
-Usage example (use `--help` to get details about the arguments):
-```sh
-python -m artifact.onnx_builder --config_file config.yml
-```
-
-### Inference validator
-
-Script that validates the generation / inference of the inference artifact model.
-
-Usage example (use `--help` to get details about the arguments):
-```sh
-python -m inference.validator --config_file config.yml
-```
-
-### Training validator
-
-Script that validates the training of the training artifcat model. Training with dataset and observing the performance results. 
-
-TODO: to be written...
-
-### On-device simulator
-
-Script that simulates the training of the model, the merging of the model adapters and inference of the newly trained inference model.
-
-TODO: to be written...
-
-## On-device deployment
-
-TODO: to be written...
+- **OR**: ONNX Runtime  
+- **Transformers**: Core architecture of large language models  
+- **Mobile**: Fully on-device mobile execution  
 
 ---
 
-> Any other research made by myself can be found in `docs/ResearchNotes.md`.
->
-> Created by Martin Korelič - August 2024
+## 🚀 What is ORTransformersMobile?
+
+A comprehensive, privacy-first framework that empowers researchers and developers to export, fine-tune, merge, and deploy transformer-based language models directly on your Android device. Eliminate dependency on cloud services while maintaining full control over your AI models in your pocket.
+Perfect for privacy-preserving NLP applications, offline AI assistants, personalized chatbots, and edge computing scenarios where data sovereignty and real-time responsiveness are crucial. Whether you're building the next generation of pocket AI or developing enterprise edge solutions, **ORTransformersMobile** provides the foundation for truly autonomous mobile intelligence.
+
+**Key Benefits**:
+
+- 🔒 **Complete Privacy**: Your data never leaves your device
+- 📱 **Pocket-Sized AI**: Full LLM/SLM capabilities in your smartphone
+- 🔧 **Hardware execution provider support**: Hardware-accelerated inference for efficient on-device execution
+- 🌐 **Offline-First**: Works anywhere, anytime, without internet connectivity
+- 🤖 **Universal Model Support**: Compatible with most custom LLMs/SLMs from Huggingface
+
+---
+
+## 📦 Repository Contents
+
+This comprehensive repository provides everything needed for on-device LLM deployment:
+
+- 🔄 **Export Pipeline**: Streamlined conversion system transforming Huggingface LLMs/SLMs into PEFT-enabled training models and ONNX inference graphs optimized for Android deployment
+- 📱 **Complete Android Application**: Full-featured Android folder containing the entire mobile application stack, ready for pocket deployment
+- 🧪 **Custom PEFT support**: Customizable PEFT solutions for on-device fine-tuning (e.g. LoRA - Low-rank approximation, MARS - Multi-Adapter Rank Sharing and more)
+- 🐍 **Training & Inference Scripts**: Python implementations supporting both PyTorch and ONNX Runtime, optimized for mobile hardware constraints
+- 🔬 **Evaluation Scripts**: Comprehensive benchmarking suite for trained models across diverse NLP tasks, including mobile-specific performance metrics and battery consumption analysis
+
+---
+
+## 📱 Android Application: ORTransformer-android
+
+The Android app is split into two main parts:
+
+- 📲 **Kotlin UI Layer**  
+  A lightweight interface acting as a communication bridge, calling APIs from the backend on the mobile device
+
+- ⚙️ **Backend: ORTransformersMobile**  
+  The core engine of the entire framework, implemented in **Kotlin and C++**. Can be easily implemented in re-used in another application, pick and choose which features you need.
+
+🔧 Key features include:  
+  - **Modular Android Project**: Clean separation of concerns with isolated modules for **training**, **inference**, **RAG / CAG** and **weight management** 
+  - **Hardware-Accelerated Loops**: **On-device training / fine-tuning** and generation loops leveraging NNAPI, XNNPACK, and Qualcomm QNN for optimal mobile performance
+  - **Dynamic Configuration**: Real-time customization of training parameters and inference settings tailored to your Android device's capabilities
+  - **ONNX Runtime Integration**: Optimized model execution specifically tuned for mobile and edge hardware 
+  - **Weight Management**: **On-device weight merging** with automatic export to **Android filesystem**, enabling model personalization without cloud dependency
+  - **Seamless Model Loading**: Direct import of merged weights into inference graphs for immediate pocket deployment
+  - **RAG support**: Support for **Retrieval-Augmented Generation (RAG)** using **ObjectBox** as a fast **on-device vector database**
+
+
+---
+
+## ✅ Key Capabilities
+
+| Feature                                     | Description                                                        |
+|---------------------------------------------|------------------------------------------------------------------|
+| ✅ Export **custom PyTorch Huggingface SLM / LLM models** | Convert Huggingface models with PEFT methods to training & ONNX inference models for on-device use |
+| ✅ On-device **fine-tuning/training** loop       | Perform parameter-efficient training (PEFT) directly on mobile devices |
+| ✅ On-device **generation** loop with KV caching | Efficient text generation using cached key-value tensors for faster autoregressive inference |
+| ✅ **Customizable** training and generation      | Flexible configuration to adapt training and generation to specific tasks and hardware |
+| ✅ On-device **weight exporting**                 | Save trained or merged weights directly on-device (mobile filesystem) |
+| ✅ On-device **weight merging**                    | Merge base and PEFT weights on-device, with optional quantization for optimized size and speed |
+| ✅ Direct inference from **merged weights**       | Load merged weights into the inference graph for seamless on-device model execution |
+| ✅ **Retrieval-Augmented Generation** (RAG)       | Fully on-device vector database integration with ObjectBox for augmented generation |
+
+---
+
+## 🛠️ Built On
+
+- [**ONNX Runtime**](https://onnxruntime.ai/) for training/inference and support for mobile-optimized execution providers:  
+  - XNNPACK  
+  - NNAPI  
+  - Qualcomm QNN  
+- [**Huggingface Transformers**](https://huggingface.co/) ecosystem compatibility for model export  
+- [**ObjectBox**](https://objectbox.io/) for lightweight on-device vector databases in RAG workflows  
+
+---
+
+## 🎯 Why ORTransformersMobile?
+
+- Fully **on-device** - no cloud dependency, maximizing privacy and minimizing latency 
+- Enables **parameter-efficient fine-tuning (PEFT)** on mobile hardware  
+- Modular and customizable for research and production use
+- Ready for **Android** and adaptable to other edge devices  
+- Combines cutting-edge generation techniques with practical on-device deployment  
+
+---
+
+## 🔧 Extensibility and Future Work
+
+ORTransformersMobile is designed as a flexible platform, allowing easy extension for advanced on-device ML workflows, such as:
+
+- Beyond text generation - classification, sentiment analysis, named entity recognition, question answering, summarization, and custom NLP tasks tailored for mobile use cases
+- On-device **reinforcement learning**  
+- **Federated learning** leveraging exported merged weights  
+- Integration with additional hardware acceleration backends  
+- Support for more PEFT methods and quantization techniques  
+- Expansion to other mobile platforms and edge systems
+
+---
+
+## 📥 Documentation
+
+*Coming soon:*  
+Detailed installation instructions, export guides, training and inference examples, and API documentation.
+
+---
+
+## Citation
+
+If you are using this framework for your own work, please cite:
+
+```
+@misc{ortransformersmobile2025,
+  author       = {Koreli\v{c}, Martin and Pejovi{\'c}, Veljko},
+  title        = {ORTransformersMobile: An On-Device LLM Framework for Fine-Tuning and Inference},
+  year         = {2025},
+  howpublished = {\url{https://gitlab.fri.uni-lj.si/lrk/ortransformersmobile}}
+}
+```
+
+---
+
+## Acknowledgements
+
+This work was supported by the Slovenian Research Agency grant no. N2-0393 approXimation for adaptable diStributed artificial intelligence and grant no. J2-3047 Context-Aware On-Device Approximate Computing.
