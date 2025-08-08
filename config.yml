@@ -1,14 +1,28 @@
 ###################### TRAINING BUILDER CONFIGURATION ######################
 TRAIN_BUILDER:
+
+  ############ BASIC MODEL EXPORT CONFIGURATION ############
+
   # Some SLM to choose from:
   # TinyLlama/TinyLlama-1.1B-Chat-v1.0
   # cjvt/GaMS-2B-Instruct
   # TinyLlama/TinyLlama_v1.1
   # microsoft/Phi-3-mini-4k-instruct
-  model_id: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  # sentence-transformers/all-MiniLM-L6-v2
+  # Qwen/Qwen3-Embedding-0.6B
+  # intfloat/multilingual-e5-small
+  model_id: sentence-transformers/all-MiniLM-L6-v2
   output: "./build/train_models"
 
-  training_mode: true
+  # If building generation model -> text-generation
+  # If building the embedding model -> feature-extraction
+  task_type: feature-extraction
+
+  # Whether to add loss to the model
+  # Set to true if you need a training model, otherwise false
+  training_mode: false
+
+  ############ TRAINING CONFIGURATION ############
 
   # Currently supported PEFT methods:
   # lora, lora-xs, mars
@@ -30,10 +44,15 @@ TRAIN_BUILDER:
   # Weight types for quantizing (dynamic quantization can only use UInt8, so this field does not change anything for dynamic quantization)
   weight_type: "QInt8"
   extra_options:
-    postprocess: false
+
     # ONNX opset version 21 is not supported. by 'torch.onnx.export()'.
     # The highest opset version supported is 20. To use a newer opset version, consider 'torch.onnx.export(..., dynamo=True)'.
     opset: 20
+
+    # Whether to add pooling operations for sentence-transformers / embedding models to the onnx model
+    # Uncheck this if creating generation model
+    add_pooling: true
+
     # Any extra layers to exclude from quantization
     exclude_extra_layers:
 
@@ -114,17 +133,23 @@ INFERENCE_BUILDER:
 ARTIFACT_BUILDER:
   build_path: "./build"
 
-  # This will join path with the TRAIN_BUILDER.output/train_model
+  # This will join path with the TRAIN_BUILDER.output/train_models
   training_model: "quant_model.onnx"
 
   # This will join path with the INFERENCE_BUILDER.output/inference_models
   inference_model: "model.onnx"
 
+  # This will join path with the TRAIN_BUILDER.output/embedding_models
+  embedding_model: ./build/embedding_models/embedding_model.onnx
+
   # NOTE: Use trainer.builder to build the training model first
   gen_train_artifacts: false
 
   # NOTE: Use inference.builder to build inference model first
-  gen_inference_artifacts: true
+  gen_inference_artifacts: false
+
+  # NOTE: Use trainer.builder to build just the embedding model first
+  gen_embedding_artifacts: true
 
   export_inference_config: true
   export_tokenizer: true
@@ -212,7 +237,30 @@ ARTIFACT_BUILDER:
       # "high_perf" - enables ONNX Runtime memory arena and pattern 
       memoryConfigId: low_mem
       # Execution Provider
-      executionProvider: cpu # xnnpack, cpu 
+      executionProvider: cpu # xnnpack, nnapi, cpu
+
+  embedding_config:
+    modelName: tinyllama # Model name
+    onnxName: embedding_model
+    embeddingDimension: 256
+    topK: 10
+
+    maxTextLength: 1024
+    chunkSize: 512
+    chunkOverlap: 64
+    deviceOptions:
+      enableProfiling: false
+      # Core config id - sets inter / intra op threads
+      # "opt3" - 6 / 4
+      # "opt2" - 4 / 2
+      # "opt1" - 1 / 1
+      coreConfigId: opt2
+      # Memory config id
+      # "low_mem" - disables ONNX Runtime memory arena and pattern 
+      # "high_perf" - enables ONNX Runtime memory arena and pattern 
+      memoryConfigId: high_perf
+      # Execution Provider
+      executionProvider: cpu # xnnpack, cpu
 
   # Exports the dataset inside the train directory
   export_dataset: true

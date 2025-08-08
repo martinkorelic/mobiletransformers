@@ -12,9 +12,9 @@ import onnx
 import numpy as np
 from onnx import helper, TensorProto, numpy_helper
 from optimum.exporters.onnx import OnnxConfigWithLoss, export
-from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfig, Phi3OnnxConfig
+from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfig, Phi3OnnxConfig, BertOnnxConfig
 
-from transformers import AutoModelForCausalLM, AutoConfig
+from transformers import AutoModelForCausalLM, AutoConfig, AutoModel
 from peft import PeftModel, LoraConfig, get_peft_model
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
@@ -22,6 +22,7 @@ from optimization.mars.config import MarsConfig
 from optimization.mars.modelv2 import MarsModel
 
 from trainer.utils import create_mars_adapter_mapping, create_lora_mapping
+from trainer.embedding_builder import add_pooling_to_onnx_model
 
 def add_peft_type(name, value):
     """Dynamically add a new value to the PeftType enum."""
@@ -32,15 +33,11 @@ def add_peft_type(name, value):
 add_peft_type("MARS", "MARS")
 PEFT_TYPE_TO_MODEL_MAPPING[PeftType("MARS")] = MarsModel
 
-from onnxruntime.quantization import quantize_dynamic, QuantType, QuantFormat, quantize_static
-#from onnxruntime.quantization.matmul_4bits_quantizer import MatMul4BitsQuantizer, DefaultWeightOnlyQuantConfig
-
-from onnxruntime.transformers.onnx_model import OnnxModel
+from onnxruntime.quantization import quantize_dynamic, QuantType
 
 from optimization.lora_xs.initialization_utils import find_and_initialize
 
 # All operators supported for training should be in https://onnx.ai/onnx/operators/index.html
-from onnxruntime.transformers.fusion_layernorm import FusionLayerNormalization
 
 from dotenv import load_dotenv
 
@@ -171,16 +168,78 @@ def inspect_weights(model_path, only_trainable=False):
     for param in INTIALIZERS:
         print(f"Layer name: {param.name}")
 
-def postprocess_model(model):
+def apply_metadata(model_path, model_id):
     """
-    TODO: Work in progress still if needed, avoid using this function.
-    Postprocessing of the model, adding fusion.
-    """
+    Load ONNX model, apply metadata to both model and graph, and resave it (replacing original files).
     
-    onx_m = OnnxModel(model)
-    updated_model = FusionLayerNormalization(onx_m)
-    updated_model.apply()
-    return updated_model.model
+    Args:
+        model_path (Path): Path to the .onnx model file
+        model_id (str): Model ID to add as metadata
+    
+    Returns:
+        Path: Path to the updated model file
+    """
+    # Load the model
+    model = onnx.load(str(model_path))
+    
+    # Remove existing model_id metadata from model if it exists
+    to_remove = []
+    for i, prop in enumerate(model.metadata_props):
+        if prop.key == "model_id":
+            to_remove.append(i)
+    
+    # Remove in reverse order to maintain indices
+    for i in reversed(to_remove):
+        del model.metadata_props[i]
+    
+    # Add metadata to model level
+    model_metadata_entry = onnx.StringStringEntryProto()
+    model_metadata_entry.key = "model_id"
+    model_metadata_entry.value = str(model_id)
+    model.metadata_props.append(model_metadata_entry)
+    
+    # Remove existing model_id metadata from graph if it exists
+    graph_to_remove = []
+    for i, prop in enumerate(model.graph.metadata_props):
+        if prop.key == "model_id":
+            graph_to_remove.append(i)
+    
+    # Remove in reverse order to maintain indices
+    for i in reversed(graph_to_remove):
+        del model.graph.metadata_props[i]
+    
+    # Add metadata to graph level
+    graph_metadata_entry = onnx.StringStringEntryProto()
+    graph_metadata_entry.key = "model_id"
+    graph_metadata_entry.value = str(model_id)
+    model.graph.metadata_props.append(graph_metadata_entry)
+    
+    # Get paths for potential files to delete
+    data_path = model_path.with_suffix(model_path.suffix + ".data")
+    
+    # Delete original files
+    if model_path.exists():
+        model_path.unlink()
+        print(f"✓ Deleted original {model_path.name}")
+    
+    if data_path.exists():
+        data_path.unlink()
+        print(f"✓ Deleted original {data_path.name}")
+    
+    # Save the updated model
+    onnx.save(model, str(model_path))
+    
+    # Verify metadata persisted after save
+    reloaded_model = onnx.load(str(model_path))
+    print("✓ All metadata in saved model:")
+    print("  Model-level:")
+    for prop in reloaded_model.metadata_props:
+        print(f"    - {prop.key}: {prop.value}")
+    print("  Graph-level:")
+    for prop in reloaded_model.graph.metadata_props:
+        print(f"    - {prop.key}: {prop.value}")
+    
+    return model_path
 
 def preprocess_model(model : torch.nn.Module, epsilon_high=1e-8, epsilon_low=1e-10):
     """
@@ -209,25 +268,27 @@ def optimum_hf_export(model_id,
                       exclude_extra_layers = ["embed_head"],
                       exclude_specific=False,
                       exclude_specific_layers=[],
-                      opset=20):
+                      opset=20,
+                      task_type="text-generation",
+                      add_pooling=False):
     """
     Exports the model from Huggingface to an ONNX model representation.
-    - `model_id` - model id of Huggingface model
-    - `model_output` - path to model output directory
-    - `training_mode`- create model for training or inference
-    - `lora_target` - which layers to apply LoRA to
-    - `quantize` - add dynamic quantization to layers which do not need gradient updates
     """
 
-    model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True, token=os.environ["HF_TOKEN"])
+    if task_type == "text-generation":
+        model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True, token=os.environ["HF_TOKEN"])
+    else:
+        model = AutoModel.from_pretrained(model_id, trust_remote_code=True, token=os.environ["HF_TOKEN"])
     config = AutoConfig.from_pretrained(model_id, token=os.environ["HF_TOKEN"])
 
     if config.architectures[0] == "LlamaForCausalLM":
-        ocl = LlamaOnnxConfig(config, task="text-generation", use_past=not training_mode, use_past_in_inputs=not training_mode)
+        ocl = LlamaOnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
     elif config.architectures[0] == "GemmaForCausalLM" or config.architectures[0] == "Gemma2ForCausalLM":
-        ocl = GemmaOnnxConfig(config, task="text-generation", use_past=not training_mode, use_past_in_inputs=not training_mode)
+        ocl = GemmaOnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
     elif config.architectures[0] == "Phi3ForCausalLM":
-        ocl = Phi3OnnxConfig(config, task="text-generation", use_past=not training_mode, use_past_in_inputs=not training_mode)
+        ocl = Phi3OnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
+    elif config.architectures[0] == "BertModel":
+        ocl = BertOnnxConfig(config, task=task_type)
 
     lora_config = None
     lora_model = None
@@ -286,16 +347,21 @@ def optimum_hf_export(model_id,
         lora_model = model
 
     mapping = {}
-    if train_method == "mars":
-        mapping = create_mars_adapter_mapping(lora_model, mars_config.enabled_qkv, mars_config.enabled_mlp)
-    elif train_method == "lora":
-        mapping = create_lora_mapping(lora_model)
+    if training_mode:
+        if train_method == "mars":
+            mapping = create_mars_adapter_mapping(lora_model, mars_config.enabled_qkv, mars_config.enabled_mlp)
+        elif train_method == "lora":
+            mapping = create_lora_mapping(lora_model)
 
     if training_mode:
         my_model = OnnxTrainerWrapper(lora_model.base_model.model)
         my_model.train()
-    else:
+    elif task_type == "text-generation":
         my_model = OnnxInferenceWrapper(lora_model)
+        my_model.eval()
+    else:
+        # Infer from the model
+        my_model = lora_model
         my_model.eval()
 
     # Preprocessing methods
@@ -303,6 +369,13 @@ def optimum_hf_export(model_id,
         my_model = preprocess_model(my_model)
 
     export(my_model, ocl, onnx_path, opset, do_constant_folding=not training_mode)
+
+    # Apply some metadata to model
+    apply_metadata(onnx_path, model_id)
+
+    # Add pooling operations to the embedding model and save
+    if task_type == "feature-extraction" and add_pooling:
+        add_pooling_to_onnx_model(onnx_path, model_id, f"{model_output}/embedding_model.onnx")
 
     # Save gradient layer names
     if training_mode:
@@ -314,13 +387,6 @@ def optimum_hf_export(model_id,
                 "frozen_params": no_grad_layers,
                 "peft_mapping": mapping
             }, f, ensure_ascii=False)
-
-    # Post-processing
-    if training_mode and postprocess:
-        my_model = onnx.load(onnx_path)
-        my_model = postprocess_model(my_model)
-        onnx_path = Path(f"{model_output}/opt_model.onnx")
-        my_model.save_model_to_file(output_path=onnx_path.absolute().as_posix(), use_external_data_format=True)
     
     del my_model
     my_model = None
@@ -336,6 +402,10 @@ def optimum_hf_export(model_id,
                                   exclude_extra_layers=exclude_extra_layers,
                                   exclude_specific=exclude_specific,
                                   exclude_specific_layers=exclude_specific_layers)
+        
+        # Add pooling operations to the quantized embedding model and save
+        if task_type == "feature-extraction" and add_pooling:
+            add_pooling_to_onnx_model(f"{model_output}/quant_model.onnx", model_id, f"{model_output}/embedding_quant_model.onnx")
 
 def onnx_dynamic_quantization(onnx_model_path,
                               onnx_model_quant_output,
@@ -441,7 +511,7 @@ def parse_arguments():
     )
     parser.add_argument(
         "--training_mode",
-        type=bool,
+        type=lambda x: x.lower() == 'true',
         default=True,
         help="Whether the model is in training mode. Default is True."
     )
@@ -475,7 +545,14 @@ def parse_arguments():
         type=lambda x: QuantType[x],
         choices=list(QuantType),
         default=QuantType.QUInt8,
-        help="The quantization weight type, e.g., QUInt8. Default is QuantType.QUInt8. Recommended QInt4 so it stays in the same quantization domain as inference model."
+        help="The quantization weight type, e.g., QUInt8. Default is QuantType.QUInt8. Recommended QInt8 so it stays in the same quantization domain as inference model."
+    )
+    parser.add_argument(
+        "--task_type",
+        type=str,
+        choices=["text-generation", "feature-extraction"],
+        default="text-generation",
+        help="Task type to build the model for."
     )
     parser.add_argument(
         "--config_file",
@@ -502,6 +579,7 @@ def parse_arguments():
     user_extra_options = {}
     default_extra_options = {
         "postprocess" : False,
+        "add_pooling": True,
         "opset" : 20,
         "exclude_extra_layers": [],
         "exclude_specific": False,
@@ -544,13 +622,15 @@ if __name__ == "__main__":
     for arg, value in vars(args).items():
         print(f"{arg}: {value}")
     
-    print("PEFT arguments:")
-    for arg, value in peft_config.items():
-        print(f"{arg}: {value}")
+    if peft_config:
+        print("PEFT arguments:")
+        for arg, value in peft_config.items():
+            print(f"{arg}: {value}")
 
-    print("Extra specific PEFT arguments:")
-    for arg, value in specific_peft_config.items():
-        print(f"{arg}: {value}")
+    if specific_peft_config:
+        print("Extra specific PEFT arguments:")
+        for arg, value in specific_peft_config.items():
+            print(f"{arg}: {value}")
 
     optimum_hf_export(
         model_id=args.model_id,
@@ -561,6 +641,7 @@ if __name__ == "__main__":
         lora_rank=args.lora_rank,
         quantize=args.quantize,
         weight_type=args.weight_type,
+        task_type=args.task_type,
         peft_config=peft_config,
         specific_peft_config=specific_peft_config,
         **args.extra_options

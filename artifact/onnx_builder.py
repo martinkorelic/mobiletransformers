@@ -24,7 +24,7 @@ from onnx.external_data_helper import convert_model_to_external_data, write_exte
 import onnxruntime as rt
 from onnxruntime import InferenceSession, SessionOptions
 from inference.generator import generate_tokens_onnx
-from tools.utils import move_files_excluding, delete_directory, load_and_save_dataset
+from tools.utils import move_files_excluding, delete_directory, load_and_save_dataset, move_onnx_model
 from tools.parser_config import ARTIFACT_CONFIG, TRAIN_CONFIG, INFERENCE_CONFIG, TASK_NAME_TO_DATASET
 from tools.tokenizer_export import export_tokenizer_config
 
@@ -248,6 +248,32 @@ def force_dequantize_external_and_save(model, output_path, external_data_filenam
         output_dir = "."
     
     return write_external_data_tensors(model, output_dir)
+
+def get_all_metadata_from_onnx(model_path):
+    """
+    Extract all metadata properties from ONNX model.
+    
+    Args:
+        model_path (Path or str): Path to the .onnx model file
+    
+    Returns:
+        dict: Dictionary containing all metadata properties from both model and graph levels.
+              Graph-level metadata will override model-level metadata if keys conflict.
+    """
+    import onnx
+    
+    model = onnx.load(str(model_path))
+    metadata = {}
+    
+    # Read model-level metadata first
+    for prop in model.metadata_props:
+        metadata[prop.key] = prop.value
+    
+    # Read graph-level metadata (will override model-level if keys conflict)
+    for prop in model.graph.metadata_props:
+        metadata[prop.key] = prop.value
+    
+    return metadata
 
 def onnx_export_dummy_model(model_output="tokenizer.onnx"):
     """
@@ -489,9 +515,11 @@ def convert_pipeline(model_id,
                     train_dir,
                     inference_model_name,
                     inference_dir,
+                    embedding_model_path,
                     build_dir,
-                    gen_train_artifacts = True,
-                    gen_inference_artifacts = True,
+                    gen_train_artifacts = False,
+                    gen_inference_artifacts = False,
+                    gen_embedding_artifacts = False,
                     test_training = True,
                     test_eval = True,
                     test_generation = True,
@@ -499,6 +527,7 @@ def convert_pipeline(model_id,
                     test_generation_config = {},
                     inference_config = {},
                     train_config = {},
+                    embedding_config = {},
                     export_tokenizer = True, 
                     export_dataset = True,
                     export_inference_config = True,
@@ -507,7 +536,7 @@ def convert_pipeline(model_id,
                     config_file_path="config.yml",
                     **kwargs):
     """
-    ONNX conversion for training and inference artifacts.
+    ONNX conversion for training, inference, merger and embedding artifacts.
     Creates a build folder with train and inference subfolders each with models needed for tasks.
     """
 
@@ -566,8 +595,6 @@ def convert_pipeline(model_id,
     # NOTE: If the ONNX Runtime versions do not match, you need to use inference.builder to build inference model
     elif gen_inference_artifacts and inference_config["type"] == "genai":
         raise ValueError("GenAI inference graph currently not supported.")
-    else:
-        raise ValueError("Unrecognized inference type")
 
     # Export generation configuration
     if export_inference_config:
@@ -601,6 +628,23 @@ def convert_pipeline(model_id,
             create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx', quantized=False)
         else:
             raise ValueError("Unsupported PEFT method.")
+        
+    if gen_embedding_artifacts:
+        embedding_model_metadata = get_all_metadata_from_onnx(embedding_model_path)
+        # Get model id from metadata and export tokenizer in embedding/tokenizer
+        export_tokenizer_config(embedding_model_metadata["model_id"], f'{build_dir}/embedding/', os.environ['HF_TOKEN'])
+
+        # Move onnx embedding model
+        move_onnx_model(embedding_model_path, f'{build_dir}/embedding/', delete=False)
+
+        # Export embedding config
+        with open(f'{build_dir}/embedding/embedding_config.json', "w", encoding="utf-8") as f:
+
+            # Update embedding config with correct information
+            if "embedding_dim" in embedding_model_metadata:
+                embedding_config["embeddingDimension"] = embedding_model_metadata["embedding_dim"]
+
+            json.dump(embedding_config, f, ensure_ascii=False)
 
     # Clean the generated models if needed
     if delete_models:
@@ -658,6 +702,11 @@ def parse_arguments():
         help="Name of the training model."
     )
     parser.add_argument(
+        "--embedding_model",
+        type=str,
+        help="Path to the embedding model."
+    )
+    parser.add_argument(
         "--training_dir",
         type=str,
         help="Path to the training model directory."
@@ -665,14 +714,20 @@ def parse_arguments():
     parser.add_argument(
         "--gen_train_artifacts",
         type=bool,
-        default=True,
-        help="Whether to generate training artifacts. Default is True."
+        default=False,
+        help="Whether to generate training artifacts. Default is False."
     )
     parser.add_argument(
         "--gen_inference_artifacts",
         type=bool,
-        default=True,
-        help="Whether to generate inference artifacts. Default is True."
+        default=False,
+        help="Whether to generate inference artifacts. Default is False."
+    )
+    parser.add_argument(
+        "--gen_embedding_artifacts",
+        type=bool,
+        default=False,
+        help="Whether to generate embedding artifacts. Default is False."
     )
     parser.add_argument(
         "--test_training",
@@ -686,12 +741,6 @@ def parse_arguments():
         default=True,
         help="Whether to test evaluation capabilities. Default is True."
     )
-    #parser.add_argument(
-    #    "--test_generation",
-    #    type=bool,
-    #    default=True,
-    #    help="Whether to perform inference / generation test on the inference exported model."
-    #)
     parser.add_argument(
         "--delete_models",
         type=bool,
@@ -753,6 +802,18 @@ def parse_arguments():
     )
     parser.add_argument(
         "--train_config",
+        type=str,
+        nargs="*",
+        metavar="KEY=VALUE",
+        default=[],
+        help=textwrap.dedent("""\
+         Key value pairs for various options. Currently supports:
+            ... TODO add description
+            """
+            )
+    )
+    parser.add_argument(
+        "--embedding_config",
         type=str,
         nargs="*",
         metavar="KEY=VALUE",
@@ -849,18 +910,21 @@ if __name__ == "__main__":
         train_dir=args.training_dir,
         inference_model_name=args.inference_model,
         inference_dir=args.inference_dir,
+        embedding_model_path=args.embedding_model,
         build_dir=args.build_path,
         gen_inference_artifacts=args.gen_inference_artifacts,
         gen_train_artifacts=args.gen_train_artifacts,
+        gen_embedding_artifacts=args.gen_embedding_artifacts,
         test_training=args.test_training,
         test_eval=args.test_eval,
         # We avoid testing generation in this script due to package conflicts
         #test_generation=args.test_generation,
-        inference_export_config=args.inference_export_config,
         #test_generation_config=args.test_generation_config
+        inference_export_config=args.inference_export_config,
         export_tokenizer=args.export_tokenizer,
         inference_config=args.inference_config,
         train_config=args.train_config,
+        embedding_config=args.embedding_config,
         export_dataset=args.export_dataset,
         export_inference_config=args.export_inference_config,
         export_merger=args.export_merger,
