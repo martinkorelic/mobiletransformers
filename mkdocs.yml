@@ -1,6 +1,0 @@
-site_name: ORTransformersMobile Documentation
-nav:
-  - Home: index.md
-theme:
-  name: readthedocs
-docs_dir: docs
