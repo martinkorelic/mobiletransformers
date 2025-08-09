@@ -4,13 +4,18 @@ TRAIN_BUILDER:
   ############ BASIC MODEL EXPORT CONFIGURATION ############
 
   # Some SLM to choose from:
+
+  # Causal model:
   # TinyLlama/TinyLlama-1.1B-Chat-v1.0
   # cjvt/GaMS-2B-Instruct
   # TinyLlama/TinyLlama_v1.1
   # microsoft/Phi-3-mini-4k-instruct
+
+  # Embedding model:
   # sentence-transformers/all-MiniLM-L6-v2
   # Qwen/Qwen3-Embedding-0.6B
   # intfloat/multilingual-e5-small
+  
   model_id: sentence-transformers/all-MiniLM-L6-v2
   output: "./build/train_models"
 
@@ -139,7 +144,7 @@ ARTIFACT_BUILDER:
   # This will join path with the INFERENCE_BUILDER.output/inference_models
   inference_model: "model.onnx"
 
-  # This will join path with the TRAIN_BUILDER.output/embedding_models
+  # Full path to embedding model
   embedding_model: ./build/embedding_models/embedding_model.onnx
 
   # NOTE: Use trainer.builder to build the training model first
@@ -149,7 +154,7 @@ ARTIFACT_BUILDER:
   gen_inference_artifacts: false
 
   # NOTE: Use trainer.builder to build just the embedding model first
-  gen_embedding_artifacts: true
+  gen_rag_artifacts: true
 
   export_inference_config: true
   export_tokenizer: true
@@ -239,11 +244,12 @@ ARTIFACT_BUILDER:
       # Execution Provider
       executionProvider: cpu # xnnpack, nnapi, cpu
 
-  embedding_config:
+  rag_config:
     modelName: tinyllama # Model name
     onnxName: embedding_model
     embeddingDimension: 256
     topK: 10
+    searchType: semantic # semantic, text
 
     maxTextLength: 1024
     chunkSize: 512

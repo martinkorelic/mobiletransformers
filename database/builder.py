@@ -13,6 +13,7 @@ Usage:
 import json
 import argparse
 from pathlib import Path
+import shutil
 import time
 from typing import List, Optional, Dict, Any
 import logging
@@ -138,7 +139,7 @@ class ORTMobileObjectBoxProcessor:
             1536: (VectorEntity1536, IdUid(7, 8007), IdUid(8, 8))
         }
         
-        entity_class, last_prop_id, entity_id = entity_configs[self.embedding_dim]
+        entity_class, _, entity_id = entity_configs[self.embedding_dim]
         self.model.entity(entity_class)
         self.model.last_entity_id = entity_id
     
@@ -392,6 +393,68 @@ def process_documents_with_custom_entities(input_dir: Path, output_dir: Path, em
     finally:
         processor.close()
 
+def validate_and_prepare_schema(script_dir: Path):
+    """
+    Validate that default.json exists and copy it to objectbox-model/default.json
+    in the script directory before database creation.
+    """
+    # Check for default.json in the same directory as the script
+    kotlin_schema_path = script_dir / "default.json"
+    
+    if not kotlin_schema_path.exists():
+        logger.error("="*60)
+        logger.error("SCHEMA ERROR: Missing Kotlin ObjectBox schema!")
+        logger.error("="*60)
+        logger.error(f"Required file not found: {kotlin_schema_path}")
+        logger.error("")
+        logger.error("SOLUTION:")
+        logger.error("1. Copy your Kotlin app's 'objectbox-models/default.json' file")
+        logger.error(f"2. Place it in the same directory as this script: {script_dir}")
+        logger.error("3. Rename it to 'default.json'")
+        logger.error("")
+        logger.error("This file is required to ensure Python entities match")
+        logger.error("your Kotlin ObjectBox schema (IDs, UIDs, indexes).")
+        logger.error("="*60)
+        raise FileNotFoundError(f"Kotlin ObjectBox schema not found: {kotlin_schema_path}")
+    
+    # Validate the JSON file
+    try:
+        with open(kotlin_schema_path, 'r') as f:
+            schema_data = json.load(f)
+        
+        # Basic validation
+        if 'entities' not in schema_data:
+            raise ValueError("Invalid ObjectBox schema: missing 'entities' field")
+        
+        if not schema_data['entities']:
+            raise ValueError("Invalid ObjectBox schema: no entities found")
+        
+        # Check for VectorEntity classes
+        vector_entities = [e for e in schema_data['entities'] if e['name'].startswith('VectorEntity')]
+        if not vector_entities:
+            logger.warning("No VectorEntity classes found in schema. Expected VectorEntity64, VectorEntity384, etc.")
+        else:
+            entity_names = [e['name'] for e in vector_entities]
+            logger.info(f"Found VectorEntity classes: {', '.join(entity_names)}")
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in schema file: {e}")
+        raise ValueError(f"Kotlin schema file is not valid JSON: {kotlin_schema_path}")
+    except Exception as e:
+        logger.error(f"Error validating schema: {e}")
+        raise
+    
+    # Create objectbox-model directory in script directory
+    
+    # Copy schema to the expected location in script directory
+    target_schema_path = script_dir / "objectbox-model.json"
+    shutil.copy2(kotlin_schema_path, target_schema_path)
+    
+    logger.info(f"✅ Kotlin schema validated and copied to: {target_schema_path}")
+    logger.info(f"📋 Schema contains {len(schema_data['entities'])} entities")
+    
+    return target_schema_path, schema_data
+
 def main():
     parser = argparse.ArgumentParser(description='Create ObjectBox vector database with custom entities using LangChain')
     parser.add_argument('--input-dir', type=str, required=True,
@@ -401,12 +464,12 @@ def main():
     parser.add_argument('--embedding-dim', type=int, default=None,
                        choices=[64, 128, 256, 384, 512, 768, 1024, 1536],
                        help='Embedding dimension (default: infer from model)')
-    parser.add_argument('--model', type=str, default='all-MiniLM-L6-v2',
-                       help='HuggingFace model name (default: all-MiniLM-L6-v2)')
-    parser.add_argument('--chunk-size', type=int, default=512,
-                       help='Text chunk size (default: 512)')
-    parser.add_argument('--chunk-overlap', type=int, default=50,
-                       help='Chunk overlap size (default: 50)')
+    parser.add_argument('--model', type=str, default='sentence-transformers/all-MiniLM-L6-v2',
+                       help='HuggingFace model name (default: sentence-transformers/all-MiniLM-L6-v2)')
+    parser.add_argument('--chunk-size', type=int, default=128,
+                       help='Text chunk size (default: 128)')
+    parser.add_argument('--chunk-overlap', type=int, default=32,
+                       help='Chunk overlap size (default: 32)')
     parser.add_argument('--splitter-type', type=str, default='recursive',
                        choices=['recursive', 'token', 'markdown'],
                        help='Text splitter type (default: recursive)')
@@ -415,9 +478,17 @@ def main():
     
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
+    script_dir = Path(__file__).parent.resolve()
     
     if not input_dir.exists():
         logger.error(f"Input directory does not exist: {input_dir}")
+        return
+    
+    # Validate and prepare ObjectBox schema BEFORE anything else
+    try:
+        schema_path, schema_data = validate_and_prepare_schema(script_dir)
+    except (FileNotFoundError, ValueError) as e:
+        logger.error(f"Schema validation failed: {e}")
         return
     
     # Create output directory

@@ -519,7 +519,7 @@ def convert_pipeline(model_id,
                     build_dir,
                     gen_train_artifacts = False,
                     gen_inference_artifacts = False,
-                    gen_embedding_artifacts = False,
+                    gen_rag_config = False,
                     test_training = True,
                     test_eval = True,
                     test_generation = True,
@@ -527,7 +527,7 @@ def convert_pipeline(model_id,
                     test_generation_config = {},
                     inference_config = {},
                     train_config = {},
-                    embedding_config = {},
+                    rag_config = {},
                     export_tokenizer = True, 
                     export_dataset = True,
                     export_inference_config = True,
@@ -629,7 +629,7 @@ def convert_pipeline(model_id,
         else:
             raise ValueError("Unsupported PEFT method.")
         
-    if gen_embedding_artifacts:
+    if gen_rag_config:
         embedding_model_metadata = get_all_metadata_from_onnx(embedding_model_path)
         # Get model id from metadata and export tokenizer in embedding/tokenizer
         export_tokenizer_config(embedding_model_metadata["model_id"], f'{build_dir}/embedding/', os.environ['HF_TOKEN'])
@@ -638,13 +638,13 @@ def convert_pipeline(model_id,
         move_onnx_model(embedding_model_path, f'{build_dir}/embedding/', delete=False)
 
         # Export embedding config
-        with open(f'{build_dir}/embedding/embedding_config.json', "w", encoding="utf-8") as f:
+        with open(f'{build_dir}/embedding/rag_config.json', "w", encoding="utf-8") as f:
 
             # Update embedding config with correct information
             if "embedding_dim" in embedding_model_metadata:
-                embedding_config["embeddingDimension"] = embedding_model_metadata["embedding_dim"]
+                rag_config["embeddingDimension"] = embedding_model_metadata["embedding_dim"]
 
-            json.dump(embedding_config, f, ensure_ascii=False)
+            json.dump(rag_config, f, ensure_ascii=False)
 
     # Clean the generated models if needed
     if delete_models:
@@ -724,7 +724,7 @@ def parse_arguments():
         help="Whether to generate inference artifacts. Default is False."
     )
     parser.add_argument(
-        "--gen_embedding_artifacts",
+        "--gen_rag_config",
         type=bool,
         default=False,
         help="Whether to generate embedding artifacts. Default is False."
@@ -813,7 +813,7 @@ def parse_arguments():
             )
     )
     parser.add_argument(
-        "--embedding_config",
+        "--rag_config",
         type=str,
         nargs="*",
         metavar="KEY=VALUE",
@@ -914,7 +914,7 @@ if __name__ == "__main__":
         build_dir=args.build_path,
         gen_inference_artifacts=args.gen_inference_artifacts,
         gen_train_artifacts=args.gen_train_artifacts,
-        gen_embedding_artifacts=args.gen_embedding_artifacts,
+        gen_rag_config=args.gen_rag_config,
         test_training=args.test_training,
         test_eval=args.test_eval,
         # We avoid testing generation in this script due to package conflicts
@@ -924,7 +924,7 @@ if __name__ == "__main__":
         export_tokenizer=args.export_tokenizer,
         inference_config=args.inference_config,
         train_config=args.train_config,
-        embedding_config=args.embedding_config,
+        rag_config=args.rag_config,
         export_dataset=args.export_dataset,
         export_inference_config=args.export_inference_config,
         export_merger=args.export_merger,
