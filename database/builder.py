@@ -56,41 +56,50 @@ except ImportError as e:
     logger.error("Install with: pip install langchain-community langchain-objectbox")
     exit(1)
 
+
 class ORTMobileObjectBoxProcessor:
-    def __init__(self, database_dir: str, embedding_dim: Optional[int] = None, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, database_dir: str, embedding_dim: Optional[int] = None, model_name: str = "all-MiniLM-L6-v2", no_embed: bool = False):
         self.database_dir = Path(database_dir)
         self.model_name = model_name
+        self.no_embed = no_embed
         
         # Create database directory
         self.database_dir.mkdir(parents=True, exist_ok=True)
         
-        # Initialize embeddings first to get the actual dimension
-        logger.info(f"Initializing HuggingFace embeddings with model: {model_name}")
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=model_name,
-            model_kwargs={'device': 'cpu'},  # Use CPU for compatibility
-            encode_kwargs={'normalize_embeddings': True}
-        )
-        
-        # Infer embedding dimension from model if not provided
-        if embedding_dim is None:
-            # Test embedding to get dimension
-            test_embedding = self.embeddings.embed_query("test")
-            inferred_dim = len(test_embedding)
-            logger.info(f"Inferred embedding dimension from model: {inferred_dim}")
-            self.embedding_dim = inferred_dim
+        if not self.no_embed:
+            # Initialize embeddings first to get the actual dimension
+            logger.info(f"Initializing HuggingFace embeddings with model: {model_name}")
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name=model_name,
+                model_kwargs={'device': 'cpu'},  # Use CPU for compatibility
+                encode_kwargs={'normalize_embeddings': True}
+            )
+            
+            # Infer embedding dimension from model if not provided
+            if embedding_dim is None:
+                # Test embedding to get dimension
+                test_embedding = self.embeddings.embed_query("test")
+                inferred_dim = len(test_embedding)
+                logger.info(f"Inferred embedding dimension from model: {inferred_dim}")
+                self.embedding_dim = inferred_dim
+            else:
+                self.embedding_dim = embedding_dim
+                # Verify the provided dimension matches the model
+                test_embedding = self.embeddings.embed_query("test")
+                actual_dim = len(test_embedding)
+                if actual_dim != embedding_dim:
+                    logger.warning(f"Provided embedding dimension ({embedding_dim}) doesn't match model dimension ({actual_dim}). Using model dimension: {actual_dim}")
+                    self.embedding_dim = actual_dim
         else:
-            self.embedding_dim = embedding_dim
-            # Verify the provided dimension matches the model
-            test_embedding = self.embeddings.embed_query("test")
-            actual_dim = len(test_embedding)
-            if actual_dim != embedding_dim:
-                logger.warning(f"Provided embedding dimension ({embedding_dim}) doesn't match model dimension ({actual_dim}). Using model dimension: {actual_dim}")
-                self.embedding_dim = actual_dim
+            # When no embedding, use provided dimension or default to 384
+            logger.info("No embedding mode enabled - storing empty vectors")
+            self.embeddings = None
+            self.embedding_dim = embedding_dim if embedding_dim is not None else 384
+            logger.info(f"Using embedding dimension for empty vectors: {self.embedding_dim}")
         
         # Validate dimension is supported
         if self.embedding_dim not in [64, 128, 256, 384, 512, 768, 1024, 1536]:
-            logger.error(f"Model produces {self.embedding_dim}D embeddings, which is not supported.")
+            logger.error(f"Specified embedding dimension {self.embedding_dim} is not supported.")
             logger.error("Supported dimensions: 64, 128, 256, 384, 512, 768, 1024, 1536")
             raise ValueError(f"Unsupported embedding dimension: {self.embedding_dim}")
         
@@ -166,15 +175,15 @@ class ORTMobileObjectBoxProcessor:
         # Load markdown files
         try:
             md_loader = DirectoryLoader(
-                str(input_dir),
-                glob="**/*.md",
-                loader_cls=UnstructuredMarkdownLoader,
-                recursive=True,
-                show_progress=True
+                    str(input_dir),
+                    glob="**/*.md",
+                    loader_cls=TextLoader,
+                    loader_kwargs={'encoding': 'utf-8'},
+                    recursive=True,
+                    show_progress=True
             )
             md_docs = md_loader.load()
-            documents.extend(md_docs)
-            logger.info(f"Loaded {len(md_docs)} markdown files")
+            logger.info(f"Loaded {len(md_docs)} markdown files (preserving formatting)")
         except Exception as e:
             logger.warning(f"Error loading markdown files: {e}")
         
@@ -199,14 +208,29 @@ class ORTMobileObjectBoxProcessor:
         return documents
     
     def create_text_splitter(self, chunk_size: int = 512, chunk_overlap: int = 50, 
-                           splitter_type: str = "recursive") -> Any:
+                           splitter_type: str = "recursive", markdown_headers: Optional[List[str]] = None) -> Any:
         """Create a text splitter using LangChain."""
         if splitter_type == "recursive":
+            separators = ["\n\n", "\n", " ", ""]
+            
+            # If markdown headers are specified, add them as primary separators
+            if markdown_headers:
+                logger.info(f"Using custom markdown headers as separators: {markdown_headers}")
+                # Convert markdown headers to actual header patterns
+                header_separators = []
+                for header in markdown_headers:
+                    if header.startswith('#'):
+                        header_separators.append(f"\n{header} ")
+                    else:
+                        # Assume it's a header level like "##" or "###"
+                        header_separators.append(f"\n{header} ")
+                separators = header_separators + separators
+            
             return RecursiveCharacterTextSplitter(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
                 length_function=len,
-                separators=["\n\n", "\n", " ", ""]
+                separators=separators
             )
         elif splitter_type == "token":
             return TokenTextSplitter(
@@ -214,10 +238,34 @@ class ORTMobileObjectBoxProcessor:
                 chunk_overlap=chunk_overlap
             )
         elif splitter_type == "markdown":
-            return MarkdownTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap
-            )
+            # For markdown splitter, we can specify headers to split on
+            if markdown_headers:
+                logger.info(f"Using MarkdownHeaderTextSplitter with headers: {markdown_headers}")
+                # Convert to the format expected by MarkdownHeaderTextSplitter
+                headers_to_split_on = []
+                for header in markdown_headers:
+                    if header.startswith('#'):
+                        level = len(header.split()[0])  # Count the # symbols
+                        headers_to_split_on.append((header.split()[0], f"Header_{level}"))
+                    else:
+                        # Assume it's just the # symbols
+                        level = len(header)
+                        headers_to_split_on.append((header, f"Header_{level}"))
+                
+                from langchain.text_splitter import MarkdownHeaderTextSplitter
+                return MarkdownHeaderTextSplitter(
+                    headers_to_split_on=headers_to_split_on,
+                    return_each_line=True,
+                    strip_headers=False
+                )
+            else:
+                return MarkdownTextSplitter(
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap
+                )
+        elif splitter_type == "document":
+            logger.info("Using document-based splitter - each document becomes one chunk")
+            return None  # We'll handle this case specially in process_and_store
         else:
             raise ValueError(f"Unknown splitter type: {splitter_type}")
     
@@ -245,11 +293,29 @@ class ORTMobileObjectBoxProcessor:
             logger.error(f"Error inserting batch: {e}")
             return []
     
-    def process_and_store(self, documents: List[Document], text_splitter: Any, 
+    def process_and_store(self, documents: List[Document], text_splitter: Any, splitter_type,
                          batch_size: int = 100) -> int:
         """Process documents and store in ObjectBox using custom entities."""
-        logger.info("Splitting documents into chunks...")
-        chunks = text_splitter.split_documents(documents)
+        
+        # Handle document-based splitter (no actual splitting)
+        if text_splitter is None:  # document splitter case
+            logger.info("Using document-based chunking - storing whole documents")
+            chunks = documents  # Each document is a chunk
+        elif splitter_type == "markdown":
+            # Handle MarkdownHeaderTextSplitter which uses split_text instead of split_documents
+            logger.info("Splitting documents into chunks using MarkdownHeaderTextSplitter...")
+            chunks = []
+            for doc in documents:
+                # MarkdownHeaderTextSplitter.split_text returns Documents directly
+                doc_chunks = text_splitter.split_text(doc.page_content)
+                # Add original document metadata to each chunk
+                for chunk in doc_chunks:
+                    chunk.metadata.update(doc.metadata)
+                chunks.extend(doc_chunks)
+        else:
+            logger.info("Splitting documents into chunks...")
+            chunks = text_splitter.split_documents(documents)
+
         logger.info(f"Created {len(chunks)} chunks from {len(documents)} documents")
         
         # Process chunks in batches
@@ -264,9 +330,14 @@ class ORTMobileObjectBoxProcessor:
                 # Prepare texts for embedding
                 texts = [chunk.page_content for chunk in batch_chunks]
                 
-                # Generate embeddings for the batch
-                logger.info(f"Generating embeddings for {len(texts)} chunks...")
-                embeddings = self.embeddings.embed_documents(texts)
+                # Generate embeddings for the batch or create empty vectors
+                if not self.no_embed and self.embeddings:
+                    logger.info(f"Generating embeddings for {len(texts)} chunks...")
+                    embeddings = self.embeddings.embed_documents(texts)
+                else:
+                    logger.info(f"Creating empty vectors for {len(texts)} chunks (no-embed mode)")
+                    # Create empty vectors with the correct dimension
+                    embeddings = [[0.0] * self.embedding_dim for _ in range(len(texts))]
                 
                 # Create entity instances
                 entities = []
@@ -274,11 +345,14 @@ class ORTMobileObjectBoxProcessor:
                     # Extract source file name
                     source = chunk.metadata.get('source', f'document_{i + j}')
                     document_name = Path(source).name if source else f'document_{i + j}'
+
+                    #print(chunk.page_content)
+                    #print("------------------------")
                     
                     # Create chunk metadata
                     chunk_metadata = {
                         'chunk_id': i + j,
-                        'chunk_index': j,
+                        'chunk_index': j
                     }
                     
                     # Add any existing metadata from the document
@@ -286,8 +360,9 @@ class ORTMobileObjectBoxProcessor:
                         chunk_metadata.update(chunk.metadata)
                     
                     # Create entity
+                    entity_name = document_name if text_splitter is None else f"{document_name}_chunk_{j}"
                     entity = self.create_vector_entity(
-                        name=f"{document_name}_chunk_{j}",
+                        name=entity_name,
                         content=chunk.page_content,
                         document=document_name,
                         embedding=embedding,
@@ -317,7 +392,8 @@ class ORTMobileObjectBoxProcessor:
             "total_vectors": self.box.count(),
             "embedding_dimension": self.embedding_dim,
             "model_name": self.model_name,
-            "database_path": str(self.database_dir)
+            "database_path": str(self.database_dir),
+            "no_embed_mode": self.no_embed
         }
     
     def close(self):
@@ -327,11 +403,12 @@ class ORTMobileObjectBoxProcessor:
 def process_documents_with_custom_entities(input_dir: Path, output_dir: Path, embedding_dim: Optional[int],
                                          model_name: str = "all-MiniLM-L6-v2", 
                                          chunk_size: int = 512, chunk_overlap: int = 50,
-                                         splitter_type: str = "recursive"):
+                                         splitter_type: str = "recursive", no_embed: bool = False,
+                                         markdown_headers: Optional[List[str]] = None):
     """Main processing function using custom ObjectBox entities."""
     
     # Initialize processor (embedding_dim can be None for auto-inference)
-    processor = ORTMobileObjectBoxProcessor(str(output_dir), embedding_dim, model_name)
+    processor = ORTMobileObjectBoxProcessor(str(output_dir), embedding_dim, model_name, no_embed)
     
     try:
         # Load documents using LangChain loaders
@@ -343,16 +420,23 @@ def process_documents_with_custom_entities(input_dir: Path, output_dir: Path, em
             return
         
         # Create text splitter
-        logger.info(f"Creating {splitter_type} text splitter (chunk_size={chunk_size}, overlap={chunk_overlap})")
-        text_splitter = processor.create_text_splitter(
-            chunk_size=chunk_size, 
-            chunk_overlap=chunk_overlap,
-            splitter_type=splitter_type
-        )
+        if splitter_type == "document":
+            logger.info("Using document-based splitter - no chunking will be performed")
+            text_splitter = None
+        else:
+            logger.info(f"Creating {splitter_type} text splitter (chunk_size={chunk_size}, overlap={chunk_overlap})")
+            if markdown_headers:
+                logger.info(f"Using custom markdown headers: {markdown_headers}")
+            text_splitter = processor.create_text_splitter(
+                chunk_size=chunk_size, 
+                chunk_overlap=chunk_overlap,
+                splitter_type=splitter_type,
+                markdown_headers=markdown_headers
+            )
         
         # Process and store documents
         logger.info("Processing and storing documents...")
-        total_stored = processor.process_and_store(documents, text_splitter)
+        total_stored = processor.process_and_store(documents, text_splitter, splitter_type)
         
         # Get final statistics
         stats = processor.get_database_stats()
@@ -362,6 +446,7 @@ def process_documents_with_custom_entities(input_dir: Path, output_dir: Path, em
         logger.info(f"Total vectors stored: {stats['total_vectors']}")
         logger.info(f"Embedding dimension: {stats['embedding_dimension']}")
         logger.info(f"Model used: {stats['model_name']}")
+        logger.info(f"No-embed mode: {stats['no_embed_mode']}")
         logger.info(f"Database location: {stats['database_path']}")
         
         # Save database info
@@ -381,7 +466,9 @@ def process_documents_with_custom_entities(input_dir: Path, output_dir: Path, em
             "total_documents": len(documents),
             "total_vectors": stats['total_vectors'],
             "supported_file_types": [".txt", ".md", ".json"],
-            "distance_type": "cosine"  # Default for your Android implementation
+            "distance_type": "cosine",
+            "no_embed_mode": no_embed,
+            "markdown_headers": markdown_headers
         }
         
         config_file = output_dir / "processing_config.json"
@@ -463,7 +550,7 @@ def main():
                        help='Output directory for the ObjectBox database')
     parser.add_argument('--embedding-dim', type=int, default=None,
                        choices=[64, 128, 256, 384, 512, 768, 1024, 1536],
-                       help='Embedding dimension (default: infer from model)')
+                       help='Embedding dimension (default: infer from model, or 384 if --no-embed)')
     parser.add_argument('--model', type=str, default='sentence-transformers/all-MiniLM-L6-v2',
                        help='HuggingFace model name (default: sentence-transformers/all-MiniLM-L6-v2)')
     parser.add_argument('--chunk-size', type=int, default=128,
@@ -471,8 +558,12 @@ def main():
     parser.add_argument('--chunk-overlap', type=int, default=32,
                        help='Chunk overlap size (default: 32)')
     parser.add_argument('--splitter-type', type=str, default='recursive',
-                       choices=['recursive', 'token', 'markdown'],
+                       choices=['recursive', 'token', 'markdown', 'document'],
                        help='Text splitter type (default: recursive)')
+    parser.add_argument('--no-embed', action='store_true',
+                       help='Skip embedding generation and store empty vectors')
+    parser.add_argument('--markdown-headers', type=str, nargs='*',
+                       help='Markdown headers to split on (e.g., "##" "###" or "## Section" "### Subsection")')
     
     args = parser.parse_args()
     
@@ -483,6 +574,12 @@ def main():
     if not input_dir.exists():
         logger.error(f"Input directory does not exist: {input_dir}")
         return
+    
+    # Validate markdown headers format if provided
+    markdown_headers = None
+    if args.markdown_headers:
+        markdown_headers = args.markdown_headers
+        logger.info(f"Will use markdown headers for splitting: {markdown_headers}")
     
     # Validate and prepare ObjectBox schema BEFORE anything else
     try:
@@ -502,22 +599,21 @@ def main():
     logger.info(f"Chunk size: {args.chunk_size}")
     logger.info(f"Chunk overlap: {args.chunk_overlap}")
     logger.info(f"Splitter type: {args.splitter_type}")
+    logger.info(f"No-embed mode: {args.no_embed}")
+    logger.info(f"Markdown headers: {markdown_headers}")
     
+    # Call the main processing function
     process_documents_with_custom_entities(
-        input_dir, output_dir, args.embedding_dim, 
-        args.model, args.chunk_size, args.chunk_overlap, args.splitter_type
+        input_dir=input_dir,
+        output_dir=output_dir,
+        embedding_dim=args.embedding_dim,
+        model_name=args.model,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        splitter_type=args.splitter_type,
+        no_embed=args.no_embed,
+        markdown_headers=markdown_headers
     )
-    
-    logger.info("\n" + "="*50)
-    logger.info("TRANSFER INSTRUCTIONS:")
-    logger.info("="*50)
-    logger.info(f"1. Copy the entire directory '{output_dir}' to your Android device")
-    logger.info("2. Place it in your app's cache directory or assets")
-    logger.info("3. The main database file is: {}/data.mdb".format(output_dir))
-    logger.info("4. Use the database_info.json file to configure your ORTRagConfig")
-    logger.info("5. Processing configuration is saved in processing_config.json")
-    logger.info("6. Vector similarity will use COSINE distance (default for Android)")
-    logger.info("="*50)
 
 if __name__ == "__main__":
     main()
