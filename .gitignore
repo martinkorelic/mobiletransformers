@@ -13,3 +13,4 @@ merged_models/
 data/
 experiment/
 dist/
+.deepeval/

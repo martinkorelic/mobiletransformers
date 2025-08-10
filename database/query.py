@@ -38,7 +38,7 @@ from database.vector_entity import (
 )
 
 try:
-    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 except ImportError:
     logger.error("LangChain not installed. Install with: pip install langchain langchain-community")
     exit(1)
@@ -107,7 +107,7 @@ class ObjectBoxQueryEngine:
         self._setup_model()
         
         # Open store in read-only mode
-        self.store = Store(model=self.model, directory=str(self.database_dir))
+        self.store = Store(model=self.model, directory=str(self.database_dir), model_json_file=f"{self.database_dir}/objectbox-model.json")
         self.box = self.store.box(self.entity_class)
         
         logger.info(f"ObjectBox query engine initialized")

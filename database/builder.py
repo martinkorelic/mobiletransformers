@@ -615,5 +615,13 @@ def main():
         markdown_headers=markdown_headers
     )
 
+    logger.info("Copying the generated object-box model json to output dir")
+    # Copy the schema file to output directory
+    try:
+        shutil.copy2(schema_path, output_dir)
+        logger.info(f"Successfully copied schema file to {output_dir / schema_path.name}")
+    except Exception as e:
+        logger.error(f"Failed to copy schema file: {e}")
+
 if __name__ == "__main__":
     main()

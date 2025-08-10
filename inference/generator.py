@@ -29,9 +29,6 @@ def generate_tokens_onnx(tokenizer,
     Supports either greedy / top_k / top_p sampling methods.
     """
 
-    print(prompt)
-    print(sampling)
-
     input_ids = tokenizer(prompt, return_attention_mask=True, return_tensors="np")
 
     num_kv_heads = config.num_key_value_heads if hasattr(config, "num_key_value_heads") else config.num_attention_heads

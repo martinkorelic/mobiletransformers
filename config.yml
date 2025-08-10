@@ -16,7 +16,7 @@ TRAIN_BUILDER:
   # Qwen/Qwen3-Embedding-0.6B
   # intfloat/multilingual-e5-small
   
-  model_id: sentence-transformers/all-MiniLM-L6-v2
+  model_id: microsoft/Phi-3-mini-4k-instruct
   output: "./build/train_models"
 
   # If building generation model -> text-generation
@@ -151,10 +151,10 @@ ARTIFACT_BUILDER:
   gen_train_artifacts: false
 
   # NOTE: Use inference.builder to build inference model first
-  gen_inference_artifacts: false
+  gen_inference_artifacts: true
 
   # NOTE: Use trainer.builder to build just the embedding model first
-  gen_rag_artifacts: true
+  gen_rag_artifacts: false
 
   export_inference_config: true
   export_tokenizer: true
