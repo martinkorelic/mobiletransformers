@@ -1,6 +1,6 @@
 SLM_MODEL_ID = "microsoft/Phi-3-mini-4k-instruct"
 SLM_MODEL_NAME = "quant_model.onnx"
-SLM_MODEL_DIR = "build/inference-Phi-3-mini-4k-instruct-int4"
+SLM_MODEL_DIR = "build/inference-Phi-3-mini-4k-instruct-int8-DQ"
 
 from inference.validator import ORTransformerGenerator
 

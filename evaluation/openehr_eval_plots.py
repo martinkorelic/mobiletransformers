@@ -1,8 +1,6 @@
 import json
 import matplotlib.pyplot as plt
 import matplotlib
-import numpy as np
-from pathlib import Path
 
 # Set font parameters for PDF export
 matplotlib.rcParams['pdf.fonttype'] = 42
@@ -39,82 +37,114 @@ def load_evaluation_data(model_json_pairs):
     
     return evaluation_data
 
-def create_comparison_plot(evaluation_data, comparison_type, title, filename):
+def create_scatter_plot(evaluation_data, title, filename):
     """
-    Create a comparison plot for SLM vs LLM performance.
+    Create a scatter plot showing faithfulness vs clinical quality for all models and contexts.
     
     Args:
         evaluation_data: Dictionary with evaluation results
-        comparison_type: Either 'slm_vs_llm_document' or 'slm_vs_llm_chunked'
         title: Plot title
         filename: Output filename
     """
-    models = list(evaluation_data.keys())
-    faithfulness_scores = []
-    clinical_quality_scores = []
+    # Set up the plot with appropriate figure size
+    fig, ax = plt.subplots(figsize=(10, 7))
     
-    # Extract scores for each model
-    for model in models:
-        if comparison_type in evaluation_data[model]:
-            data = evaluation_data[model][comparison_type]
-            faithfulness_scores.append(data['faithfulness']['average'])
-            clinical_quality_scores.append(data['clinical_quality']['average'])
-        else:
-            print(f"Warning: {comparison_type} not found for model {model}")
-            faithfulness_scores.append(0)
-            clinical_quality_scores.append(0)
+    # Define colors for each model (you can expand this list as needed)
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
     
-    # Set up the plot
-    fig, ax = plt.subplots(figsize=(12, 8))
+    # Define markers for document vs chunked
+    document_marker = 'o'  # circle
+    chunked_marker = 's'   # square
     
-    # Bar positions
-    x = np.arange(len(models))
-    width = 0.35
+    # Track data for legend
+    model_handles = []
+    context_handles = []
     
-    # Create bars
-    bars1 = ax.bar(x - width/2, faithfulness_scores, width, 
-                   label='Faithfulness', color='steelblue', alpha=0.8)
-    bars2 = ax.bar(x + width/2, clinical_quality_scores, width, 
-                   label='Clinical Quality', color='lightcoral', alpha=0.8)
+    # Extract and plot data for each model
+    for i, model in enumerate(evaluation_data.keys()):
+        color = colors[i % len(colors)]
+        
+        # Process document context data
+        if 'slm_vs_llm_document' in evaluation_data[model]:
+            doc_data = evaluation_data[model]['slm_vs_llm_document']
+            doc_faithfulness = doc_data['faithfulness']['average'] * 10  # Scale 0-1 to 0-10
+            doc_clinical = doc_data['clinical_quality']['average'] * 10  # Scale 0-1 to 0-10
+            
+            scatter_doc = ax.scatter(doc_faithfulness, doc_clinical, 
+                                   c=color, marker=document_marker, s=200, 
+                                   alpha=0.8, edgecolors='black', linewidth=1)
+        
+        # Process chunked context data
+        if 'slm_vs_llm_chunked' in evaluation_data[model]:
+            chunk_data = evaluation_data[model]['slm_vs_llm_chunked']
+            chunk_faithfulness = chunk_data['faithfulness']['average'] * 10  # Scale 0-1 to 0-10
+            chunk_clinical = chunk_data['clinical_quality']['average'] * 10  # Scale 0-1 to 0-10
+            
+            scatter_chunk = ax.scatter(chunk_faithfulness, chunk_clinical, 
+                                     c=color, marker=chunked_marker, s=200, 
+                                     alpha=0.8, edgecolors='black', linewidth=1)
     
-    # Customize the plot
-    ax.set_xlabel('SLM Models', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Average Score', fontsize=12, fontweight='bold')
-    ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
-    ax.set_xticks(x)
-    ax.set_xticklabels(models, rotation=45, ha='right')
-    ax.legend(fontsize=11, bbox_to_anchor=(1.05, 1), loc='upper left')
+    # Customize the plot with larger fonts
+    ax.set_xlabel('Faithfulness Score (0-10)', fontsize=16, fontweight='bold')
+    ax.set_ylabel('Clinical Quality Score (0-10)', fontsize=16, fontweight='bold')
+    ax.set_title(title, fontsize=18, fontweight='bold', pad=20)
+    
+    # Set axis limits and ticks
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 10)
+    ax.set_xticks([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    ax.set_yticks([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    ax.tick_params(axis='both', which='major', labelsize=16)
     
     # Add grid for better readability
-    ax.grid(True, alpha=0.3, axis='y')
+    ax.grid(True, alpha=0.3)
     ax.set_axisbelow(True)
     
-    # Set y-axis limits
-    ax.set_ylim(0, max(max(faithfulness_scores), max(clinical_quality_scores)) * 1.1)
+    # Create custom legend
+    # Legend for context types
+    from matplotlib.lines import Line2D
+    context_legend_elements = [
+        Line2D([0], [0], marker=document_marker, color='gray', linestyle='None',
+               markersize=12, markerfacecolor='gray', markeredgecolor='black',
+               label='Document Context'),
+        Line2D([0], [0], marker=chunked_marker, color='gray', linestyle='None',
+               markersize=12, markerfacecolor='gray', markeredgecolor='black',
+               label='Chunked Context')
+    ]
     
-    # Add value labels on bars
-    def add_value_labels(bars, scores):
-        for bar, score in zip(bars, scores):
-            height = bar.get_height()
-            ax.annotate(f'{score:.2f}',
-                       xy=(bar.get_x() + bar.get_width() / 2, height),
-                       xytext=(0, 3),  # 3 points vertical offset
-                       textcoords="offset points",
-                       ha='center', va='bottom',
-                       fontsize=10)
+    # Legend for models
+    model_legend_elements = []
+    for i, model in enumerate(evaluation_data.keys()):
+        color = colors[i % len(colors)]
+        model_legend_elements.append(
+            Line2D([0], [0], marker='o', color='white', linestyle='None',
+                   markersize=12, markerfacecolor=color, markeredgecolor='black',
+                   label=model)
+        )
     
-    add_value_labels(bars1, faithfulness_scores)
-    add_value_labels(bars2, clinical_quality_scores)
+    # Create two separate legends
+    context_legend = ax.legend(handles=context_legend_elements, 
+                              title='Context Type', title_fontsize=14, fontsize=12,
+                              loc='upper right', bbox_to_anchor=(1.45, 1.0))
+    context_legend.get_title().set_fontweight('bold')
     
-    # Add threshold lines
-    #ax.axhline(y=0.9, color='steelblue', linestyle='--', alpha=0.7, linewidth=1)
-    #ax.axhline(y=7.0, color='lightcoral', linestyle='--', alpha=0.7, linewidth=1)
+    model_legend = ax.legend(handles=model_legend_elements, 
+                           title='Models', title_fontsize=14, fontsize=12,
+                           loc='upper right', bbox_to_anchor=(1.45, 0.7))
+    model_legend.get_title().set_fontweight('bold')
+    
+    # Add the first legend back (matplotlib removes it when adding the second)
+    ax.add_artist(context_legend)
+    
+    # Add reference lines at common thresholds
+    ax.axhline(y=7.0, color='red', linestyle='--', alpha=0.5, linewidth=1)
+    ax.axvline(x=9.0, color='blue', linestyle='--', alpha=0.5, linewidth=1)
     
     # Add threshold labels
-    #ax.text(len(models)-0.1, 0.92, 'Faithfulness Threshold (0.9)', 
-    #        fontsize=9, ha='right', va='bottom', color='steelblue')
-    #ax.text(len(models)-0.1, 7.2, 'Clinical Quality Threshold (7.0)', 
-    #        fontsize=9, ha='right', va='bottom', color='lightcoral')
+    ax.text(0.2, 7.2, 'Clinical Quality Threshold', fontsize=12, 
+            color='red', alpha=0.7, fontweight='bold')
+    ax.text(9.2, 0.5, 'Faithfulness Threshold', fontsize=12, 
+            color='blue', alpha=0.7, fontweight='bold', rotation=90)
     
     # Adjust layout and save
     plt.tight_layout()
@@ -123,56 +153,30 @@ def create_comparison_plot(evaluation_data, comparison_type, title, filename):
     
     # Print summary statistics
     print(f"\n{title} - Summary Statistics:")
-    print("-" * 50)
-    for i, model in enumerate(models):
-        print(f"{model}:")
-        print(f"  Faithfulness: {faithfulness_scores[i]:.3f}")
-        print(f"  Clinical Quality: {clinical_quality_scores[i]:.2f}")
-        faithfulness_pass = "✓" if faithfulness_scores[i] >= 0.9 else "✗"
-        clinical_pass = "✓" if clinical_quality_scores[i] >= 7.0 else "✗"
-        print(f"  Thresholds: Faithfulness {faithfulness_pass}, Clinical Quality {clinical_pass}")
-        print()
-
-def create_summary_table(evaluation_data):
-    """Create a summary table of all results."""
-    print("\n" + "="*80)
-    print("COMPREHENSIVE EVALUATION SUMMARY")
-    print("="*80)
-    
-    print(f"{'Model':<15} {'Document':<20} {'Chunked':<20}")
-    print(f"{'':15} {'Faith':<8} {'Clin':<8} {'Faith':<8} {'Clin':<8}")
-    print("-" * 65)
-    
+    print("-" * 60)
     for model in evaluation_data.keys():
-        doc_data = evaluation_data[model].get('slm_vs_llm_document', {})
-        chunk_data = evaluation_data[model].get('slm_vs_llm_chunked', {})
+        print(f"{model}:")
         
-        doc_faith = doc_data.get('faithfulness', {}).get('average', 0)
-        doc_clin = doc_data.get('clinical_quality', {}).get('average', 0)
-        chunk_faith = chunk_data.get('faithfulness', {}).get('average', 0)
-        chunk_clin = chunk_data.get('clinical_quality', {}).get('average', 0)
+        if 'slm_vs_llm_document' in evaluation_data[model]:
+            doc_data = evaluation_data[model]['slm_vs_llm_document']
+            doc_faithfulness = doc_data['faithfulness']['average'] * 10
+            doc_clinical = doc_data['clinical_quality']['average'] * 10
+            print(f"  Document Context - Faithfulness: {doc_faithfulness:.2f}, Clinical Quality: {doc_clinical:.2f}")
         
-        print(f"{model:<15} {doc_faith:<8.3f} {doc_clin:<8.2f} {chunk_faith:<8.3f} {chunk_clin:<8.2f}")
+        if 'slm_vs_llm_chunked' in evaluation_data[model]:
+            chunk_data = evaluation_data[model]['slm_vs_llm_chunked']
+            chunk_faithfulness = chunk_data['faithfulness']['average'] * 10
+            chunk_clinical = chunk_data['clinical_quality']['average'] * 10
+            print(f"  Chunked Context  - Faithfulness: {chunk_faithfulness:.2f}, Clinical Quality: {chunk_clinical:.2f}")
+        
+        print()
 
 def main():
     """
-    Main function to generate plots from evaluation JSON files.
-    
-    Usage:
-        # Define your model-json pairs
-        model_json_pairs = [
-            ("Llama-3B", "evaluation_results_llama3b.json"),
-            ("Phi-3-Mini", "evaluation_results_phi3.json"),
-            ("Gemma-2B", "evaluation_results_gemma2b.json"),
-        ]
-        
-        # Run the plotting script
-        plot_evaluation_results(model_json_pairs)
+    Main function to generate scatter plot from evaluation JSON files.
     """
-    
-    
-    print("Medical LLM Evaluation Results Plotting")
-    print("=" * 50)
+    print("Medical LLM Evaluation Results - Scatter Plot Generation")
+    print("=" * 60)
     
     # Load evaluation data
     evaluation_data = load_evaluation_data(model_json_pairs)
@@ -181,32 +185,17 @@ def main():
         print("No evaluation data loaded. Please check your file paths.")
         return
     
-    # Create plots
-    print(f"\nGenerating plots for {len(evaluation_data)} models...")
+    # Create scatter plot
+    print(f"\nGenerating scatter plot for {len(evaluation_data)} models...")
     
-    # Plot 1: SLM vs LLM (Document Context)
-    create_comparison_plot(
+    create_scatter_plot(
         evaluation_data=evaluation_data,
-        comparison_type='slm_vs_llm_document',
-        title='SLM vs LLM Performance Comparison (Full Document Context)',
-        filename='slm_vs_llm_document_comparison.pdf'
+        title='SLM Performance: Faithfulness vs Clinical Quality Comparison',
+        filename='slm_performance_scatter_plot.pdf'
     )
     
-    # Plot 2: SLM vs LLM (Chunked Context)
-    create_comparison_plot(
-        evaluation_data=evaluation_data,
-        comparison_type='slm_vs_llm_chunked',
-        title='SLM vs LLM Performance Comparison (Chunked Context)',
-        filename='slm_vs_llm_chunked_comparison.pdf'
-    )
-    
-    # Create summary table
-    create_summary_table(evaluation_data)
-    
-    print("\nPlots generated successfully!")
-    print("Files created:")
-    print("- slm_vs_llm_document_comparison.pdf")
-    print("- slm_vs_llm_chunked_comparison.pdf")
+    print("\nScatter plot generated successfully!")
+    print("File created: slm_performance_scatter_plot.pdf")
 
 def plot_evaluation_results(model_json_pairs):
     """
@@ -221,22 +210,12 @@ def plot_evaluation_results(model_json_pairs):
         print("No evaluation data loaded. Please check your file paths.")
         return
     
-    # Create plots
-    create_comparison_plot(
+    # Create scatter plot
+    create_scatter_plot(
         evaluation_data=evaluation_data,
-        comparison_type='slm_vs_llm_document',
-        title='SLM vs LLM Performance Comparison (Full Document Context)',
-        filename='slm_vs_llm_document_comparison.pdf'
+        title='SLM Performance: Faithfulness vs Clinical Quality Comparison',
+        filename='slm_performance_scatter_plot.pdf'
     )
-    
-    create_comparison_plot(
-        evaluation_data=evaluation_data,
-        comparison_type='slm_vs_llm_chunked', 
-        title='SLM vs LLM Performance Comparison (Chunked Context)',
-        filename='slm_vs_llm_chunked_comparison.pdf'
-    )
-    
-    create_summary_table(evaluation_data)
 
 if __name__ == "__main__":
     main()

@@ -56,7 +56,7 @@ def generate_tokens_onnx(tokenizer,
     start_time = time.time()
     num_decode = 0
     for _ in range(max_length):
-
+        
         model_inputs = {
             "input_ids": token_input_ids,
             "attention_mask": attention_mask,

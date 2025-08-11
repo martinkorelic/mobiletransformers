@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from transformers import AutoTokenizer, AutoConfig
+from transformers import AutoTokenizer, AutoConfig, GenerationConfig
 
 def export_tokenizer_config(model_name_or_path, output_dir="build", hf_token=None, trust_remote_code=True):
     """
@@ -29,11 +29,10 @@ def export_tokenizer_config(model_name_or_path, output_dir="build", hf_token=Non
             trust_remote_code=trust_remote_code
         )
         
-        config = AutoConfig.from_pretrained(
-            model_name_or_path, 
-            token=hf_token, 
-            trust_remote_code=trust_remote_code
-        )
+        try:
+            config = GenerationConfig.from_pretrained(model_name_or_path, token=hf_token, trust_remote_code=True)
+        except:
+            config = AutoConfig.from_pretrained(model_name_or_path, token=hf_token, trust_remote_code=True)
         
         # Save tokenizer files to build/tokenizer directory
         print(f"Saving tokenizer files to {tokenizer_dir}...")
@@ -41,27 +40,7 @@ def export_tokenizer_config(model_name_or_path, output_dir="build", hf_token=Non
         
         # Get model type
         model_type = config.model_type if hasattr(config, 'model_type') else 'unknown'
-        
-        # Handle eos_token_id - it can be int, list, or None
-        eos_token_id = getattr(config, 'eos_token_id', None)
-        if eos_token_id is None:
-            # Try to get from tokenizer
-            eos_token_id = tokenizer.eos_token_id
-        
-        # Ensure eos_token_id is in the right format
-        if isinstance(eos_token_id, int):
-            eos_token_id = [eos_token_id]
-        elif eos_token_id is None:
-            eos_token_id = [2]  # Default fallback
-        
-        # Handle pad_token_id
-        pad_token_id = getattr(config, 'pad_token_id', None)
-        if pad_token_id is None:
-            pad_token_id = tokenizer.pad_token_id
-        if pad_token_id is None:
-            # Use first eos_token_id as fallback
-            pad_token_id = eos_token_id[0] if isinstance(eos_token_id, list) else eos_token_id
-        
+
         # Create the config structure
         ortmobile_config = {
             "model": {
@@ -72,8 +51,8 @@ def export_tokenizer_config(model_name_or_path, output_dir="build", hf_token=Non
                 "num_hidden_layers": getattr(config, 'num_hidden_layers', 12),
                 "num_key_value_heads": getattr(config, 'num_key_value_heads', 
                                              getattr(config, 'num_attention_heads', 12)),
-                "eos_token_id": eos_token_id,
-                "pad_token_id": pad_token_id,
+                "eos_token_id": config.eos_token_id,
+                "pad_token_id": config.pad_token_id if hasattr(config, "pad_token_id") and config.pad_token_id is not None else config.eos_token_id[0] if isinstance(config.eos_token_id, list) else config.eos_token_id,
                 "type": model_type,
                 "vocab_size": getattr(config, 'vocab_size', len(tokenizer.get_vocab()))
             }

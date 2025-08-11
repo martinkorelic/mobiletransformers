@@ -125,7 +125,7 @@ INFERENCE_BUILDER:
   # - MatMulNBits operator of int8 (all false)
   dynamic_quantize: false
   force_transpose_inputs: false
-  use_qdq: false
+  use_qdq: true
 
   prompt_templates: false
   export_tokenizer: false
@@ -182,7 +182,7 @@ ARTIFACT_BUILDER:
     trackMetrics: true
     timeStepUpdate: 5
     systemPrompt: null
-    loadMergedWeights: true
+    loadMergedWeights: false
     sampling:
       method: greedy # top_k, top_p
       temperature: 1 # Temperature for sampling
