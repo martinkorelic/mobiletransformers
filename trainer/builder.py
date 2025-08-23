@@ -18,8 +18,8 @@ from transformers import AutoModelForCausalLM, AutoConfig, AutoModel
 from peft import PeftModel, LoraConfig, get_peft_model
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
-from optimization.mars.config import MarsConfig
-from optimization.mars.modelv2 import MarsModel
+from peft_models.mars.config import MarsConfig
+from peft_models.mars.model import MarsModel
 
 from trainer.utils import create_mars_adapter_mapping, create_lora_mapping
 from trainer.embedding_builder import add_pooling_to_onnx_model
@@ -35,7 +35,7 @@ PEFT_TYPE_TO_MODEL_MAPPING[PeftType("MARS")] = MarsModel
 
 from onnxruntime.quantization import quantize_dynamic, QuantType
 
-from optimization.lora_xs.initialization_utils import find_and_initialize
+from peft_models.lora_xs.initialization_utils import find_and_initialize
 
 # All operators supported for training should be in https://onnx.ai/onnx/operators/index.html
 

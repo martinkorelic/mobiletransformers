@@ -1,3 +1,4 @@
+import json
 import os
 
 # Disable DeepEval telemetry logging
@@ -6,7 +7,7 @@ os.environ["DEEPEVAL_TELEMETRY_OPT_OUT"] = "YES"
 from deepeval.benchmarks import LogiQA
 from evaluation.eval_adapter_models import CustomPeftModel
 
-MODEL_PATH = "results/lora-4-logiqa"
+MODEL_PATH = "experiment_results/TinyLlama_v1.1-lora-logiqa-r2-a2"
 
 custom_llm = CustomPeftModel(adapter_path=MODEL_PATH, adapter_name="lora")
 
@@ -25,6 +26,8 @@ results = benchmark.evaluate(model=custom_llm)
 print(results)
 
 # Save results to a JSON file
-#with open("deepeval_results.json", "w") as f:
-#    json.dump(results, f, indent=4, ensure_ascii=False)
-#print("Evaluation results saved to deepeval_results.json")
+with open(f"{MODEL_PATH}/eval_results.json", "w") as f:
+    results.update({
+        "task": "logiqa"
+    })
+    json.dump(results, f, indent=4, ensure_ascii=False)

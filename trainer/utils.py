@@ -6,13 +6,14 @@ from deepeval.benchmarks.hellaswag.template import HellaSwagTemplate
 from deepeval.benchmarks.bool_q.template import BoolQTemplate
 from deepeval.benchmarks.arc.template import ARCTemplate
 from deepeval.benchmarks.logi_qa.template import LogiQATemplate
+from deepeval.benchmarks.winogrande.template import WinograndeTemplate
 import numpy as np
 import torch
 from transformers import PreTrainedTokenizer
 from peft import PeftModel
 from peft.tuners.lora import LoraLayer
 
-from optimization.mars.layerv7 import MarsLayer
+from peft_models.mars.layer import MarsLayer
 
 @dataclass
 class DataCollatorForSupervisedDataset:
@@ -60,6 +61,54 @@ class DataCollatorForSupervisedDataset:
     def pytorch_call(self, instances: List[Dict]) -> Dict[str, torch.Tensor]:
         """Convenience method that returns PyTorch tensors."""
         return self.__call__(instances, return_tensors="pt")
+
+def process_sample_winogrande_deepeval(samples, tokenizer, batched=True):
+
+    def generate_prompt(data_point):
+
+        question = WinograndeTemplate.format_question(data_point, include_answer=False)
+        question_answer = WinograndeTemplate.format_question(data_point, include_answer=True)
+        
+        if tokenizer.chat_template is not None:
+            messages = [
+                {"role": "user", "content": question}, 
+                {"role": "assistant", "content": " {}\n\n".format(WinograndeTemplate.format_answer(data_point))}
+            ]
+            return tokenizer.apply_chat_template(messages, tokenize=False)
+
+        base_prompt_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
+        inputs = tokenizer(question_answer, return_tensors="pt", padding=False)
+
+        labels = inputs["input_ids"].clone()
+        labels[0, :len(base_prompt_tokens)-1] = -100
+
+        return (
+            inputs["input_ids"].squeeze(0),
+            labels.squeeze(0)
+        )
+    
+    if batched:
+        batch = {
+            "input_ids": [],
+            "labels": []
+        }
+        for i in range(len(samples["sentence"])):
+            sample = {
+                "sentence": samples["sentence"][i],
+                "option1": samples["option1"][i],
+                "option2": samples["option2"][i],
+                "answer": samples["answer"][i]
+            }
+
+            input_ids, labels = generate_prompt(sample)
+            batch["input_ids"].append(input_ids)
+            batch["labels"].append(labels)
+        
+        return batch
+    else:
+        tk = generate_prompt(samples)
+
+    return tk
 
 def process_sample_logiqa_deepeval(samples, tokenizer, batched=True):
 
@@ -164,7 +213,6 @@ def process_sample_boolq_deepeval(samples, tokenizer, batched=True):
 
         question = BoolQTemplate.format_question(data_point)
         answer = BoolQTemplate.format_answer(data_point)
-
         
         if tokenizer.chat_template is not None:
             messages = [

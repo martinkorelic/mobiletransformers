@@ -1,8 +1,10 @@
 import transformers
 import torch, os, json
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, AutoConfig
-from optimization.mars.config import MarsConfig
-from optimization.mars.modelv2 import MarsModel
+from peft_models.ablation.config import AblationConfig
+from peft_models.ablation.model import AblationModel
+from peft_models.mars.config import MarsConfig
+from peft_models.mars.model import MarsModel
 
 from peft import PeftModel, LoraConfig, PeftConfig, get_peft_model
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
@@ -17,8 +19,10 @@ def add_peft_type(name, value):
 
 # Add custom PEFT type dynamically
 add_peft_type("MARS", "MARS")
+add_peft_type("ABLATION", "ABLATION")
 
 PEFT_TYPE_TO_MODEL_MAPPING[PeftType("MARS")] = MarsModel
+PEFT_TYPE_TO_MODEL_MAPPING[PeftType("ABLATION")] = AblationModel
 
 
 from deepeval.models import DeepEvalBaseLLM
@@ -72,6 +76,12 @@ class CustomPeftModel(DeepEvalBaseLLM):
                 with open(adapter_config_path, "r", encoding="utf-8") as f:
                     mars_config = json.load(f)
                 config = MarsConfig(**mars_config)
+            elif adapter_name == "ablation":
+                ablation_config = {}
+                with open(adapter_config_path, "r", encoding="utf-8") as f:
+                    ablation_config = json.load(f)
+                config = AblationConfig(**ablation_config)
+
             # Load the model config to get base model path
             base_model_name = config.base_model_name_or_path
 
@@ -91,6 +101,15 @@ class CustomPeftModel(DeepEvalBaseLLM):
                 self.model = load_mars_adapters(model, adapter_tensors)
 
                 print(f"Loaded MARS adapters from {adapter_tensors}.")
+            elif adapter_name == "ablation":
+                
+                # Create PeftModel
+                model = get_peft_model(base_model, config, adapter_name="ablation")
+
+                # Load adapters
+                self.model = load_mars_adapters(model, adapter_tensors)
+
+                print(f"Loaded Ablation adapters from {adapter_tensors}.")
         else:
             self.model = AutoModelForCausalLM.from_config(config)
             state_dict = load_file(model_path)
@@ -145,7 +164,7 @@ class CustomPeftModel(DeepEvalBaseLLM):
             outputs = self.model.generate(**inputs, generation_config=self.generation_config)
 
         generated_tokens = outputs[0][input_length:] 
-        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
 
     async def a_generate(self, prompt: str) -> str:
         return self.generate(prompt)

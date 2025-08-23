@@ -6,7 +6,7 @@ import torch
 from torch.nn.modules import Module
 from safetensors.torch import save_file
 
-from .layerv7 import Linear, MarsLayer, SharedAttentionAdapter, SharedMLPAdapter
+from .layer import Linear, MarsLayer, SharedAttentionAdapter, SharedMLPAdapter
 from .utils import TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING
 
 class MarsModel(BaseTuner):

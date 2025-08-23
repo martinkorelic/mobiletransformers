@@ -1,3 +1,4 @@
+import math
 import os
 import warnings
 from peft.config import PeftConfig
@@ -5,61 +6,75 @@ from peft.tuners.tuners_utils import BaseTuner, BaseTunerLayer, check_target_mod
 import torch
 from torch.nn.modules import Module
 from safetensors.torch import save_file
-from research.experiments import generate_complementary_matrices
 
-# TODO: Separate base tuners
-#from .layer import Linear, MarsLayer
-#from .layerv2 import Linear, MarsLayer
-#from .layerv3 import Linear, MarsLayer
-#from .layerv4 import Linear, MarsLayer
-#from .layerv5 import Linear, MarsLayer
-from .layerv6 import Linear, MarsLayer
-from .utils import TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING
+from peft_models.ablation.config import AblationConfig, AblationVariant
 
-class MarsModel(BaseTuner):
+from .utils import TRANSFORMERS_MODELS_TO_ABLATION_TARGET_MODULES_MAPPING
+from .layer import AblationLayer, Linear
 
-    prefix: str = "mars"
+class AblationModel(BaseTuner):
+    """
+    AblationModel to test different PEFT ablation techniques.
 
-    def __init__(self, model, peft_config: PeftConfig | dict[str, PeftConfig], adapter_name: str = "mars", low_cpu_mem_usage: bool = False) -> None:
+    - Variant 0 - Normal LoRA
+    - Variant A - LoRA + intermediate layer
+    - Variant B - Input vector + frozen downprojection + up projection
+    - Variant C - Frozen downprojection + intermediate + up projection
+    - Variant D - Shared frozen downprojection + intermediate + up projection
+    - Variant E - Mid training random rank pruning
+    - Variant F - Mid training least L1 dimensions rank pruning
+    - Variant G - Dynamic quantized backbone (int8)
+    - Variant H - Dynamic quantized backbone (int4)
+
+    """
+
+    prefix: str = "ablation"
+
+    def __init__(self, model, peft_config: PeftConfig | dict[str, PeftConfig], adapter_name: str = "ablation", low_cpu_mem_usage: bool = False) -> None:
         
-        super().__init__(model, peft_config, adapter_name, low_cpu_mem_usage)        
+        ablation_mapping = {
+            "0": AblationVariant.VARIANT_0,
+            "A": AblationVariant.VARIANT_A,
+            "B": AblationVariant.VARIANT_B,
+            "C": AblationVariant.VARIANT_C,
+            "D": AblationVariant.VARIANT_D,
+            "E": AblationVariant.VARIANT_E,
+            "F": AblationVariant.VARIANT_F,
+            "G": AblationVariant.VARIANT_G,
+            "H": AblationVariant.VARIANT_H,
+        }
+
+        # Get the correct variant
+        self.ablation_variant = ablation_mapping[peft_config['ablation'].variant]
+
+        super().__init__(model, peft_config, adapter_name, low_cpu_mem_usage)
 
     def _pre_injection_hook(self, model: Module, config: PeftConfig, adapter_name: str) -> None:
-        self.shared_weights = torch.nn.ModuleDict({})
-        
-        self.gen1 = torch.Generator()
-        self.gen1.manual_seed(config.seed)
+        self.shared_weights = {}
 
-        self.gen2 = torch.Generator()
-        self.gen2.manual_seed(config.seed + 1)
-
-    def _create_and_replace(self, mars_config, adapter_name: str, target, target_name: str, parent, current_key: str, **kwargs) -> None:
+    def _create_and_replace(self, ablation_config : AblationConfig, adapter_name: str, target, target_name: str, parent, current_key: str, **kwargs) -> None:
 
         if current_key is None:
             raise ValueError("Current Key shouldn't be `None`")
         
         bias = hasattr(target, "bias") and target.bias is not None
 
-        # TODO: Shape matching with ranks check
-
         if isinstance(target, Linear):
             target.update_layer(
                 target,
                 adapter_name,
-                mars_config.r,
-                mars_config.alpha,
-                mars_config.subspace,
-                mars_config.mixture
+                ablation_config,
+                self.ablation_variant
             )
 
-            if mars_config.share_weights:
-                target = self._shared_and_store_weights(target, mars_config)
+            if ablation_config.share_weights or self.ablation_variant == AblationVariant.VARIANT_D:
+                target = self._shared_and_store_weights(target, ablation_config)
 
         else:
-            new_module = self._create_new_module(mars_config, adapter_name, target, mars_config.r, mars_config.alpha, mars_config.subspace, mars_config.mixture, **kwargs)
+            new_module = self._create_new_module(ablation_config, self.ablation_variant, adapter_name, target, **kwargs)
 
-            if mars_config.share_weights:
-                new_module = self._shared_and_store_weights(new_module, mars_config)
+            if ablation_config.share_weights or self.ablation_variant == AblationVariant.VARIANT_D:
+                new_module = self._shared_and_store_weights(new_module, ablation_config)
 
             if adapter_name not in self.active_adapter:
                 new_module.requires_grad_(False)
@@ -67,24 +82,22 @@ class MarsModel(BaseTuner):
             self._replace_module(parent, target_name, new_module, target)
 
 
-    def _shared_and_store_weights(self, new_module, mars_config):
+    def _shared_and_store_weights(self, new_module, ablation_config):
         # Ensure weight sharing in new_module.down_project
-        down_project_shape = f"{new_module.in_features}x{mars_config.r}"  # Use a string key for ParameterDict
+        down_project_shape = f"{new_module.in_features}x{ablation_config.r}"  # Use a string key for ParameterDict
 
         if down_project_shape in self.shared_weights:
             # Reuse existing shared weights
             new_module.down_project[self.active_adapter] = self.shared_weights[down_project_shape]
-        else:
+        else:            
             # Generate new shared weights
-            A1, A2 = generate_complementary_matrices(m=new_module.in_features, n=mars_config.subspace[0], gen1=self.gen1, gen2=self.gen2)
-
-            A = A1 if mars_config.subspace[1] == 0 else A2[:, :mars_config.r]
-
-            self.shared_weights[down_project_shape] = torch.nn.Linear(new_module.in_features, mars_config.r, bias=False)
-            self.shared_weights[down_project_shape].weight.data = A.T.contiguous()
-            self.shared_weights[down_project_shape].weight.requires_grad = False
-
-            new_module.down_project[self.active_adapter] = self.shared_weights[down_project_shape]
+            A = torch.empty(ablation_config.r, new_module.in_features)
+            torch.nn.init.kaiming_uniform_(A, a=math.sqrt(5))
+            
+            # Store only the Parameter, not the Linear module
+            shared_weight_param = torch.nn.Parameter(A.T.contiguous(), requires_grad=False)
+            self.shared_weights[down_project_shape] = shared_weight_param
+            new_module.down_project[self.active_adapter] = shared_weight_param
 
         return new_module
 
@@ -113,12 +126,12 @@ class MarsModel(BaseTuner):
         meta = torch.device("meta")
         # dispatch to correct device
         for name, module in new_module.named_modules():
-            if "mars" in name:
+            if "ablation" in name:
                 if not any(p.device == meta for p in module.parameters()):
                     module.to(child.weight.device)
 
     @staticmethod
-    def _create_new_module(mars_config, adapter_name, target, rank, alpha, subspace, mixture, **kwargs):
+    def _create_new_module(ablation_config, ablation_variant, adapter_name, target, **kwargs):
         if isinstance(target, BaseTunerLayer):
             target_base_layer = target.get_base_layer()
         else:
@@ -140,28 +153,24 @@ class MarsModel(BaseTuner):
         new_module = Linear(
             base_layer=target,
             adapter_name=adapter_name,
-            r=rank,
-            alpha=alpha,
-            subspace=subspace,
-            mixture=mixture,
-            fan_in_fan_out=mars_config.fan_in_fan_out,
-            seed=mars_config.seed,
+            ablation_variant=ablation_variant,
+            ablation_config=ablation_config,
             **kwargs
         )
 
         return new_module
     
     @staticmethod
-    def _check_target_module_exists(mars_config, key):
-        return check_target_module_exists(mars_config, key)
+    def _check_target_module_exists(ablation_config, key):
+        return check_target_module_exists(ablation_config, key)
 
     @staticmethod
     def _prepare_adapter_config(peft_config, model_config):
         if peft_config.target_modules is None:
-            if model_config["model_type"] not in TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING:
+            if model_config["model_type"] not in TRANSFORMERS_MODELS_TO_ABLATION_TARGET_MODULES_MAPPING:
                 raise ValueError("Please specify `target_modules` in `peft_config`")
             peft_config.target_modules = set(
-                TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING[model_config["model_type"]]
+                TRANSFORMERS_MODELS_TO_ABLATION_TARGET_MODULES_MAPPING[model_config["model_type"]]
             )
         return peft_config
     
@@ -179,9 +188,9 @@ class MarsModel(BaseTuner):
                 for n, p in model.named_parameters():
                     if "bias" in n:
                         p.requires_grad = True
-            elif bias == "mars_only":
+            elif bias == "ablation_only":
                 for m in model.modules():
-                    if isinstance(m, MarsLayer) and hasattr(m, "bias") and m.bias is not None:
+                    if isinstance(m, AblationLayer) and hasattr(m, "bias") and m.bias is not None:
                         m.bias.requires_grad = True
             else:
                 raise NotImplementedError(f"Requested bias: {bias}, is not implemented.")
@@ -210,7 +219,7 @@ class MarsModel(BaseTuner):
     
     def set_adapter(self, adapter_name):
         for module in self.model.modules():
-            if isinstance(module, MarsLayer):
+            if isinstance(module, AblationLayer):
                 if module.merged:
                     warnings.warn("Adapter cannot be set when the model is merged. Unmerging the model first.")
                     module.unmerge()
@@ -219,7 +228,7 @@ class MarsModel(BaseTuner):
     
     def save_pretrained(self, save_directory: str, safe_serialization: bool = True) -> None:
         """
-        Saves the trainable adapter weights of the MarsModel in safetensors format.
+        Saves the trainable adapter weights of the AblationModel in safetensors format.
 
         Args:
             save_directory (str): Directory where the adapter model and configuration files will be saved.
@@ -238,7 +247,7 @@ class MarsModel(BaseTuner):
         }
 
         if not adapter_weights:
-            warnings.warn("No trainable Mars adapters found. Nothing to save.")
+            warnings.warn("No trainable Ablation adapters found. Nothing to save.")
 
         # Save weights
         file_path = os.path.join(save_directory, "adapter_model.safetensors")
@@ -251,4 +260,4 @@ class MarsModel(BaseTuner):
         for adapter_name, config in self.peft_config.items():
             config.save_pretrained(save_directory)
 
-        print(f"Mars adapters saved to {save_directory}")
+        print(f"Ablation adapters saved to {save_directory}")

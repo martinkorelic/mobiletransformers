@@ -14,3 +14,4 @@ data/
 experiment/
 dist/
 .deepeval/
+experiment_results/

@@ -7,9 +7,9 @@ from deepeval.benchmarks import ARC
 from deepeval.benchmarks.modes import ARCMode
 from evaluation.eval_adapter_models import CustomPeftModel
 
-MODEL_PATH = "results/mars-8-arc-a-2"
+MODEL_PATH = "experiment_results/TinyLlama_v1.1-abl_H-arc_e-r2-a2"
 
-custom_llm = CustomPeftModel(adapter_path=MODEL_PATH, adapter_name="mars")
+custom_llm = CustomPeftModel(adapter_path=MODEL_PATH, adapter_name="ablation")
 
 # Define benchmark with specific tasks and shots
 benchmark = ARC(

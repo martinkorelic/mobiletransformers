@@ -1,8 +1,6 @@
-from ast import Dict, List, Tuple
 import json
 import os
 import psutil
-from pyparsing import Any, Optional
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,79 +9,59 @@ from torch.nn.functional import cosine_similarity
 from scipy.stats import wasserstein_distance
 
 from transformers import TrainerCallback
-import time
 
-from transformers.trainer_callback import TrainerControl, TrainerState
-from transformers.training_args import TrainingArguments
-
-class MemoryUsageCallback(TrainerCallback):
+class PEFTUsageCallback(TrainerCallback):
     """Logs GPU, CPU, and PyTorch-allocated CPU memory usage during training."""
-    def __init__(self):
+    def __init__(self, output_file="./results/logs/training_log.json"):
         super().__init__()
-        self.gpu_mem_before_fwd = 0
-        self.gpu_mem_after_fwd = 0
-        self.gpu_mem_after_bwd = 0
-        self.gpu_peak_mem_fwd = 0
-        self.gpu_peak_mem_bwd = 0
-        self.cpu_mem_after_bwd = 0
-        self.cpu_mem_after_fwd = 0
-        self.cpu_mem_before_fwd = 0
-        self.torch_cpu_mem_before = 0
-        self.torch_cpu_mem_after_fwd = 0
-        self.torch_cpu_mem_after_bwd = 0
+        self.gpu_mem = 0.0
+        self.cpu_mem = 0.0
+        self.output_file = output_file
+        self.logs = []
 
     def _get_memory_usage(self):
         """Helper function to get GPU, CPU, and PyTorch-allocated CPU memory usage."""
-        gpu_mem, gpu_peak_mem = (0.0, 0.0)
+        gpu_mem = 0.0
         if torch.cuda.is_available():
             torch.cuda.synchronize()  # Ensure accurate measurements
             gpu_mem = torch.cuda.memory_allocated() / 1e9
-            gpu_peak_mem = torch.cuda.max_memory_allocated() / 1e9
         cpu_mem = psutil.Process().memory_info().rss / 1e9  # Convert to GB
-        return gpu_mem, gpu_peak_mem, cpu_mem
+        return gpu_mem, cpu_mem
 
     def on_step_begin(self, args, state, control, **kwargs):
         """Capture memory before forward pass."""
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()  # Reset peak tracking
-        self.gpu_mem_before_fwd, _, self.cpu_mem_before_fwd = self._get_memory_usage()
+        self.gpu_mem, self.cpu_mem = self._get_memory_usage()
 
-    def on_backward_begin(self, args, state, control, **kwargs):
-        """Capture memory just before backward pass (when activations are present)."""
-        self.gpu_mem_after_fwd, self.gpu_peak_mem_fwd, self.cpu_mem_after_fwd, self.torch_cpu_mem_after_fwd = self._get_memory_usage()
-
-    def on_backward_end(self, args, state, control, **kwargs):
-        """Capture memory after backward pass."""
-        self.gpu_mem_after_bwd, self.gpu_peak_mem_bwd, self.cpu_mem_after_bwd, self.torch_cpu_mem_after_bwd = self._get_memory_usage()
-
-    def on_log(self, args, state, control, **kwargs):
+    def on_log(self, args, state, control, logs=None, **kwargs):
         """Logs memory usage at the end of each step."""
         print(f"\n[Memory Usage] Model training memory:")
-        print(f"  GPU: {self.gpu_mem_before_fwd:.2f} GB")
-        print(f"  CPU: {self.cpu_mem_before_fwd:.2f} GB")
-        #print(f"  PyTorch CPU Allocated: {self.torch_cpu_mem_before:.2f} GB -> {self.torch_cpu_mem_after_bwd:.2f} GB")
-        #print(f"  - After Forward   | GPU: {self.gpu_mem_after_fwd:.2f} GB (Peak: {self.gpu_peak_mem_fwd:.2f} GB), CPU: {self.cpu_mem_after_fwd:.2f} GB")
-        #print(f"  - After Backward  | GPU: {self.gpu_mem_after_bwd:.2f} GB (Peak: {self.gpu_peak_mem_bwd:.2f} GB), CPU: {self.cpu_mem_after_bwd:.2f} GB\n")
+        print(f"  GPU: {self.gpu_mem:.2f} GB")
+        print(f"  CPU: {self.cpu_mem:.2f} GB")
 
-class ProfCallback(TrainerCallback):
-    def __init__(self, prof):
-        self.prof = prof
+        if logs is not None:
+            # Add timestamp and step info
+            log_entry = {
+                "step": state.global_step,
+                "epoch": state.epoch,
+                "cpu_mem": self.cpu_mem,
+                "gpu_mem": self.gpu_mem,
+                **logs
+            }
+            
+            self.logs.append(log_entry)
 
-    def on_step_end(self, args, state, control, **kwargs):
-        self.prof.step()
-
-class LogStepTimerCallback(TrainerCallback):
-    def __init__(self):
-        self.start_time = None
-
-    def on_log(self, args, state, control, **kwargs):
-        """
-        Called at the end of a logging step.
-        """
-        if self.start_time is not None:
-            elapsed_time = time.time() - self.start_time
-            print(f"Time for log step {state.global_step}: {elapsed_time:.4f} seconds")
-        self.start_time = time.time()
+    def _save_logs(self):
+        """Save all logs to JSON file"""
+        with open(self.output_file, 'w') as f:
+            json.dump(self.logs, f, indent=2, ensure_ascii=False)
+    
+    def on_train_end(self, args, state, control, **kwargs):
+        """Final save when training ends"""
+        self._save_logs()
+        print(f"\n✅ Training logs saved to: {self.output_file}")
+    
 
 class LoRAWeightVisualizerCallback(TrainerCallback):
     def __init__(self, model, save_path="./lora_weight_changes.json", figs_path="./trainer_visualization", seed=42, log_steps=200, lora_targets=None, adapter_names=["lora_A", "lora_B"]):

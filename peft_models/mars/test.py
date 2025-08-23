@@ -1,8 +1,8 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import get_peft_model, LoraConfig
 
-from optimization.mars.config import MarsConfig
-from optimization.mars.model import MarsModel
+from peft_models.mars.config import MarsConfig
+from peft_models.mars.model import MarsModel
 
 from .layerv5 import Linear
 

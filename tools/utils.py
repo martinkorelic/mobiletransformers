@@ -128,7 +128,7 @@ def save_as_jsonl(dataset, save_path, dataset_name):
     
     print(f"Dataset successfully saved as JSONL format to {save_path}")
 
-def preload_dataset(dataset_id, dataset_name=None, split='train'):
+def preload_dataset(dataset_id, dataset_name=None, split=None):
 
     dataset_ids = dataset_id.split("/")
     
@@ -154,7 +154,7 @@ def preload_dataset(dataset_id, dataset_name=None, split='train'):
         dataset = Dataset.from_list(data)
 
         # Create a DatasetDict with the "train" split
-        dataset_dict = DatasetDict({split: dataset})
+        dataset_dict = DatasetDict({'train': dataset})
 
         return dataset_dict
 
