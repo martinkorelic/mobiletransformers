@@ -66,8 +66,8 @@ def process_sample_winogrande_deepeval(samples, tokenizer, batched=True):
 
     def generate_prompt(data_point):
 
-        question = WinograndeTemplate.format_question(data_point, include_answer=False)
-        question_answer = WinograndeTemplate.format_question(data_point, include_answer=True)
+        question = WinograndeTemplate.format_question(data_point, include_answer=False) + "\n\n "
+        answer = WinograndeTemplate.format_answer(data_point)
         
         if tokenizer.chat_template is not None:
             messages = [
@@ -76,14 +76,16 @@ def process_sample_winogrande_deepeval(samples, tokenizer, batched=True):
             ]
             return tokenizer.apply_chat_template(messages, tokenize=False)
 
-        base_prompt_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
-        inputs = tokenizer(question_answer, return_tensors="pt", padding=False)
+        question_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
+        answer_tokens = tokenizer(answer, return_tensors="pt", padding=False, add_special_tokens=False)["input_ids"][0]
 
-        labels = inputs["input_ids"].clone()
-        labels[0, :len(base_prompt_tokens)-1] = -100
+        # Concatenate the token sequences
+        input_ids = torch.cat([question_tokens, answer_tokens], dim=0)
+        labels = input_ids.clone()
+        labels[:len(question_tokens)] = -100
 
         return (
-            inputs["input_ids"].squeeze(0),
+            input_ids.squeeze(0),
             labels.squeeze(0)
         )
     
@@ -114,7 +116,7 @@ def process_sample_logiqa_deepeval(samples, tokenizer, batched=True):
 
     def generate_prompt(data_point):
 
-        question = LogiQATemplate.format_question(data_point)
+        question = LogiQATemplate.format_question(data_point) + "\n\n "
         answer = LogiQATemplate.format_output(data_point)
 
         if tokenizer.chat_template is not None:
@@ -124,14 +126,16 @@ def process_sample_logiqa_deepeval(samples, tokenizer, batched=True):
             ]
             return tokenizer.apply_chat_template(messages, tokenize=False)
 
-        base_prompt_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
-        inputs = tokenizer(question + answer, return_tensors="pt", padding=False)
+        question_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
+        answer_tokens = tokenizer(answer, return_tensors="pt", padding=False, add_special_tokens=False)["input_ids"][0]
 
-        labels = inputs["input_ids"].clone()
-        labels[0, :len(base_prompt_tokens)-1] = -100
+        # Concatenate the token sequences
+        input_ids = torch.cat([question_tokens, answer_tokens], dim=0)
+        labels = input_ids.clone()
+        labels[:len(question_tokens)] = -100
 
         return (
-            inputs["input_ids"].squeeze(0),
+            input_ids.squeeze(0),
             labels.squeeze(0)
         )
 
@@ -165,8 +169,8 @@ def process_sample_arc_deepeval(samples, tokenizer, batched=True):
 
     def generate_prompt(data_point):
 
-        question = ARCTemplate.format_question(data_point, include_answer=False)
-        question_answer = ARCTemplate.format_question(data_point, include_answer=True)
+        question = ARCTemplate.format_question(data_point, include_answer=False) + "\n\n "
+        answer = ARCTemplate.format_answer(data_point)
 
         if tokenizer.chat_template is not None:
             messages = [
@@ -175,14 +179,16 @@ def process_sample_arc_deepeval(samples, tokenizer, batched=True):
             ]
             return tokenizer.apply_chat_template(messages, tokenize=False)
 
-        base_prompt_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
-        inputs = tokenizer(question_answer, return_tensors="pt", padding=False)
+        question_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
+        answer_tokens = tokenizer(answer, return_tensors="pt", padding=False, add_special_tokens=False)["input_ids"][0]
 
-        labels = inputs["input_ids"].clone()
-        labels[0, :len(base_prompt_tokens)-1] = -100
+        # Concatenate the token sequences
+        input_ids = torch.cat([question_tokens, answer_tokens], dim=0)
+        labels = input_ids.clone()
+        labels[:len(question_tokens)] = -100
 
         return (
-            inputs["input_ids"].squeeze(0),
+            input_ids.squeeze(0),
             labels.squeeze(0)
         )
     
@@ -211,7 +217,7 @@ def process_sample_boolq_deepeval(samples, tokenizer, batched=True):
 
     def generate_prompt(data_point):
 
-        question = BoolQTemplate.format_question(data_point)
+        question = BoolQTemplate.format_question(data_point) + "\n\n "
         answer = BoolQTemplate.format_answer(data_point)
         
         if tokenizer.chat_template is not None:
@@ -221,14 +227,16 @@ def process_sample_boolq_deepeval(samples, tokenizer, batched=True):
             ]
             return tokenizer.apply_chat_template(messages, tokenize=False)
 
-        base_prompt_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
-        inputs = tokenizer(question + answer, return_tensors="pt", padding=False)
+        question_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
+        answer_tokens = tokenizer(answer, return_tensors="pt", padding=False, add_special_tokens=False)["input_ids"][0]
 
-        labels = inputs["input_ids"].clone()
-        labels[0, :len(base_prompt_tokens)-1] = -100
+        # Concatenate the token sequences
+        input_ids = torch.cat([question_tokens, answer_tokens], dim=0)
+        labels = input_ids.clone()
+        labels[:len(question_tokens)] = -100
 
         return (
-            inputs["input_ids"].squeeze(0),
+            input_ids.squeeze(0),
             labels.squeeze(0)
         )
     
@@ -258,9 +266,10 @@ def process_sample_hellaswag_deepeval(samples, tokenizer, batched=True):
     def generate_prompt(data_point):
 
         base_prompt = f'The following are multiple choice sentence completion problems about {data_point["activity_label"]}.\n\n'
-        
+        choices = ["A", "B", "C", "D"]
+    
         if tokenizer.chat_template is not None:
-            choices = ["A", "B", "C", "D"]
+            
             gen_output = HellaSwagTemplate.format_question(
                 data_point,
                 include_answer=False
@@ -271,24 +280,22 @@ def process_sample_hellaswag_deepeval(samples, tokenizer, batched=True):
             ]
             return tokenizer.apply_chat_template(messages, tokenize=False)
         
-        gen_output_base = base_prompt + HellaSwagTemplate.format_question(
+        question = base_prompt + HellaSwagTemplate.format_question(
             data_point,
             include_answer=False
-        )
+        ) + "\n\n "
 
-        base_prompt_tokens = tokenizer(gen_output_base, return_tensors="pt", padding=False)["input_ids"][0]
+        question_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
 
-        gen_output_full = base_prompt + HellaSwagTemplate.format_question(
-            data_point,
-            include_answer=True
-        )
+        answer = "{}".format(choices[int(data_point["label"])])
+        answer_tokens = tokenizer(answer, return_tensors="pt", padding=False, add_special_tokens=False)["input_ids"][0]
 
-        inputs = tokenizer(gen_output_full, return_tensors="pt", padding=False)
-        labels = inputs["input_ids"].clone()
-        labels[0, :len(base_prompt_tokens)] = -100
+        input_ids = torch.cat([question_tokens, answer_tokens], dim=0)
+        labels = input_ids.clone()
+        labels[:len(question_tokens)] = -100
 
         return (
-            inputs["input_ids"].squeeze(0),
+            input_ids.squeeze(0),
             labels.squeeze(0)
         )
     
@@ -397,10 +404,12 @@ def taskname_to_deepeval_preprocess_function(preprocess_id):
         return process_sample_hellaswag_deepeval
     elif preprocess_id == "boolq":
         return process_sample_boolq_deepeval
-    elif preprocess_id == "arc":
+    elif preprocess_id == "arc_e" or preprocess_id == "arc_c":
         return process_sample_arc_deepeval
     elif preprocess_id == "logiqa":
         return process_sample_logiqa_deepeval
+    elif preprocess_id == "winogrande":
+        return process_sample_winogrande_deepeval
 
     return None
 

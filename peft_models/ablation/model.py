@@ -92,7 +92,15 @@ class AblationModel(BaseTuner):
         else:            
             # Generate new shared weights
             A = torch.empty(ablation_config.r, new_module.in_features)
-            torch.nn.init.kaiming_uniform_(A, a=math.sqrt(5))
+
+            init_weight = getattr(ablation_config, 'init_weight', 'kaiming')  # Default to kaiming
+
+            if init_weight == "kaiming":
+                torch.nn.init.kaiming_uniform_(A, a=math.sqrt(5))
+            elif init_weight == "gaussian":
+                torch.nn.init.normal_(A, mean=0.0, std=1.0/ablation_config.r)
+            else:
+                raise ValueError(f"Unknown init_weight: {init_weight}. Use 'kaiming' or 'gaussian'")
             
             # Store only the Parameter, not the Linear module
             shared_weight_param = torch.nn.Parameter(A.T.contiguous(), requires_grad=False)

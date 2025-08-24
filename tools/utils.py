@@ -152,13 +152,18 @@ def preload_dataset(dataset_id, dataset_name=None, split=None):
 
         # Convert to Hugging Face Dataset
         dataset = Dataset.from_list(data)
+        empty_test = dataset.select([])
 
         # Create a DatasetDict with the "train" split
-        dataset_dict = DatasetDict({'train': dataset})
+        dataset_dict = DatasetDict({'train': dataset, 'test': empty_test})
 
         return dataset_dict
+    ds = load_dataset(dataset_id, dataset_name, split=split)
 
-    return load_dataset(dataset_id, dataset_name, split=split)
+    empty_test = ds["train"].select([])
+
+    ds['test'] = empty_test
+    return ds
 
 def create_chat_input(query_prompt, config, add_generation_prompt=True):
     

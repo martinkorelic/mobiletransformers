@@ -20,21 +20,21 @@ def get_ablation_linear_layers(model):
     return ablation_linear_layers
 
 
-def save_mars_metrics_to_npz(model, output_path="mars_training_metrics.npz"):
+def save_peft_metrics_to_npz(model, output_path="peft_training_metrics.npz"):
     """
-    Extract stored metrics from all MARS linear layers and save to NPZ file
+    Extract stored metrics from all peft linear layers and save to NPZ file
     
     Args:
-        model: The trained model containing MARS layers
+        model: The trained model containing peft layers
         output_path: Path to save the NPZ file
     """
-    # Get all MARS linear layers
-    mars_linear_layers = get_ablation_linear_layers(model)
+    # Get all peft linear layers
+    peft_linear_layers = get_ablation_linear_layers(model)
     
     # Dictionary to store all metrics organized by layer name
     all_metrics = {}
     
-    for full_name, layer in mars_linear_layers:
+    for full_name, layer in peft_linear_layers:
         print(f"Processing layer: {full_name}")
         
         # Check if this layer has stored metrics
@@ -47,23 +47,23 @@ def save_mars_metrics_to_npz(model, output_path="mars_training_metrics.npz"):
             continue
         
         # Extract metrics for this layer
-        layer_metrics = extract_layer_metrics(layer.stored_metrics['windows'], full_name)
+        layer_metrics = extract_layer_metrics(layer.stored_metrics['windows'])
         
         # Add to overall metrics dictionary
         for metric_key, metric_data in layer_metrics.items():
-            all_metrics[f"{full_name}_{metric_key}"] = metric_data
+            all_metrics[f"{full_name}/{metric_key}"] = metric_data
     
     # Save to NPZ file
     if all_metrics:
         np.savez_compressed(output_path, **all_metrics)
-        print(f"Saved metrics for {len(mars_linear_layers)} layers to {output_path}")
+        print(f"Saved metrics for {len(peft_linear_layers)} layers to {output_path}")
         print(f"Metrics keys: {list(all_metrics.keys())}")
     else:
         print("No metrics found to save!")
     
     return all_metrics
 
-def extract_layer_metrics(windows_data, layer_name):
+def extract_layer_metrics(windows_data):
     """
     Extract and organize metrics from window data for a single layer
     
@@ -85,15 +85,10 @@ def extract_layer_metrics(windows_data, layer_name):
         metrics['step_ranges'].append(step_range)
         
         # Process each layer's metrics in this window
-        for layer_key, layer_data in window['layers'].items():
-            # Extract adapter name from layer_key (e.g., "down_project_default" -> "default")
-            parts = layer_key.split('_')
-            adapter_name = parts[-1] if len(parts) > 1 else 'default'
-            layer_type = '_'.join(parts[:-1]) if len(parts) > 1 else parts[0]
-            
+        for layer_key, layer_data in window['layers'].items():            
             # Store metrics
             for metric_name, metric_value in layer_data.items():
-                full_metric_key = f"{layer_type}_{metric_name}"
+                full_metric_key = f"{layer_key}/{metric_name}"
                 
                 # Convert to numpy if it isn't already
                 if isinstance(metric_value, np.ndarray):
@@ -106,8 +101,7 @@ def extract_layer_metrics(windows_data, layer_name):
         # Store adapter info (assuming same adapter for all layers in window)
         if window['layers']:
             first_layer = next(iter(window['layers'].keys()))
-            adapter_name = first_layer.split('_')[-1] if '_' in first_layer else 'default'
-            metrics['adapters'].append(adapter_name)
+            metrics['adapters'].append(first_layer)
     
     # Convert lists to numpy arrays
     final_metrics = {}
@@ -126,7 +120,7 @@ def extract_layer_metrics(windows_data, layer_name):
     
     return final_metrics
 
-def load_and_analyze_mars_metrics(npz_path):
+def load_peft_metrics(npz_path):
     """
     Load saved metrics and provide analysis utilities
     
@@ -141,7 +135,7 @@ def load_and_analyze_mars_metrics(npz_path):
     # Group metrics by layer
     layers = {}
     for key in data.keys():
-        parts = key.split('_')
+        parts = key.split('/')
         if len(parts) >= 2:
             # Extract layer name (everything before the last metric part)
             layer_parts = []
@@ -165,8 +159,8 @@ def load_and_analyze_mars_metrics(npz_path):
                 layer_parts = parts[:-1]
                 metric_parts = [parts[-1]]
             
-            layer_name = '_'.join(layer_parts)
-            metric_name = '_'.join(metric_parts)
+            layer_name = '/'.join(layer_parts)
+            metric_name = '/'.join(metric_parts)
             
             if layer_name not in layers:
                 layers[layer_name] = {}
@@ -177,28 +171,3 @@ def load_and_analyze_mars_metrics(npz_path):
         'layers': layers,
         'layer_names': list(layers.keys())
     }
-
-# Usage example:
-def analyze_training_metrics(model, save_path="mars_metrics.npz"):
-    """Complete workflow for saving and analyzing metrics"""
-    
-    # 1. Save metrics from model
-    metrics = save_mars_metrics_to_npz(model, save_path)
-    
-    # 2. Load and organize for analysis  
-    analysis_data = load_and_analyze_mars_metrics(save_path)
-    
-    # 3. Print summary
-    print("\n=== METRICS SUMMARY ===")
-    for layer_name, layer_metrics in analysis_data['layers'].items():
-        print(f"\nLayer: {layer_name}")
-        for metric_name, metric_data in layer_metrics.items():
-            if isinstance(metric_data, np.ndarray):
-                print(f"  {metric_name}: shape {metric_data.shape}")
-                if metric_data.dtype in [np.float32, np.float64]:
-                    print(f"    Range: [{np.min(metric_data):.4f}, {np.max(metric_data):.4f}]")
-    
-    return analysis_data
-
-# Example usage after training:
-#analysis = analyze_training_metrics(trained_model, "experiment_1_metrics.npz")

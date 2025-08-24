@@ -90,6 +90,14 @@ class AblationConfig(PeftConfig):
         },
     )
     alpha: int = field(default=8, metadata={"help": "Scaling factor, computed as alpha/rank."})
+    init_weight: str = field(
+        default="kaiming",
+        metadata={
+            "help": (
+                "Initialization of the adapter weights."
+            )
+        },
+    )
     seed: int = field(default=42, metadata={"help": "Seed for initializing layers."})
     bias: str = field(default="none", metadata={"help": "Bias type for Ablation. Can be 'none', 'all' or 'ablation_only'"})
     fan_in_fan_out: bool = field(

@@ -1,4 +1,3 @@
-import transformers
 import torch, os, json
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, AutoConfig
 from peft_models.ablation.config import AblationConfig

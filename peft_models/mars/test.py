@@ -4,13 +4,13 @@ from peft import get_peft_model, LoraConfig
 from peft_models.mars.config import MarsConfig
 from peft_models.mars.model import MarsModel
 
-from .layerv5 import Linear
-
 import torch, time, json
 import numpy as np
 
 import torch.utils.bottleneck as bottleneck
 from fvcore.nn import FlopCountAnalysis
+
+from .layer import Linear
 
 import matplotlib.pyplot as plt
 

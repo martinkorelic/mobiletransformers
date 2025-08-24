@@ -9,6 +9,9 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 
+from research.ablation_analysis import analyze_training_metrics
+from research.utils import save_peft_metrics_to_npz
+
 # Disable DeepEval telemetry logging
 os.environ["DEEPEVAL_TELEMETRY_OPT_OUT"] = "YES"
 
@@ -23,7 +26,6 @@ from peft_models.ablation.model import AblationModel
 from peft_models.mars.config import MarsConfig
 from peft_models.mars.model import MarsModel
 from datasets import Dataset
-from research.utils import analyze_training_metrics
 from research.visualization_trainer import PEFTUsageCallback
 from tools.utils import preload_dataset
 
@@ -162,7 +164,6 @@ class PEFTEval:
     def _setup_benchmark(self):
         if self.benchmark_name == PEFTBenchmarkDataset.LOGIQA:
             self.benchmark = LogiQA(
-                tasks=[LogiQATask.DISJUNCTIVE_REASONING],
                 n_shots=self.n_shots,
                 confinement_instructions=" "
             )
@@ -182,21 +183,20 @@ class PEFTEval:
         elif self.benchmark_name == PEFTBenchmarkDataset.WINOGRANDE:
             self.benchmark = Winogrande(
                 n_shots=self.n_shots,
-                confinement_instructions=""
+                confinement_instructions=" "
             )
 
             self.peft_llm.set_generation_config(
-                max_new_tokens=3
+                max_new_tokens=1
             )
         elif self.benchmark_name == PEFTBenchmarkDataset.ARC_E:
             self.benchmark = ARC(
-                n_shots=0,
+                n_shots=self.n_shots,
                 mode=ARCMode.EASY,
-                verbose_mode=True,
                 confinement_instructions=" "
             )
             self.peft_llm.set_generation_config(
-                max_new_tokens=3
+                max_new_tokens=2
             )
         # TODO: More benchmarks
     
@@ -223,10 +223,14 @@ class PEFTTrainer:
         bias: str = "none",
         lora_targets: Optional[List[str]] = None,
         max_dataset_length: int = None,
+        dataset_split : bool = False,
+        dataset_shuffle : bool = False,
+        dataset_test_ratio : bool = 0.1,
         batch_size: int = 32,
         per_device_batch_size: int = 6,
         learning_rate: float = 3e-4,
         num_epochs: int = 1,
+        max_steps: int = -1,
         warmup_ratio: float = 0.1,
         extra_peft_config : dict = {},
         output_dir: str = "./experiment_results",
@@ -270,6 +274,10 @@ class PEFTTrainer:
         self.hf_token = hf_token
         self.seed = seed
         self.extra_peft_config = extra_peft_config
+        self.dataset_split = dataset_split
+        self.dataset_shuffle = dataset_shuffle
+        self.dataset_test_ratio = dataset_test_ratio
+        self.max_steps = max_steps
         
         # Validate and set dataset configuration
         self._setup_dataset(dataset)
@@ -383,7 +391,10 @@ class PEFTTrainer:
             self.tokenizer,
             max_context_length=self.config.max_position_embeddings,
             max_dataset_length=self.max_dataset_length,
-            batch_size=self.batch_size
+            batch_size=self.batch_size,
+            test_ratio=self.dataset_test_ratio,
+            split=self.dataset_split,
+            shuffle=self.dataset_shuffle
         )
         
         print(f"Dataset prepared: {self.dataset}")
@@ -425,6 +436,7 @@ class PEFTTrainer:
                 variant,
                 self.lora_targets,
                 r=self.lora_rank,
+                alpha=self.lora_alpha,
                 **self.extra_peft_config
             )
 
@@ -448,12 +460,12 @@ class PEFTTrainer:
             },
             "peft_config": {
                 "method": self.peft_method,
-                "lora_rank": self.lora_rank,
-                "lora_alpha": self.lora_alpha,
-                "lora_dropout": self.lora_dropout,
+                "rank": self.lora_rank,
+                "alpha": self.lora_alpha,
+                "dropout": self.lora_dropout,
                 "bias": self.bias,
                 "target_modules": self.lora_targets,
-                "trainable_parameters": self._count_trainable_parameters()
+                "trainable_parameter_count": self._count_trainable_parameters()
             },
             "training_config": {
                 "max_dataset_length": self.max_dataset_length,
@@ -509,6 +521,7 @@ class PEFTTrainer:
             num_train_epochs=self.num_epochs,
             weight_decay=0.0,
             logging_steps=1,
+            max_steps=self.max_steps,
             logging_strategy="steps",
             report_to=[],
             gradient_checkpointing=False,
@@ -564,22 +577,26 @@ class PEFTTrainer:
             self.model.save_pretrained(self.output_dir)
             print(f"{self.peft_method.upper()} adapters saved to: {self.output_dir}")
     
+    def save_analysis(self):
+        save_peft_metrics_to_npz(self.model, f'{self.output_dir}/analysis_metrics.npz')
+
     def analysis(self):
         analyze_training_metrics(self.model, f'{self.output_dir}/analysis_metrics.npz')
 
-def create_ablation_model(base_model, variant, lora_target, r, **peft_config):
+def create_ablation_model(base_model, variant, lora_target, r, alpha, **peft_config):
 
     ablation_config = AblationConfig(
             variant=variant,
             peft_type="ABLATION",
             r=r,
+            alpha=alpha,
             target_modules=lora_target,
             task_type=None,
             **peft_config
         )
     return get_peft_model(base_model, ablation_config, adapter_name="ablation")
 
-def create_mars_model(base_model, lora_target, r, **peft_config):
+def create_mars_model(base_model, lora_target, r, alpha, **peft_config):
     """Create MARS model with specified configuration."""
 
     # Drop unnecessary info
@@ -590,6 +607,7 @@ def create_mars_model(base_model, lora_target, r, **peft_config):
             peft_type="MARS",
             r=r,
             target_modules=lora_target,
+            alpha=alpha,
             task_type=None,
             **peft_config
         )
@@ -612,7 +630,7 @@ def prepare_dataset(dataset: Dataset, preprocess_id, tokenizer, max_dataset_leng
             return process_sample_hellaswag_deepeval(sample, tokenizer, (batch_size > 1))
         elif preprocess_id == DATASET_MAPPING[PEFTBenchmarkDataset.BOOLQ.value][1]:
             return process_sample_boolq_deepeval(sample, tokenizer, (batch_size > 1))
-        elif preprocess_id == DATASET_MAPPING[PEFTBenchmarkDataset.ARC_E.value][1]:
+        elif preprocess_id == DATASET_MAPPING[PEFTBenchmarkDataset.ARC_E.value][1] or preprocess_id == DATASET_MAPPING[PEFTBenchmarkDataset.ARC_C.value][1]:
             return process_sample_arc_deepeval(sample, tokenizer, (batch_size > 1))
         elif preprocess_id == DATASET_MAPPING[PEFTBenchmarkDataset.LOGIQA.value][1]:
             return process_sample_logiqa_deepeval(sample, tokenizer, (batch_size > 1))
@@ -648,12 +666,12 @@ def lora_base_easy_experiment():
 
     tasks = ["boolq", "logiqa", "arc_e", "winogrande"]
     ranks = [2, 8, 32]
-    epochs = [2, 2, 4, 2]
+    epochs = [2, 2, 4, 4]
     adapter_name = "lora"
 
     for rank in ranks:
         for task, epoch in zip(tasks, epochs):
-            
+
             try:
                 trainer = PEFTTrainer(
                     model_id="TinyLlama/TinyLlama_v1.1",
@@ -661,7 +679,6 @@ def lora_base_easy_experiment():
                     peft_method="lora",
                     lora_rank=rank,
                     batch_size=32,
-                    max_dataset_length=100,
                     num_epochs=epoch
                 )
 
@@ -691,12 +708,19 @@ def ablation_base_easy_experiment():
 
     variants = ["abl_A", "abl_B", "abl_C", "abl_D", "abl_G", "abl_H"]
     tasks = ["boolq", "logiqa", "arc_e", "winogrande"]
-    epochs = [2, 2, 4, 2]
+    epochs = [2, 2, 4, 4]
     ranks = [2, 8, 32]
 
     for v in variants:
         for rank in ranks:
             for task, epoch in zip(tasks, epochs):
+
+                if v == "abl_A":
+                    if task != "logiqa" and (rank == 8 or rank == 2):
+                        continue
+                    if task == "logiqa" and rank == 32:
+                        continue
+
                 try:
                     trainer = PEFTTrainer(
                         model_id="TinyLlama/TinyLlama_v1.1",
@@ -722,9 +746,44 @@ def ablation_base_easy_experiment():
                 except Exception as e:
                     print("Error occured:", e)
 
-# Example usage
+def ablation_training_experiment():
+    """
+    Ablation training metric experiment.
+    """
+
+    tasks = ["boolq"]
+    ranks = [32]
+    epochs = [1]
+
+    for rank in ranks:
+        for task, epoch in zip(tasks, epochs):
+
+            try:
+                trainer = PEFTTrainer(
+                    model_id="TinyLlama/TinyLlama_v1.1",
+                    dataset=task,
+                    peft_method="abl_A",
+                    lora_rank=rank,
+                    batch_size=32,
+                    num_epochs=epoch,
+                    max_steps=100,
+                    extra_peft_config={
+                        "metric_tracking": True
+                    }
+                )
+
+                trainer.train()
+                trainer.save_analysis()
+
+                del trainer
+                gc.collect()
+            except Exception as e:
+                print("Error occured:", e)
+
 if __name__ == "__main__":
     
-    lora_base_easy_experiment()
+    ablation_training_experiment()
 
-    ablation_base_easy_experiment()
+    #lora_base_easy_experiment()
+
+    #ablation_base_easy_experiment()

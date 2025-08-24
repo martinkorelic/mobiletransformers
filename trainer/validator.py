@@ -1,68 +1,27 @@
 import argparse
+import random
 import textwrap
 from typing import Dict, List
 import onnx, time, os, gc, json
 
+import psutil
+import torch
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoConfig
+from transformers import AutoTokenizer
 import numpy as np
-from onnx import helper, TensorProto, numpy_helper
-from onnxruntime.training import onnxblock, artifacts
 from onnxruntime.training.api import CheckpointState, Module, Optimizer, LinearLRScheduler
 import onnxruntime as rt
-from onnxruntime import InferenceSession, SessionOptions
-from datasets import load_dataset, Dataset, DatasetDict
-
+from onnxruntime import SessionOptions
+from datasets import Dataset
+from datetime import datetime
 from collections import defaultdict
 
 from torch.utils.data import DataLoader
 import yaml
+from research.offline_train_eval import DATASET_MAPPING, PEFTBenchmarkDataset
+from tools.utils import preload_dataset
 from trainer.utils import DataCollatorForSupervisedDataset, taskname_to_deepeval_preprocess_function
 from tools.parser_config import TASK_NAME_TO_DATASET, TRAIN_CONFIG, ARTIFACT_CONFIG, ARTIFACT_VALIDATOR_CONFIG
-
-from onnx._custom_element_types import int4, uint4
-
-from trainer.utils import (
-    process_sample_dolly,
-    process_sample_alpaca,
-    process_sample_hellaswag,
-    process_sample_hellaswag_deepeval,
-    process_sample_boolq_deepeval,
-    process_sample_arc_deepeval,
-    process_sample_logiqa_deepeval
-)
-
-def preload_dataset(dataset_id):
-
-    dataset_ids = dataset_id.split("/")
-    
-    # Take local data
-    if len(dataset_ids) >= 2 and dataset_ids[-2] == "data":
-
-        filepath = dataset_id
-        data = None
-
-        if os.path.exists(f'./{dataset_id}.json'):
-            filepath = f'./{dataset_id}.json'
-
-            with open(filepath, 'r', encoding="utf-8") as f:
-                data = json.load(f)
-
-        elif os.path.exists(f'./{dataset_id}.jsonl'):
-            filepath = f'./{dataset_id}.jsonl'
-
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = [json.loads(line) for line in f]
-
-        # Convert to Hugging Face Dataset
-        dataset = Dataset.from_list(data)
-
-        # Create a DatasetDict with the "train" split
-        dataset_dict = DatasetDict({"train": dataset})
-
-        return dataset_dict
-
-    return load_dataset(dataset_id)
 
 class CosineLRScheduler:
     """Cosine Learning Rate Scheduler for ONNX Runtime Training."""
@@ -95,6 +54,7 @@ class ORTDataCurator:
 
     def __init__(self,
                  model_id,
+                 task_name,
                  max_dataset_length = None,
                  remove_long_samples = True,
                  max_context_length=512,
@@ -117,6 +77,30 @@ class ORTDataCurator:
         self.shuffle = shuffle
 
         self.dataset = None
+        self._setup_dataset(task_name)
+
+        ds = preload_dataset(self.dataset_id)
+        self.prepare_dataset(ds, custom_preprocess=taskname_to_deepeval_preprocess_function(self.dataset_config))
+
+    def _setup_dataset(self, dataset_input):
+        """Setup dataset configuration from simple string identifier or enum."""
+        # Handle both string and enum inputs
+
+        if isinstance(dataset_input, PEFTBenchmarkDataset):
+            self.dataset_config = dataset_input    
+        else:
+            if dataset_input.lower() not in list(DATASET_MAPPING.keys()):
+                raise ValueError(f"Unsupported dataset: {dataset_input}. Choose from: {list(DATASET_MAPPING.keys())}")
+            
+            self.dataset_config = PEFTBenchmarkDataset[dataset_input.upper()]
+        
+        self.dataset_id = DATASET_MAPPING[self.dataset_config.value][0]
+        self.preprocess_id = DATASET_MAPPING[self.dataset_config.value][1]
+
+        if len(DATASET_MAPPING[self.dataset_config.value]) > 2:
+            self.dataset_name = DATASET_MAPPING[self.dataset_config.value][2]
+        else:
+            self.dataset_name = None
 
     # Define preprocessing function for tokenization
     def prepare_dataset(self, dataset : Dataset, custom_preprocess = None):
@@ -151,24 +135,44 @@ class ORTDataCurator:
 class ORTTrainingArguments:
 
     def __init__(self,
+                model_id=None,
+                peft_method=None,
+                peft_rank = None,
+                peft_alpha = None,
+                peft_target = None,
                 export_inference=False,
                 test_inference=False,
                 test_evaluate=False,
+                batch_size=1,
                 learning_rate=1e-3,
                 min_learning_rate=0,
                 max_sequence_length=100,
+                max_dataset_length=100,
                 num_train_epochs=1,
                 warmup_steps=10,
                 max_steps=10,
                 save_steps=100,
+                remove_long_samples=True,
+                dataset_split : bool = False,
+                dataset_shuffle : bool = False,
+                dataset_test_ratio : bool = 0.1,
                 scheduler_type="linear",
                 grad_accum_steps=4) -> None:
         
+        self.model_id = model_id
+        self.peft_method = peft_method
         self.export_inference = export_inference
         self.test_inference = test_inference
         self.test_evaluate = test_evaluate
         
         self.max_sequence_length = max_sequence_length
+        self.max_dataset_length = max_dataset_length
+        self.remove_long_samples = remove_long_samples
+        self.batch_size = batch_size
+
+        self.dataset_split = dataset_split
+        self.dataset_shuffle = dataset_shuffle
+        self.dataset_test_ratio = dataset_test_ratio
 
         self.learning_rate = learning_rate
         self.min_learning_rate = min_learning_rate
@@ -179,29 +183,107 @@ class ORTTrainingArguments:
         self.scheduler_type = scheduler_type
         self.grad_accum_steps = grad_accum_steps
 
+        self.peft_rank = peft_rank
+        self.peft_alpha = peft_alpha
+        self.peft_target = peft_target
+        self.trainable_parameter_count = 0
+    
+    def load_from_json(self, train_dir):
+        with open(f"{train_dir}/training_config.json", "r") as f:
+            data = json.load(f)
+
+        self.export_inference = False
+        self.test_inference = False
+        self.test_evaluate = False
+
+        scheduler_options = data.get("schedulerOptions", None)
+        self.scheduler_type = data.get("schedulerType", "cosine")
+
+        if self.scheduler_type == "linear" and scheduler_options:
+            self.learning_rate = scheduler_options.get("linearLearningRate", 1e-3)
+            self.start_factor = scheduler_options.get("startFactor", 1)
+            self.end_factor = scheduler_options.get("endFactor", 0.333)
+            self.warmup_steps = scheduler_options.get("warmupSteps", 10)
+        elif self.scheduler_type == "cosine" and scheduler_options:
+            self.min_learning_rate = scheduler_options.get("minLearningRate", 0)
+            self.learning_rate = scheduler_options.get("cosineLearningRate", 1e-3)
+            self.warmup_steps = scheduler_options.get("warmupSteps", 10)
+
+        self.num_train_epochs = data.get("numTrainEpochs", 1)
+        self.max_steps = data.get("maxSteps", 20)
+        self.save_steps = data.get("saveSteps", 50)
+        self.grad_accum_steps = data.get("gradAccumSteps", 2)
+        self.batch_size = data.get("batchSize", 1)
+
+        # Task name and train file if needed
+        self.task_name = data.get("taskName", None)
+
+        # Model id
+        self.model_id = data.get("modelId", None)
+
+        # Dataset configuration
+        dataset = data.get("datasetOptions", None)
+
+        if dataset:
+            self.train_file = dataset.get("trainFile", None)
+            self.dataset_split = dataset.get("datasetSplit", False)
+            self.dataset_shuffle = dataset.get("datasetShuffle", False)
+            self.dataset_batch_size = dataset.get("datasetBatchSize", 64)
+            self.dataset_test_ratio = dataset.get("testRatio", 0.1)
+            self.max_sequence_length = dataset.get("maxSequenceLength", 512)
+            self.max_dataset_length = dataset.get("maxDatasetLength", 100)
+            self.remove_long_samples = dataset.get("removeLongSamples", True)
+        
+        # Peft method
+        self.peft_method = data.get("peftMethod", None)
+        self.peft_rank = data.get("rank", None)
+        self.peft_alpha = data.get("alpha", None)
+        self.peft_target = data.get("peft_target", None)
+        self.trainable_parameter_count = data.get("trainable_parameter_count", 0)
 
 class ORTTrainer:
 
     def __init__(self,
                 training_model_dir,
-                args : ORTTrainingArguments,
-                data_curator : ORTDataCurator,
+                args : ORTTrainingArguments = None,
                 inference_model_path="inference_model.onnx",
-                callbacks=None
+                callbacks=None,
+                seed=42
                 ) -> None:
         
         self.training_model_dir = training_model_dir
-        self.args = args
-        self.data_curator = data_curator
         self.inference_model_path = inference_model_path
         self.callbacks = callbacks
-
+        self.args = args
         self.model = None
         self.state = None
         self.optimizer = None
         self.tokenizer = None
+        self.seed = seed
 
-    
+        self._load_train_config()
+
+        self._set_seed()
+
+        self.data_curator = ORTDataCurator(model_id=self.args.model_id,
+                              max_dataset_length=self.args.max_dataset_length,
+                              remove_long_samples=self.args.remove_long_samples,
+                              max_context_length=self.args.max_sequence_length,
+                              test_ratio=self.args.dataset_test_ratio,
+                              split=self.args.dataset_split,
+                              shuffle=self.args.dataset_shuffle,
+                              batch_size=self.args.dataset_batch_size
+                              )
+        
+        self.train_model_name = self._create_model_name()
+        
+    def _load_train_config(self):
+
+        if args is not None:
+            return
+        
+        self.args = ORTTrainingArguments().load_from_json(self.training_model_dir)
+
     def set_scheduler_type(self, total_steps):
 
         if self.args.scheduler_type == "linear":
@@ -215,13 +297,10 @@ class ORTTrainer:
         """
         Checks the model if the outputs are training correctly as well as evaluation.
         Exports model for inference if needed or transfers the weights to an already existing inference model.
-
-        - `test_inference` - runs the model through an example prompt
-        - `test_evaluate` - tests the model evaluation
-        - `transfer_weights` - instead of exporting for inference, we only copy the subset of updated weights to an already created inference model after training
-        - `inference_model_path` - model path of an already existing inference model or one to create
-        - `max_sequence_length` - length of text generation sequence
         """
+
+        # Save the training config
+        self.save_training_config()
         
         self.state = CheckpointState.load_checkpoint(f"{self.training_model_dir}/checkpoint")
 
@@ -247,10 +326,10 @@ class ORTTrainer:
 
         if self.args.max_steps is not None:
             total_steps = self.args.max_steps
-            print(f"Training for {self.args.max_steps} steps")
+            print(f"[INFO] Training for {self.args.max_steps} steps")
         else:
             total_steps = total_epoch_steps
-            print(f"Training for {self.args.num_train_epochs} epochs ({total_steps} steps)")
+            print(f"[INFO] Training for {self.args.num_train_epochs} epochs ({total_steps} steps)")
 
         global_step = 0
         epoch = 0
@@ -258,8 +337,8 @@ class ORTTrainer:
         # Create dataloader
         dataloader = DataLoader(
             train_dataset,
-            batch_size=self.data_curator.batch_size,
-            shuffle=True,
+            batch_size=self.args.batch_size,
+            shuffle=self.args.dataset_shuffle,
             collate_fn=self.data_curator.collator.numpy_call
         )
 
@@ -281,60 +360,60 @@ class ORTTrainer:
         accumulated_loss = 0.0
         start_time = time.time()
 
+        logs = []
+
         while global_step < total_steps:
             for batch in dataloader:
                 if global_step >= total_steps:
                     break
-
+                
+                pbar.write(f"[INFO] Epoch {epoch}, Step {global_step}")
                 input_ids_np = batch['input_ids']
                 position_ids = self.create_position_ids(input_ids_np, padding_idx=self.data_curator.tokenizer.pad_token_id)
-
-                # Use ONNX's predefined int4 dtype
-                int4_values = np.random.randint(-8, 8, size=(2048, 256), dtype=np.int8)
-
-                # 2. Cast to ONNX's int4 dtype
-                int4_array = int4_values.view(dtype=uint4)  # This dtype has metadata for ONNX
-
-                # 3. Convert to TensorProto using from_array
-                tensor_proto = numpy_helper.from_array(int4_array, name="int4_tensor")
-
-                # 4. (Optional) Convert back to NumPy and verify
-                restored = numpy_helper.to_array(tensor_proto)
-
-                # 5. Sanity check
-                print("Original shape:", int4_array.shape)
-                print("Proto type:", tensor_proto.data_type == TensorProto.INT4)
-                print("Roundtrip match:", np.all(restored == int4_values))
 
                 inputs = {
                     "input_ids": batch["input_ids"],
                     "attention_mask": batch["attention_mask"],
                     "position_ids": position_ids,
-                    "labels": batch['labels'],
-                    "backbone.model.layers.0.self_attn.v_proj.base_layer.weight_DQ_Q4": int4_array
+                    "labels": batch['labels']
                 }
 
                 self.model.train()
                 forward = self.model(*inputs.values())
 
-                accumulated_loss += forward[0]
+                current_loss = forward[0]
+
+                accumulated_loss += current_loss
 
                 if (global_step + 1) % self.args.grad_accum_steps == 0:
 
                     self.optimizer.step()
                     self.model.lazy_reset_grad()
-                    scheduler.step()
 
                     avg_loss = accumulated_loss / self.args.grad_accum_steps
 
-                    print(f"[INFO] Training loss result: {avg_loss}")
-                    print(f"[INFO] LR: {self.optimizer.get_learning_rate()}")
+                    pbar.write(f"[INFO] Training loss step: {avg_loss}")
+                    pbar.write(f"[INFO] LR: {self.optimizer.get_learning_rate()}")
 
                     # Reset accumulated loss
                     accumulated_loss = 0.0
+                
+                scheduler.step()
 
                 global_step += 1
                 pbar.update(1)
+
+                step_info = {
+                    "step": global_step,
+                    "epoch": epoch,
+                    "loss": current_loss,
+                    "cpu_mem": psutil.Process().memory_info().rss / 1e9,
+                    "gpu_mem": torch.cuda.memory_allocated() / 1e9,
+                    "learning_rate": self.optimizer.get_learning_rate()
+                }
+
+                pbar.write(step_info)
+                logs.append(step_info)
                 
                 if global_step >= total_steps:
                     break
@@ -351,6 +430,20 @@ class ORTTrainer:
         # Print training performance
         print(f"\n[INFO] Total training time: {total_runtime:.4f} seconds")
         print(f"[INFO] Training steps per second: {steps_per_second:.4f}")
+
+        logs.append({
+                    "step": global_step,
+                    "epoch": epoch,
+                    "loss": current_loss,
+                    "cpu_mem": psutil.Process().memory_info().rss / 1e9,
+                    "gpu_mem": torch.cuda.memory_allocated() / 1e9,
+                    "train_runtime": total_runtime,
+                    "train_steps_per_second": steps_per_second
+                })
+        
+        # Save logs
+        with open(f"{self.training_model_dir}/training_logs.json", mode="w", encoding="utf-8") as f:
+            json.dump(logs, f, ensure_ascii=False)
 
         if self.args.export_inference:
 
@@ -373,8 +466,63 @@ class ORTTrainer:
 
         return position_ids
 
+    def _create_model_name(self) -> str:
+        """Create a unique model name based on configuration."""
+        # Extract model name from model_id (e.g., "TinyLlama/TinyLlama_v1.1" -> "TinyLlama_v1.1")
+        model_short_name = self.args.model_id.split('/')[-1] if '/' in self.args.model_id else self.args.model_id
+        
+        # Create name pattern: {model_name}-{peft_method}-{dataset}-r{rank}-a{alpha_ratio}
+        alpha_ratio = self.args.peft_alpha // self.args.peft_rank if self.args.peft_rank > 0 else 1
+        
+        return f"{model_short_name}-{self.args.peft_method}-{self.data_curator.dataset_config.value.lower()}-r{self.args.peft_rank}-a{alpha_ratio}"
+
     def save_checkpoint(self):
         CheckpointState.save_checkpoint(self.state, f"{self.training_model_dir}/checkpoint")
+
+    def _set_seed(self):
+        """Set random seed for reproducibility."""
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+
+    def save_training_config(self):
+        """Save training configuration to JSON."""
+        config = {
+            "model_id": self.args.model_id,
+            "dataset": {
+                "name": self.data_curator.dataset_config.name,
+                "dataset_id": self.data_curator.dataset_id,
+                "preprocess_id": self.data_curator.preprocess_id
+            },
+            "peft_config": {
+                "method": self.args.peft_method,
+                "rank": self.args.peft_rank,
+                "alpha": self.args.peft_alpha,
+                "target_modules": self.args.peft_target,
+                "trainable_parameter_count": self.args.trainable_parameter_count
+            },
+            "training_config": {
+                "max_dataset_length": self.data_curator.max_dataset_length,
+                "batch_size": self.data_curator.batch_size,
+                "per_device_batch_size": self.data_curator.batch_size,
+                "gradient_accumulation_steps": self.args.grad_accum_steps,
+                "learning_rate": self.args.learning_rate,
+                "num_epochs": self.args.num_train_epochs,
+                "warmup_steps": self.args.warmup_steps
+            },
+            "model_name": self.train_model_name,
+            "output_dir": self.training_model_dir,
+            "seed": self.seed,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        os.makedirs(self.output_dir, exist_ok=True)
+        config_path = os.path.join(self.output_dir, "training_configuration.json")
+        
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        
+        print(f"Training configuration saved to: {config_path}")
 
 def check_duplicate_initializers(onnx_model_path):
     """
@@ -568,6 +716,6 @@ if __name__ == "__main__":
                                 scheduler_type="cosine"
                                 )
     
-    trainer = ORTTrainer(args.training_artifact_dir, ort_args, data_cur)
+    trainer = ORTTrainer(args.training_artifact_dir, ort_args)
 
     trainer.train()

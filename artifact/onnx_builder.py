@@ -561,6 +561,7 @@ def convert_pipeline(model_id,
 
         # Add peft method to training config
         train_config['peftMethod'] = peft_method
+        train_config['modelId'] = model_id
 
         # Generate training artifacts
         gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=train_model_name, training_config=train_config)

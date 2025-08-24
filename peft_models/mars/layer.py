@@ -129,7 +129,7 @@ class MarsLayer(BaseTunerLayer):
 
                 # If frozen down add scale to matrix
                 if not self.trainable_down:
-                    self.down_project[adapter_name].weight.data *= alpha / rank
+                    self.down_project[adapter_name].weight.data *= (alpha / rank)
                 self.down_project[adapter_name].requires_grad_(self.trainable_down)
 
                 # Up-projection

@@ -260,6 +260,7 @@ def optimum_hf_export(model_id,
                       train_method = "lora",
                       lora_target=["q_proj", "k_proj"],
                       lora_rank=4,
+                      lora_alpha=4,
                       quantize=True,
                       weight_type=QuantType.QInt8,
                       peft_config={},
@@ -336,6 +337,7 @@ def optimum_hf_export(model_id,
         mars_config = MarsConfig(
             peft_type="MARS",
             r=lora_rank,
+            alpha=lora_alpha,
             onnx_export=True, # always needs to be True for export
             target_modules=lora_target,  # Target specific model layers
             task_type=None,
@@ -367,6 +369,9 @@ def optimum_hf_export(model_id,
     # Preprocessing methods
     if training_mode:
         my_model = preprocess_model(my_model)
+    
+    # Trainable count
+    trainable_count = count_trainable_parameters(my_model)
 
     export(my_model, ocl, onnx_path, opset, do_constant_folding=not training_mode)
 
@@ -385,7 +390,11 @@ def optimum_hf_export(model_id,
             json.dump({
                 "requires_grad": grad_layers,
                 "frozen_params": no_grad_layers,
-                "peft_mapping": mapping
+                "peft_mapping": mapping,
+                "trainable_parameter_count": trainable_count,
+                "rank": lora_rank,
+                "alpha": lora_alpha,
+                "peft_target": lora_target
             }, f, ensure_ascii=False)
     
     del my_model
@@ -458,6 +467,10 @@ def onnx_dynamic_quantization(onnx_model_path,
         weight_type=weight_type,
         reduce_range=False
     )
+
+def count_trainable_parameters(model) -> int:
+    """Count trainable parameters."""
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def check_extra_options(kv_pairs):
     if "exclude_extra_layers" in kv_pairs:
@@ -639,6 +652,7 @@ if __name__ == "__main__":
         training_mode=args.training_mode,
         lora_target=args.lora_target,
         lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
         quantize=args.quantize,
         weight_type=args.weight_type,
         task_type=args.task_type,

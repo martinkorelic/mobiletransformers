@@ -174,8 +174,8 @@ ARTIFACT_BUILDER:
   
   inference_config:
     # Currently only native works for the application
-    
-    modelName: tinyllama # Model name
+    # Name of local model repository (custom)
+    repoName: tinyllama
     onnxName: quant_model
     type: "native" # "native", "genai"
     maxSequenceLength: 128
@@ -205,21 +205,30 @@ ARTIFACT_BUILDER:
       executionProvider: cpu # xnnpack, nnapi, cpu 
   
   train_config:
-    modelName: tinyllama # Model name
+    # Name of local model repository (custom)
+    repoName: tinyllama 
     onnxName: quant_model
-    trainFile: logiqa_train
+    
     taskName: logiqa
     batchSize: 1
     numTrainEpochs: 1
     maxSteps: 20
     saveSteps: 50
     gradAccumSteps: 2
-    removeLongSample: true
-    maxSequenceLength: 512
-    maxDatasetLength: 256
-    datasetBatchSize: 64
+    
     mergedWeightsAtEnd: true
     saveModelAtEnd: true
+
+    datasetOptions:
+      trainFile: logiqa_train
+      datasetBatchSize: 64
+      maxSequenceLength: 512
+      maxDatasetLength: 256
+      removeLongSample: true
+      datasetSplit: false
+      datasetShuffle: false
+      testRatio: 0.1
+
     schedulerType: linear # "linear", "cosine"
     schedulerOptions:
       # Cosine options
@@ -245,7 +254,7 @@ ARTIFACT_BUILDER:
       executionProvider: cpu # xnnpack, nnapi, cpu
 
   rag_config:
-    modelName: tinyllama # Model name
+    repoName: tinyllama # Model name
     onnxName: embedding_model
     embeddingDimension: 256
     topK: 10
@@ -316,20 +325,24 @@ ARTIFACT_VALIDATOR:
   test_training: true
 
   test_training_config:
-    trainFile: logiqa_train
+    repoName: tinyllama
     taskName: logiqa
     batchSize: 1
     numTrainEpochs: 1
     maxSteps: 2
     saveSteps: 50
     gradAccumSteps: 2
-    removeLongSample: true
-    maxSequenceLength: 512
-    maxDatasetLength: 256
-    datasetBatchSize: 64
-    testRatio: 0.1
-    shuffle: true
-    split: true
+
+    datasetOptions:
+      trainFile: logiqa_train
+      datasetBatchSize: 64
+      maxSequenceLength: 512
+      maxDatasetLength: 256
+      removeLongSample: true
+      datasetSplit: false
+      datasetShuffle: false
+      testRatio: 0.1
+
     schedulerType: cosine # "linear", "cosine"
     schedulerOptions:
       # Cosine options

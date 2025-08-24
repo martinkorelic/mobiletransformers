@@ -31,14 +31,22 @@ class AblationLayer(BaseTunerLayer):
     def update_layer(self, original_weights, adapter_name, ablation_config : AblationConfig, ablation_variant : AblationVariant):
 
         self.ablation_variant = ablation_variant
-        self.alpha = ablation_config.alpha // ablation_config.r
+        self.alpha = ablation_config.alpha / ablation_config.r
+
+        init_weight = getattr(ablation_config, 'init_weight', 'kaiming')
 
         # Initialize A matrix
         self.down_project[adapter_name] = nn.Parameter(
             torch.empty(original_weights.in_features, ablation_config.r), 
             requires_grad=True
         )
-        torch.nn.init.kaiming_uniform_(self.down_project[adapter_name], a=math.sqrt(5))
+        
+        if init_weight == "kaiming":
+            torch.nn.init.kaiming_uniform_(self.down_project[adapter_name], a=math.sqrt(5))
+        elif init_weight == "gaussian":
+            torch.nn.init.normal_(self.down_project[adapter_name], mean=0.0, std=1.0/ablation_config.r)
+        else:
+            raise ValueError(f"Unknown init_weight: {init_weight}. Use 'kaiming' or 'gaussian'")
         
         # Initialize B matrix (up_project) with zeros - this will be trained
         self.up_project[adapter_name] = nn.Parameter(
@@ -52,7 +60,12 @@ class AblationLayer(BaseTunerLayer):
         elif self.ablation_variant == AblationVariant.VARIANT_A:
             self.adapter_layer_names = ("down_project", "intermediate", "up_project")
             self.intermediate[adapter_name] = nn.Parameter(torch.empty(ablation_config.r, ablation_config.r), requires_grad=True)
-            torch.nn.init.kaiming_uniform_(self.intermediate[adapter_name], a=math.sqrt(5))
+            if init_weight == "kaiming":
+                torch.nn.init.kaiming_uniform_(self.intermediate[adapter_name], a=math.sqrt(5))
+            elif init_weight == "gaussian":
+                torch.nn.init.normal_(self.intermediate[adapter_name], mean=0.0, std=1.0/ablation_config.r)
+            else:
+                raise ValueError(f"Unknown init_weight: {init_weight}. Use 'kaiming' or 'gaussian'")
 
         elif self.ablation_variant == AblationVariant.VARIANT_B:
             self.adapter_layer_names = ("input_vector", "up_project")
@@ -61,29 +74,48 @@ class AblationLayer(BaseTunerLayer):
                 torch.randn(original_weights.in_features), 
                 requires_grad=True
             )
+            if init_weight == "kaiming":
+                torch.nn.init.kaiming_uniform_(self.input_vector[adapter_name], a=math.sqrt(5))
+            elif init_weight == "gaussian":
+                torch.nn.init.normal_(self.input_vector[adapter_name], mean=0.0, std=1.0/ablation_config.r)
+            else:
+                raise ValueError(f"Unknown init_weight: {init_weight}. Use 'kaiming' or 'gaussian'")
+
             self.down_project[adapter_name].requires_grad = False
         elif self.ablation_variant == AblationVariant.VARIANT_C:
             self.adapter_layer_names = ("intermediate", "up_project")
             self.intermediate[adapter_name] = nn.Parameter(torch.empty(ablation_config.r, ablation_config.r), requires_grad=True)
-            torch.nn.init.kaiming_uniform_(self.intermediate[adapter_name], a=math.sqrt(5))
+            if init_weight == "kaiming":
+                torch.nn.init.kaiming_uniform_(self.intermediate[adapter_name], a=math.sqrt(5))
+            elif init_weight == "gaussian":
+                torch.nn.init.normal_(self.intermediate[adapter_name], mean=0.0, std=1.0/ablation_config.r)
+            else:
+                raise ValueError(f"Unknown init_weight: {init_weight}. Use 'kaiming' or 'gaussian'")
             self.down_project[adapter_name].requires_grad = False
         
         elif self.ablation_variant == AblationVariant.VARIANT_D:
             self.adapter_layer_names = ("intermediate", "up_project")
             self.intermediate[adapter_name] = nn.Parameter(torch.empty(ablation_config.r, ablation_config.r), requires_grad=True)
-            torch.nn.init.kaiming_uniform_(self.intermediate[adapter_name], a=math.sqrt(5))
+            if init_weight == "kaiming":
+                torch.nn.init.kaiming_uniform_(self.intermediate[adapter_name], a=math.sqrt(5))
+            elif init_weight == "gaussian":
+                torch.nn.init.normal_(self.intermediate[adapter_name], mean=0.0, std=1.0/ablation_config.r)
+            else:
+                raise ValueError(f"Unknown init_weight: {init_weight}. Use 'kaiming' or 'gaussian'")
             self.down_project[adapter_name].requires_grad = False
         
         # Variant E and F
         elif self.ablation_variant == AblationVariant.VARIANT_E or self.ablation_variant == AblationVariant.VARIANT_F:
             self.adapter_layer_names = ("down_project", "up_project")
         elif self.ablation_variant == AblationVariant.VARIANT_G:
+            self.adapter_layer_names = ("down_project", "up_project")
             # Int8 quantized backbone (original weights)
             self.base_layer = ManualQuantizedLinear(
                 original_weights, 
                 bits=8
             )
         elif self.ablation_variant == AblationVariant.VARIANT_H:
+            self.adapter_layer_names = ("down_project", "up_project")
             # Int4 quantized backbone (original weights)
             self.base_layer = ManualQuantizedLinear(
                 original_weights,
@@ -398,7 +430,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'down_project_{active_adapter}', 
+                            f'down_project', 
                             x, adapter_output, 
                             self.down_project[active_adapter], 
                             active_adapter
@@ -408,7 +440,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'up_project_{active_adapter}', 
+                            f'up_project', 
                             adapter_output, adapter_output_final, 
                             self.up_project[active_adapter], 
                             active_adapter
@@ -422,7 +454,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'down_project_{active_adapter}', 
+                            f'down_project', 
                             x, adapter_output, 
                             self.down_project[active_adapter], 
                             active_adapter
@@ -432,7 +464,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'intermediate_{active_adapter}', 
+                            f'intermediate', 
                             adapter_output, intermediate_output, 
                             self.intermediate[active_adapter], 
                             active_adapter
@@ -442,7 +474,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'up_project_{active_adapter}', 
+                            f'up_project', 
                             intermediate_output, adapter_output_final, 
                             self.up_project[active_adapter], 
                             active_adapter
@@ -456,7 +488,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'input_vector_{active_adapter}', 
+                            f'input_vector', 
                             x, x_modified, 
                             self.input_vector[active_adapter], 
                             active_adapter
@@ -466,7 +498,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'down_project_{active_adapter}', 
+                            f'down_project', 
                             x_modified, adapter_output, 
                             self.down_project[active_adapter], 
                             active_adapter
@@ -476,7 +508,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'up_project_{active_adapter}', 
+                            f'up_project', 
                             adapter_output, adapter_output_final, 
                             self.up_project[active_adapter], 
                             active_adapter
@@ -490,7 +522,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'down_project_{active_adapter}', 
+                            f'down_project', 
                             x, adapter_output, 
                             self.down_project[active_adapter], 
                             active_adapter
@@ -500,7 +532,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'intermediate_{active_adapter}', 
+                            f'intermediate', 
                             adapter_output, intermediate_output, 
                             self.intermediate[active_adapter], 
                             active_adapter
@@ -510,7 +542,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'up_project_{active_adapter}', 
+                            f'up_project', 
                             intermediate_output, adapter_output_final, 
                             self.up_project[active_adapter], 
                             active_adapter
@@ -524,7 +556,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'down_project_{active_adapter}', 
+                            f'down_project', 
                             x, adapter_output, 
                             self.down_project[active_adapter], 
                             active_adapter
@@ -534,7 +566,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'intermediate_{active_adapter}', 
+                            f'intermediate', 
                             adapter_output, intermediate_output, 
                             self.intermediate[active_adapter], 
                             active_adapter
@@ -544,7 +576,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'up_project_{active_adapter}', 
+                            f'up_project', 
                             intermediate_output, adapter_output_final, 
                             self.up_project[active_adapter], 
                             active_adapter
@@ -558,7 +590,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'down_project_{active_adapter}', 
+                            f'down_project', 
                             x, adapter_output, 
                             self.down_project[active_adapter], 
                             active_adapter
@@ -568,7 +600,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'up_project_{active_adapter}', 
+                            f'up_project', 
                             adapter_output, adapter_output_final, 
                             self.up_project[active_adapter], 
                             active_adapter
@@ -582,7 +614,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'down_project_{active_adapter}', 
+                            f'down_project', 
                             x, adapter_output, 
                             self.down_project[active_adapter], 
                             active_adapter
@@ -592,7 +624,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'up_project_{active_adapter}', 
+                            f'up_project', 
                             adapter_output, adapter_output_final, 
                             self.up_project[active_adapter], 
                             active_adapter
@@ -606,7 +638,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'down_project_{active_adapter}', 
+                            f'down_project', 
                             x, adapter_output, 
                             self.down_project[active_adapter], 
                             active_adapter
@@ -616,7 +648,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'up_project_{active_adapter}', 
+                            f'up_project', 
                             adapter_output, adapter_output_final, 
                             self.up_project[active_adapter], 
                             active_adapter
@@ -630,7 +662,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'down_project_{active_adapter}', 
+                            f'down_project', 
                             x, adapter_output, 
                             self.down_project[active_adapter], 
                             active_adapter
@@ -640,7 +672,7 @@ class Linear(nn.Module, AblationLayer):
                     
                     if self.metric_tracking:
                         self._track_layer_metrics_calibration(
-                            f'up_project_{active_adapter}', 
+                            f'up_project', 
                             adapter_output, adapter_output_final, 
                             self.up_project[active_adapter], 
                             active_adapter
