@@ -1,7 +1,44 @@
+import os
 import numpy as np
 from collections import defaultdict
 
 from peft_models.ablation.layer import Linear
+from safetensors.torch import load_file
+from safetensors import safe_open
+
+def inspect_adapter_model(filepath="adapter_model.safetensors"):
+    """
+    Load a safetensors file and print out layer names and dimensions.
+    
+    Args:
+        filepath (str): Path to the safetensors file
+    """
+    try:
+        with safe_open(filepath, framework="pt", device="cpu") as f:
+            print(f"Inspecting: {filepath}")
+            print("-" * 50)
+            
+            # Get all tensor names
+            tensor_names = f.keys()
+            
+            for name in tensor_names:
+                tensor = f.get_tensor(name)
+                print(f"{name}: {tuple(tensor.shape)}")
+                
+    except Exception as e:
+        print(f"Error loading {filepath}: {e}")
+
+def load_mars_adapters(model, adapter_path):
+    if not os.path.exists(adapter_path):
+        raise FileNotFoundError(f"Adapter file not found: {adapter_path}")
+    
+    # Load adapter weights
+    adapter_state_dict = load_file(adapter_path)
+
+    # Load adapters into model (allow missing keys to avoid errors)
+    model.base_model.model.load_state_dict(adapter_state_dict, strict=False)
+
+    return model
 
 def get_ablation_linear_layers(model):
     ablation_linear_layers = []

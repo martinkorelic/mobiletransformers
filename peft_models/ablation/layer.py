@@ -74,8 +74,9 @@ class AblationLayer(BaseTunerLayer):
                 torch.randn(original_weights.in_features), 
                 requires_grad=True
             )
+            # Cannot compute kaiming for a single vector
             if init_weight == "kaiming":
-                torch.nn.init.kaiming_uniform_(self.input_vector[adapter_name], a=math.sqrt(5))
+                torch.nn.init.normal_(self.input_vector[adapter_name], mean=0.0, std=1.0/ablation_config.r)
             elif init_weight == "gaussian":
                 torch.nn.init.normal_(self.input_vector[adapter_name], mean=0.0, std=1.0/ablation_config.r)
             else:
@@ -702,4 +703,4 @@ class Linear(nn.Module, AblationLayer):
 
     def __repr__(self) -> str:
         rep = super().__repr__()
-        return "mars." + rep
+        return "abl." + rep

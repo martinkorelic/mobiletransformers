@@ -20,6 +20,8 @@ from transformers import (
     TrainingArguments, Trainer, PreTrainedTokenizer
 )
 from peft import LoraConfig, get_peft_model
+from peft.tuners.vblora import VBLoRAConfig
+from peft.tuners.loha import LoHaConfig
 from evaluation.eval_adapter_models import CustomPeftModel
 from peft_models.ablation.config import AblationConfig
 from peft_models.ablation.model import AblationModel
@@ -31,7 +33,8 @@ from tools.utils import preload_dataset
 
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
-from config import HF_TOKEN
+from config import TASK_EPOCHS, BATCH_SIZE, PER_DEVICE_BATCH_SIZE, GRADIENT_ACCUMULATION, EXPERIMENT_RANKS
+from peft_models.lora_xs.initialization_utils import find_and_initialize
 
 def add_peft_type(name, value):
     """Dynamically add a new value to the PeftType enum."""
@@ -55,7 +58,6 @@ from trainer.utils import (
 
 from deepeval.benchmarks import BoolQ, ARC, LogiQA, Winogrande, HellaSwag
 from deepeval.benchmarks.modes import ARCMode
-from deepeval.benchmarks.logi_qa.task import LogiQATask
 
 class SLModel(Enum):
     TINYLLAMA = "TinyLlama/TinyLlama_v1.1",
@@ -75,7 +77,6 @@ class PEFTBenchmarkDataset(Enum):
     ### Complex tasks
     HELLASWAG = "hellaswag"
     ARC_C = "arc_c"
-    LAMBADA = "lambada"
 
     ### Mobile tasks
     MINI_PERSONALQA = "mini_personalqa"
@@ -92,7 +93,6 @@ DATASET_MAPPING = {
     ### Complex tasks
     PEFTBenchmarkDataset.HELLASWAG.value : ("Rowan/hellaswag", "hellaswag_train_deepeval"),
     PEFTBenchmarkDataset.ARC_C.value : ("allenai/ai2_arc", "arc_train_deepeval", "ARC-Challenge"),
-    PEFTBenchmarkDataset.LAMBADA.value : ("", ""),
 
     ### Mobile tasks
     PEFTBenchmarkDataset.MINI_PERSONALQA.value : ("data/MiniPersonalQA_train", "TODO"),
@@ -104,7 +104,9 @@ class PEFTMethod(Enum):
     """Enum for supported PEFT methods."""
     LORA = "lora"
     MARS = "mars"
-    LORA_XS = "lora-xs"
+    LORA_XS = "lora_xs"
+    LOHA = "loha"
+    VB_LORA = "vb_lora"
 
     # Ablation variants
     ABLATION_0 = "abl_0"
@@ -196,10 +198,27 @@ class PEFTEval:
                 confinement_instructions=" "
             )
             self.peft_llm.set_generation_config(
-                max_new_tokens=2
+                max_new_tokens=1
             )
-        # TODO: More benchmarks
-    
+        elif self.benchmark_name == PEFTBenchmarkDataset.ARC_C:
+            self.benchmark = ARC(
+                n_shots=self.n_shots,
+                mode=ARCMode.CHALLENGE,
+                confinement_instructions=" "
+            )
+            self.peft_llm.set_generation_config(
+                max_new_tokens=1
+            )
+        elif self.benchmark_name == PEFTBenchmarkDataset.HELLASWAG:
+            self.benchmark = HellaSwag(
+                n_shots=self.n_shots,
+                confinement_instructions=" "
+            )
+
+            self.peft_llm.set_generation_config(
+                max_new_tokens=1
+            )
+
     def eval(self):
         results = self.benchmark.evaluate(model=self.peft_llm)
 
@@ -228,6 +247,7 @@ class PEFTTrainer:
         dataset_test_ratio : bool = 0.1,
         batch_size: int = 32,
         per_device_batch_size: int = 6,
+        gradient_accumulation_steps : int = None,
         learning_rate: float = 3e-4,
         num_epochs: int = 1,
         max_steps: int = -1,
@@ -278,6 +298,11 @@ class PEFTTrainer:
         self.dataset_shuffle = dataset_shuffle
         self.dataset_test_ratio = dataset_test_ratio
         self.max_steps = max_steps
+
+        if gradient_accumulation_steps:
+            self.gradient_accumulation_steps = gradient_accumulation_steps
+        else:
+            self.gradient_accumulation_steps = self.batch_size // self.per_device_batch_size
         
         # Validate and set dataset configuration
         self._setup_dataset(dataset)
@@ -439,6 +464,50 @@ class PEFTTrainer:
                 alpha=self.lora_alpha,
                 **self.extra_peft_config
             )
+        elif self.peft_method == "lora_xs":
+            lora_config = LoraConfig(
+                r=self.lora_rank,
+                lora_alpha=self.lora_alpha,
+                target_modules=self.lora_targets,
+                lora_dropout=self.lora_dropout,
+                bias=self.bias,
+                task_type="CAUSAL_LM",
+                **self.extra_peft_config
+            )
+            peft_config_dict = {}
+            reconstruct_dict = {
+                'reconstruction_type': "svd",
+                'reconstr_mode': "separated",
+                'half_init_dec': False,
+                'replacement_module_random_init': False,
+                'r_squared': True,
+                'svd': {
+                    'rank': self.lora_rank,
+                    'n_iter': 10,
+                    'random_state': self.seed
+                }
+            }
+            peft_config_dict[self.peft_method] = lora_config
+            self.model = get_peft_model(self.base_model, lora_config)
+            find_and_initialize(self.model, peft_config_dict, self.peft_method, "svd", reconstruct_dict, None)
+
+            for param in self.model.parameters():
+                param.data = param.data.contiguous()
+        elif self.peft_method == "loha":
+            loha_config = LoHaConfig(
+                r=self.lora_rank,
+                alpha=self.lora_alpha,
+                target_modules=self.lora_targets,
+                task_type="CAUSAL_LM"
+            )
+            self.model = get_peft_model(self.base_model, loha_config)
+        elif self.peft_method == "vb_lora":
+            vb_lora_config = VBLoRAConfig(
+                r=self.lora_rank,
+                target_modules=self.lora_targets,
+                task_type="CAUSAL_LM"
+            )
+            self.model = get_peft_model(self.base_model, vb_lora_config)
 
         else:
             raise ValueError(f"Unsupported PEFT method: {self.peft_method}")
@@ -471,7 +540,7 @@ class PEFTTrainer:
                 "max_dataset_length": self.max_dataset_length,
                 "batch_size": self.batch_size,
                 "per_device_batch_size": self.per_device_batch_size,
-                "gradient_accumulation_steps": self.batch_size // self.per_device_batch_size,
+                "gradient_accumulation_steps": self.gradient_accumulation_steps,
                 "learning_rate": self.learning_rate,
                 "num_epochs": self.num_epochs,
                 "warmup_ratio": self.warmup_ratio
@@ -531,7 +600,7 @@ class PEFTTrainer:
             lr_scheduler_type="cosine",
             per_device_train_batch_size=self.per_device_batch_size,
             per_device_eval_batch_size=self.per_device_batch_size,
-            gradient_accumulation_steps=self.batch_size // self.per_device_batch_size,
+            gradient_accumulation_steps=self.gradient_accumulation_steps,
             learning_rate=self.learning_rate
         )
         
@@ -572,6 +641,7 @@ class PEFTTrainer:
         elif self.peft_method.startswith("abl"):
             self.model.base_model.save_pretrained(self.output_dir)
             print(f"Ablation adapters saved to: {self.output_dir}")
+        #elif self.peft_method == "vb_lora":
         else:
             # Default PEFT saving
             self.model.save_pretrained(self.output_dir)
@@ -657,29 +727,26 @@ def prepare_dataset(dataset: Dataset, preprocess_id, tokenizer, max_dataset_leng
 ###################### EXPERIMENT SCRIPTS ######################
 ################################################################
 
-def lora_base_easy_experiment():
-    """
-    Baseline LoRA experiment script function.
-    
-    Trains and evaluates baseline LoRA on BoolQ, LogiQA, ARC_E and Winogrande benchmark.
-    """
+def custom_task_experiments(tasks, peft_method = "lora", adapter_name = "lora"):
 
-    tasks = ["boolq", "logiqa", "arc_e", "winogrande"]
-    ranks = [2, 8, 32]
-    epochs = [2, 2, 4, 4]
-    adapter_name = "lora"
-
-    for rank in ranks:
-        for task, epoch in zip(tasks, epochs):
+    for task, experiment_config in tasks.items():
+        for rank in experiment_config["ranks"]:
+            task_epochs = TASK_EPOCHS[task]
+            extra_peft_config = experiment_config.get("extra_peft_config", {})
+            output_dir_res = experiment_config.get("output_dir", "./experiment_results")
 
             try:
                 trainer = PEFTTrainer(
                     model_id="TinyLlama/TinyLlama_v1.1",
                     dataset=task,
-                    peft_method="lora",
+                    peft_method=peft_method,
                     lora_rank=rank,
-                    batch_size=32,
-                    num_epochs=epoch
+                    batch_size=BATCH_SIZE,
+                    per_device_batch_size=PER_DEVICE_BATCH_SIZE,
+                    gradient_accumulation_steps=GRADIENT_ACCUMULATION,
+                    num_epochs=task_epochs,
+                    output_dir=output_dir_res,
+                    extra_peft_config=extra_peft_config
                 )
 
                 trainer.train()
@@ -697,54 +764,48 @@ def lora_base_easy_experiment():
             except Exception as e:
                 print("Error occured:", e)
 
-def ablation_base_easy_experiment():
+
+def task_all_experiments(peft_method = "lora", adapter_name = "lora", output_dir_res="./experiment_results", extra_peft_config = {}):
     """
-    Ablation study experiment script function.
+    Baseline task experiment script function.
     
-    Trains and evaluates all ablation designs on BoolQ, LogiQA, ARC_E and Winogrande benchmark.
+    Trains and evaluates adapter methods on BoolQ, LogiQA, ARC_E, Winogrande, ARC_C and HellaSwag benchmark.
     """
 
-    adapter_name = "ablation"
-
-    variants = ["abl_A", "abl_B", "abl_C", "abl_D", "abl_G", "abl_H"]
-    tasks = ["boolq", "logiqa", "arc_e", "winogrande"]
-    epochs = [2, 2, 4, 4]
+    tasks = ["boolq", "logiqa", "arc_e", "winogrande", "arc_c", "hellaswag"]
     ranks = [2, 8, 32]
 
-    for v in variants:
-        for rank in ranks:
-            for task, epoch in zip(tasks, epochs):
+    for rank in ranks:
+        for task in tasks:
 
-                if v == "abl_A":
-                    if task != "logiqa" and (rank == 8 or rank == 2):
-                        continue
-                    if task == "logiqa" and rank == 32:
-                        continue
+            try:
+                trainer = PEFTTrainer(
+                    model_id="TinyLlama/TinyLlama_v1.1",
+                    dataset=task,
+                    peft_method=peft_method,
+                    lora_rank=rank,
+                    batch_size=BATCH_SIZE,
+                    per_device_batch_size=PER_DEVICE_BATCH_SIZE,
+                    gradient_accumulation_steps=GRADIENT_ACCUMULATION,
+                    num_epochs=TASK_EPOCHS[task],
+                    output_dir=output_dir_res,
+                    extra_peft_config=extra_peft_config
+                )
 
-                try:
-                    trainer = PEFTTrainer(
-                        model_id="TinyLlama/TinyLlama_v1.1",
-                        dataset=task,
-                        peft_method=v,
-                        lora_rank=rank,
-                        batch_size=32,
-                        num_epochs=epoch
-                    )
-                    
-                    trainer.train()
-                    output_dir = trainer.output_dir
-                    dataset_config = trainer.dataset_config
+                trainer.train()
+                output_dir = trainer.output_dir
+                dataset_config = trainer.dataset_config
 
-                    del trainer
-                    gc.collect()
+                del trainer
+                gc.collect()
 
-                    evaluator = PEFTEval(output_dir, dataset_config, adapter_name=adapter_name)
-                    evaluator.eval()
+                evaluator = PEFTEval(output_dir, dataset_config, adapter_name=adapter_name)
+                evaluator.eval()
 
-                    del evaluator
-                    gc.collect()
-                except Exception as e:
-                    print("Error occured:", e)
+                del evaluator
+                gc.collect()
+            except Exception as e:
+                print("Error occured:", e)
 
 def ablation_training_experiment():
     """
@@ -781,9 +842,33 @@ def ablation_training_experiment():
                 print("Error occured:", e)
 
 if __name__ == "__main__":
+
+    def run_task_1():
+        n_bits = [4, 8]
+
+        for n_bit in n_bits:
+            task_all_experiments("mars", "mars",
+                                    output_dir_res=f"./experiment_results/TinyLlama_v1.1-mars-opt3-q{n_bit}",
+                                    extra_peft_config={"optimization_level": 3, "quant_n_bits": n_bit})
     
-    ablation_training_experiment()
+    #################################
 
-    #lora_base_easy_experiment()
+    def run_task_2():
+        n_bits = [4, 8]
 
-    #ablation_base_easy_experiment()
+        for n_bit in n_bits:
+            task_all_experiments("mars", "mars",
+                                    output_dir_res=f"./experiment_results/TinyLlama_v1.1-mars-opt4-q{n_bit}",
+                                    extra_peft_config={"optimization_level": 4, "quant_n_bits": n_bit})
+
+    
+    #################################
+
+    def run_task_3():
+    
+        methods = ["lora_xs", "vb_lora", "loha"]
+
+        for m in methods:
+            task_all_experiments(m, "lora", output_dir_res=f"./experiment_results/TinyLlama_v1.1-{m}")
+    
+    run_task_3()

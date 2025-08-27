@@ -5,80 +5,126 @@ import torch.nn as nn
 from research.experiments import create_orthogonal_matrices
 
 class QuantizedBaseLayer(nn.Module):
-    """
-    Manual dynamic quantization for frozen backbone layers.
-    Stores weights as uint8 and dequantizes during forward pass.
-    Activations remain in full precision.
-    """
-    
-    def __init__(self, base_layer):
+    def __init__(self, original_linear, bits=8, symmetric=True, per_channel=True):
         super().__init__()
+        self.in_features = original_linear.in_features
+        self.out_features = original_linear.out_features
+        self.bits = bits
+        self.symmetric = symmetric
+        self.per_channel = per_channel
         
-        if not isinstance(base_layer, nn.Linear):
-            raise ValueError("Currently only supports nn.Linear layers")
+        self._quantize_weights(original_linear.weight.data)
         
-        self.in_features = base_layer.in_features
-        self.out_features = base_layer.out_features
-        
-        # Quantize and store weights as uint8
-        weight_quantized, weight_scale, weight_zero_point = self._quantize_tensor(
-            base_layer.weight.data
-        )
-        
-        # Register as buffers (no gradients needed)
-        self.register_buffer('weight_quantized', weight_quantized)
-        self.register_buffer('weight_scale', weight_scale)
-        self.register_buffer('weight_zero_point', weight_zero_point)
-        
-        # Handle bias (keep in full precision since it's small)
-        if base_layer.bias is not None:
-            self.register_buffer('bias', base_layer.bias.data.clone())
+        if original_linear.bias is not None:
+            self.register_buffer('bias', original_linear.bias.data)
         else:
-            self.register_buffer('bias', None)
+            self.bias = None
     
-    def _quantize_tensor(self, tensor):
-        """
-        Quantize tensor to uint8 with per-tensor quantization
-        Returns: quantized_tensor (uint8), scale (float), zero_point (uint8)
-        """
-        # Find min and max values
-        tensor_min = tensor.min().item()
-        tensor_max = tensor.max().item()
-        
-        # Calculate scale and zero_point for uint8 (0-255)
-        qmin, qmax = 0, 255
-        
-        # Handle edge case where min == max
-        if tensor_min == tensor_max:
-            scale = 1.0
-            zero_point = 0
+    def _quantize_weights(self, weight):
+        """Quantize weights with scale and zero point"""
+        if self.bits == 8:
+            if self.symmetric:
+                qmin, qmax = -127, 127  # Reserve -128 for symmetric
+            else:
+                qmin, qmax = -128, 127
+            dtype = torch.int8
+        elif self.bits == 4:
+            if self.symmetric:
+                qmin, qmax = -7, 7  # Reserve -8 for symmetric
+            else:
+                qmin, qmax = -8, 7
+            dtype = torch.int8  # Store in int8, but only use 4 bits
         else:
-            scale = (tensor_max - tensor_min) / (qmax - qmin)
-            zero_point = qmin - tensor_min / scale
-            zero_point = max(qmin, min(qmax, int(round(zero_point))))
+            raise ValueError("Only 4 and 8 bits supported")
         
-        # Quantize: (float_val / scale) + zero_point
-        quantized = torch.round(tensor / scale + zero_point)
-        quantized = torch.clamp(quantized, qmin, qmax).to(torch.uint8)
+        if self.per_channel:
+            # Per-channel quantization (per output channel)
+            axis = 0  # Quantize along output dimension
+            weight_reshaped = weight.view(weight.shape[0], -1)
+            
+            if self.symmetric:
+                # Symmetric quantization: zero_point = 0
+                max_vals = weight_reshaped.abs().max(dim=1, keepdim=True)[0]
+                scales = max_vals / qmax
+                scales = torch.clamp(scales, min=1e-8)
+                zero_points = torch.zeros_like(scales, dtype=torch.int32)
+            else:
+                # Asymmetric quantization: calculate optimal zero_point
+                min_vals = weight_reshaped.min(dim=1, keepdim=True)[0]
+                max_vals = weight_reshaped.max(dim=1, keepdim=True)[0]
+                
+                scales = (max_vals - min_vals) / (qmax - qmin)
+                scales = torch.clamp(scales, min=1e-8)
+                
+                zero_points = qmin - torch.round(min_vals / scales)
+                zero_points = torch.clamp(zero_points, qmin, qmax)
+            
+            # Broadcast scales and zero_points back to weight shape
+            scales = scales.view(-1, 1).expand_as(weight)
+            zero_points = zero_points.view(-1, 1).expand_as(weight)
+        else:
+            # Per-tensor quantization
+            if self.symmetric:
+                max_val = weight.abs().max()
+                scales = max_val / qmax
+                scales = torch.clamp(scales, min=1e-8)
+                zero_points = torch.zeros_like(scales, dtype=torch.int32)
+            else:
+                min_val = weight.min()
+                max_val = weight.max()
+                
+                scales = (max_val - min_val) / (qmax - qmin)
+                scales = torch.clamp(scales, min=1e-8)
+                
+                zero_points = qmin - torch.round(min_val / scales)
+                zero_points = torch.clamp(zero_points, qmin, qmax)
         
-        return quantized, torch.tensor(scale), torch.tensor(zero_point, dtype=torch.uint8)
+        # Quantize: q = round(x/scale + zero_point)
+        quantized = torch.round(weight / scales + zero_points)
+        quantized = torch.clamp(quantized, qmin, qmax)
+        
+        # Store quantized weights and parameters
+        self.register_buffer('quantized_weight', quantized.to(dtype))
+        
+        if self.per_channel:
+            # Store per-channel scales and zero_points
+            self.register_buffer('scales', scales[:, 0])  # Take first column since all are same
+            self.register_buffer('zero_points', zero_points[:, 0].to(torch.int32))
+        else:
+            # Store per-tensor scales and zero_points
+            self.register_buffer('scales', scales)
+            self.register_buffer('zero_points', zero_points.to(torch.int32))
     
-    def _dequantize_weights(self):
-        """
-        Dequantize weights back to float32 for computation
-        """
-        # Dequantize: (quantized_val - zero_point) * scale
-        return (self.weight_quantized.float() - self.weight_zero_point.float()) * self.weight_scale
+    def dequantize_weights(self):
+        """Dequantize weights: x = scale * (q - zero_point)"""
+        if self.per_channel:
+            # Expand scales and zero_points for broadcasting
+            scales = self.scales.view(-1, 1).expand_as(self.quantized_weight)
+            zero_points = self.zero_points.view(-1, 1).expand_as(self.quantized_weight)
+        else:
+            scales = self.scales
+            zero_points = self.zero_points
+        
+        # Dequantize: x = scale * (q - zero_point)
+        dequantized = scales * (self.quantized_weight.float() - zero_points.float())
+        return dequantized
     
     def forward(self, x):
-        """
-        Forward pass: dequantize weights on-the-fly and compute linear transformation
-        """
-        # Dequantize weights
-        weight_fp32 = self._dequantize_weights()
-        
-        # Standard linear operation with dequantized weights
-        return torch.nn.functional.linear(x, weight_fp32, self.bias)
+        # Dequantize weights during forward pass
+        dequantized_weight = self.dequantize_weights()
+        return torch.nn.functional.linear(x, dequantized_weight, self.bias)
+    
+    def get_quantization_info(self):
+        """Return quantization parameters for inspection"""
+        return {
+            'scales': self.scales,
+            'zero_points': self.zero_points,
+            'bits': self.bits,
+            'symmetric': self.symmetric,
+            'per_channel': self.per_channel,
+            'quantized_weight_shape': self.quantized_weight.shape,
+            'quantized_weight_dtype': self.quantized_weight.dtype
+        }
 
 class MarsLayer(BaseTunerLayer):
     adapter_layer_names = ("up_project",)
@@ -92,11 +138,13 @@ class MarsLayer(BaseTunerLayer):
         self.preserve_errors = kwargs.get("preserve_errors", False)
         self.trainable_down = kwargs.get("trainable_down", True)
         self.onnx_export = kwargs.get("onnx_export", False)
+        n_bits = kwargs.get("quant_n_bits", 8)
         
         # Apply dynamic quantization to base layer if requested
         if self.quantize_base and isinstance(base_layer, nn.Linear):
             self.base_layer = QuantizedBaseLayer(
-                base_layer
+                base_layer,
+                n_bits
             )
         else:
             self.base_layer = base_layer
@@ -222,7 +270,7 @@ class MarsLayer(BaseTunerLayer):
         # Check if it's our custom QuantizedBaseLayer
         if isinstance(self.base_layer, QuantizedBaseLayer):
             # Use the built-in dequantization method
-            return self.base_layer._dequantize_weights()
+            return self.base_layer.dequantize_weights()
         
         # For PyTorch's dynamically quantized layers
         elif hasattr(self.base_layer, '_packed_params'):

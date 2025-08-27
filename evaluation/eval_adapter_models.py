@@ -5,7 +5,7 @@ from peft_models.ablation.model import AblationModel
 from peft_models.mars.config import MarsConfig
 from peft_models.mars.model import MarsModel
 
-from peft import PeftModel, LoraConfig, PeftConfig, get_peft_model
+from peft import PeftModel, PeftConfig, get_peft_model
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
 
@@ -30,7 +30,7 @@ from safetensors.torch import load_file
 class CustomPeftModel(DeepEvalBaseLLM):
     def __init__(self, adapter_path, model_name="PEFT model", adapter_name="lora", base_model=None, device="cuda"):
         """
-        Custom LLM class that loads a base LLaMA 3 8B model and applies a PEFT adapter if available.
+        Custom LLM class that loads a base model and applies a PEFT adapter if available.
         
         Parameters:
             base_model_path (str): Path to the base model (Hugging Face model ID or local directory).
@@ -129,9 +129,8 @@ class CustomPeftModel(DeepEvalBaseLLM):
 
             print("Loaded generation config from base model.")
 
-            # TODO: Custom generation config
+            # Custom generation config
             self.generation_config.early_stopping = True
-            #self.generation_config.max_length = 256
             
             self.generation_config.max_new_tokens = 3
 
@@ -143,10 +142,9 @@ class CustomPeftModel(DeepEvalBaseLLM):
         self.model.to(device)
         self.device = device
     
-    def set_generation_config(self, early_stopping=True, max_new_tokens=20, max_length=256):
+    def set_generation_config(self, early_stopping=True, max_new_tokens=20):
         self.generation_config.early_stopping = early_stopping
         self.generation_config.max_new_tokens = max_new_tokens
-        self.generation_config.max_length = max_length
 
     def load_model(self):
         return self.model
@@ -155,8 +153,8 @@ class CustomPeftModel(DeepEvalBaseLLM):
         """
         Generates a response from the model using text-generation pipeline.
         """
+        inputs = self.tokenizer(prompt, return_tensors="pt", padding=False, truncation=False).to(self.device)
 
-        inputs = self.tokenizer(prompt.strip(), return_tensors="pt").to(self.device)
         input_length = inputs["input_ids"].shape[1]  # Length of the input prompt
 
         with torch.no_grad():

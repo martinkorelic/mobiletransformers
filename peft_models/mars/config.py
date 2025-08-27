@@ -33,9 +33,10 @@ class MarsConfig(PeftConfig):
         "help": (
             "Optimization level to enable with other configurations:"
             "0 - fully trainable all layers and no quantization"
-            "1 - fully trainable layers with partial quantization (specified in `modules_to_quantize`)"
-            "2 - fully trainable layers with full quantization"
-            "3 - partial trainable layers (frozen and fused down projection layers) with full quantization"
+            "1 - partial trainable layers (frozen and fused down projection layers) with no quantization"
+            "2 - fully trainable layers with partial quantization (specified in `modules_to_quantize`)"
+            "3 - fully trainable layers with full quantization"
+            "4 - partial trainable layers (frozen and fused down projection layers) with full quantization"
             )
         }
     )
@@ -83,6 +84,7 @@ class MarsConfig(PeftConfig):
         default=False,
         metadata={"help": "Whether to enable orthogonal initialization in intermediate matrices."},
     )
+    quant_n_bits: int = field(default=8, metadata={"help": "Quantization type (bits for quantized weights) for MARS. Can be either '8' or '4'."})
     onnx_export: bool = field(
         default=False,
         metadata={"help": "Whether to prepare the model for ONNX export (disable quantization)."},

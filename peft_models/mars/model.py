@@ -21,15 +21,18 @@ class MarsModel(BaseTuner):
         self.trainable_down = True
         self.optimization_level =  peft_config[adapter_name].optimization_level
         self.only_export = peft_config[adapter_name].onnx_export
+        self.quant_n_bits = peft_config[adapter_name].quant_n_bits
 
         # Based on optimization level set configurations
         if  peft_config[adapter_name].optimization_level == 0:
             self.trainable_down = True
         elif  peft_config[adapter_name].optimization_level == 1:
-            self.trainable_down = True
+            self.trainable_down = False
         elif  peft_config[adapter_name].optimization_level == 2:
             self.trainable_down = True
         elif  peft_config[adapter_name].optimization_level == 3:
+            self.trainable_down = True
+        elif  peft_config[adapter_name].optimization_level == 4:
             self.trainable_down = False
 
         super().__init__(model, peft_config, adapter_name, low_cpu_mem_usage)
@@ -141,8 +144,10 @@ class MarsModel(BaseTuner):
                     # Get the appropriate shared output based on the projection type
                     if module.projection_type == 'gate':
                         shared_output = module.shared_mlp._shared_outputs['gate']
+                        del module.shared_mlp._shared_outputs['gate']
                     elif module.projection_type == 'up':
                         shared_output = module.shared_mlp._shared_outputs['up']
+                        del module.shared_mlp._shared_outputs['up']
                     else:
                         return args
                     
@@ -223,6 +228,7 @@ class MarsModel(BaseTuner):
         module_config['quantize_base'] = quantize_base
         module_config['trainable_down'] = self.trainable_down
         module_config['onnx_export'] = self.only_export
+        module_config['quant_n_bits'] = self.quant_n_bits
 
         if isinstance(target, Linear):
             target.update_layer(

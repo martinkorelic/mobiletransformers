@@ -1,6 +1,5 @@
 from dataclasses import dataclass
-import json
-import textwrap, inspect
+import inspect
 from typing import Dict, List
 from deepeval.benchmarks.hellaswag.template import HellaSwagTemplate
 from deepeval.benchmarks.bool_q.template import BoolQTemplate
@@ -10,10 +9,7 @@ from deepeval.benchmarks.winogrande.template import WinograndeTemplate
 import numpy as np
 import torch
 from transformers import PreTrainedTokenizer
-from peft import PeftModel
 from peft.tuners.lora import LoraLayer
-
-from peft_models.mars.layer import MarsLayer
 
 @dataclass
 class DataCollatorForSupervisedDataset:

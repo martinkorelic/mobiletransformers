@@ -14,6 +14,7 @@ from peft_models.mars.model import MarsModel
 
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
+from research.utils import load_mars_adapters
 from tools.utils import preload_dataset
 
 from config import HF_TOKEN
@@ -40,7 +41,7 @@ from trainer.utils import (
 from peft_models.lora_xs.initialization_utils import find_and_initialize
 from .visualization_trainer import PEFTUsageCallback
 from peft_models.mars.test import get_mars_linear_layers, visualize_layer_metrics_with_changes
-from safetensors.torch import load_file
+
 
 class DatasetID(Enum):
     """Enum for different preprocessing strategies."""
@@ -273,20 +274,6 @@ def get_training_args(output_dir, peft_method, scheduler_args = {}, resume_from_
         #    "min_lr": scheduler_args.get("eta_min", 0.0)
         #}
     )
-
-
-
-def load_mars_adapters(model, adapter_path):
-    if not os.path.exists(adapter_path):
-        raise FileNotFoundError(f"Adapter file not found: {adapter_path}")
-    
-    # Load adapter weights
-    adapter_state_dict = load_file(adapter_path)
-
-    # Load adapters into model (allow missing keys to avoid errors)
-    model.base_model.model.load_state_dict(adapter_state_dict, strict=False)
-
-    return model
 
 def load_peft_model(base_model, adapter_dir, peft_method, **peft_config):
 
