@@ -19,7 +19,7 @@ from transformers import (
     AutoModelForCausalLM, AutoTokenizer, AutoConfig, 
     TrainingArguments, Trainer, PreTrainedTokenizer
 )
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from peft.tuners.vblora import VBLoRAConfig
 from peft.tuners.loha import LoHaConfig
 from evaluation.eval_adapter_models import CustomPeftModel
@@ -107,6 +107,7 @@ class PEFTMethod(Enum):
     LORA_XS = "lora_xs"
     LOHA = "loha"
     VB_LORA = "vb_lora"
+    QLORA = "qlora"
 
     # Ablation variants
     ABLATION_0 = "abl_0"
@@ -263,7 +264,7 @@ class PEFTTrainer:
         Args:
             model_id: HuggingFace model identifier
             dataset: Dataset name ('boolq', 'hellaswag', 'arc', 'logiqa') or SupportedDataset enum
-            peft_method: PEFT method ('lora', 'mars', 'lora-xs', etc.) or PEFTMethod enum
+            peft_method: PEFT method ('lora', 'mars', 'lora_xs', etc.) or PEFTMethod enum
             lora_rank: LoRA rank
             lora_alpha: LoRA alpha (defaults to 2*rank)
             lora_dropout: LoRA dropout rate
@@ -379,12 +380,43 @@ class PEFTTrainer:
     def load_model_and_tokenizer(self):
         """Load the base model and tokenizer."""
         print(f"Loading model: {self.model_id}")
+
+        quantization_config = None
+        if self.peft_method == "qlora":
+            try:
+                from transformers import BitsAndBytesConfig
+                
+                quantization_config = BitsAndBytesConfig(
+                    # Load the model with 4-bit quantization
+                    load_in_4bit=True,
+                    # Use double quantization
+                    bnb_4bit_use_double_quant=True,
+                    # Use 4-bit Normal Float for storing the base model weights in GPU memory
+                    bnb_4bit_quant_type="nf4",
+                    # De-quantize the weights to 32-bit float before the forward/backward pass
+                    bnb_4bit_compute_dtype=torch.float32,
+                )
+                print("Using 4-bit quantization for QLoRA")
+                
+            except ImportError as e:
+                print(f"Warning: BitsAndBytesConfig not available for quantization: {e}")
+                print("Loading model without quantization")
+                quantization_config = None
         
-        self.base_model = AutoModelForCausalLM.from_pretrained(
-            self.model_id, 
-            trust_remote_code=True, 
-            token=self.hf_token
-        )
+        if quantization_config is not None:
+            self.base_model = AutoModelForCausalLM.from_pretrained(
+                self.model_id, 
+                trust_remote_code=True, 
+                token=self.hf_token,
+                quantization_config=quantization_config
+            )
+        else:
+            self.base_model = AutoModelForCausalLM.from_pretrained(
+                self.model_id, 
+                trust_remote_code=True, 
+                token=self.hf_token
+            )
+
         
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_id, 
@@ -441,7 +473,18 @@ class PEFTTrainer:
                 **self.extra_peft_config
             )
             self.model = get_peft_model(self.base_model, lora_config)
-            
+        elif self.peft_method == "qlora":
+            qlora_config = LoraConfig(
+                r=self.lora_rank,
+                lora_alpha=self.lora_alpha,
+                target_modules=self.lora_targets,
+                lora_dropout=self.lora_dropout,
+                bias=self.bias,
+                task_type="CAUSAL_LM",
+                **self.extra_peft_config
+            )
+            self.model = prepare_model_for_kbit_training(self.base_model)
+            self.model = get_peft_model(self.model, qlora_config)
         elif self.peft_method == "mars":
             # Mars implementation
             self.model = create_mars_model(
@@ -774,6 +817,10 @@ def task_all_experiments(peft_method = "lora", adapter_name = "lora", output_dir
 
     tasks = ["boolq", "logiqa", "arc_e", "winogrande", "arc_c", "hellaswag"]
     ranks = [2, 8, 32]
+
+    # If lora_xs is used we multiply the rank by 32, because it has small amount of trainable parameters
+    if peft_method == "lora_xs":
+        ranks = [r * 32 for r in ranks]
 
     for rank in ranks:
         for task in tasks:

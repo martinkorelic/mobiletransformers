@@ -9,7 +9,7 @@ from peft import PeftModel, PeftConfig, get_peft_model
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
 
-from research.model_training import load_mars_adapters
+from research.utils import load_mars_adapters
 
 def add_peft_type(name, value):
     """Dynamically add a new value to the PeftType enum."""
@@ -68,7 +68,7 @@ class CustomPeftModel(DeepEvalBaseLLM):
         elif os.path.exists(adapter_config_path):
             config_path = adapter_config_path
             # Define which config we are loading in
-            if adapter_name == "lora":
+            if adapter_name == "lora" or adapter_name == "qlora":
                 config = PeftConfig.from_pretrained(adapter_path)
             elif adapter_name == "mars":
                 mars_config = {}
@@ -87,9 +87,32 @@ class CustomPeftModel(DeepEvalBaseLLM):
         if is_adapter_model:
             # TODO: Which adapter model, maybe merge?
             print(f"Loading PEFT adapters from {adapter_path}...")
-            base_model = AutoModelForCausalLM.from_pretrained(base_model_name)
 
-            if adapter_name == "lora":
+            if adapter_name == "qlora":
+                try:
+                    from transformers import BitsAndBytesConfig
+                    
+                    quantization_config = BitsAndBytesConfig(
+                        # Load the model with 4-bit quantization
+                        load_in_4bit=True,
+                        # Use double quantization
+                        bnb_4bit_use_double_quant=True,
+                        # Use 4-bit Normal Float for storing the base model weights in GPU memory
+                        bnb_4bit_quant_type="nf4",
+                        # De-quantize the weights to 32-bit float before the forward/backward pass
+                        bnb_4bit_compute_dtype=torch.float32,
+                    )
+                    print("Using 4-bit quantization for QLoRA")
+                    
+                except ImportError as e:
+                    print(f"Warning: BitsAndBytesConfig not available for quantization: {e}")
+                    print("Loading model without quantization")
+                    quantization_config = None
+                base_model = AutoModelForCausalLM.from_pretrained(base_model_name, quantization_config=quantization_config)
+            else:
+                base_model = AutoModelForCausalLM.from_pretrained(base_model_name)
+
+            if adapter_name == "lora" or adapter_name == "qlora":
                 self.model = PeftModel.from_pretrained(base_model, adapter_path, config=config)
             elif adapter_name == "mars":
                 
