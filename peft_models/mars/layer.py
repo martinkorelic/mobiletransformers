@@ -5,23 +5,127 @@ import torch.nn as nn
 from research.experiments import create_orthogonal_matrices
 
 class QuantizedBaseLayer(nn.Module):
-    def __init__(self, original_linear, bits=8, symmetric=True, per_channel=True):
+    def __init__(self, original_linear, bits=8, symmetric = True, per_channel=True):
         super().__init__()
         self.in_features = original_linear.in_features
         self.out_features = original_linear.out_features
         self.bits = bits
-        self.symmetric = symmetric
         self.per_channel = per_channel
+        self.symmetric = symmetric
+        self.device = original_linear.weight.device
         
-        self._quantize_weights(original_linear.weight.data)
+        # Check for bitsandbytes availability
+        self._check_bnb_availability()
         
+        # Store bias
         if original_linear.bias is not None:
             self.register_buffer('bias', original_linear.bias.data)
         else:
             self.bias = None
+        
+        # Quantize weights using the appropriate method
+        self._quantize_weights(original_linear.weight.data)
     
-    def _quantize_weights(self, weight):
-        """Quantize weights with scale and zero point"""
+    def _check_bnb_availability(self):
+        """Check if bitsandbytes is available and supports our configuration"""
+        self.use_bnb = False
+        self.bnb_config = None
+        
+        try:
+            import bitsandbytes as bnb
+            from transformers import BitsAndBytesConfig
+            
+            # Check if CUDA is available
+            if not torch.cuda.is_available():
+                print("BitsAndBytes requires CUDA, but CUDA is not available. Using manual implementation.")
+                return
+            
+            # Ensure we're on CUDA device for BitsAndBytes
+            if self.device.type != 'cuda':
+                print(f"BitsAndBytes requires CUDA, moving from {self.device} to CUDA.")
+                self.device = torch.device('cuda:0')  # Move to first CUDA device
+            
+            # Check if configuration is supported by bitsandbytes
+            if self.bits == 4:
+                self.bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.float32,
+                    bnb_4bit_use_double_quant=True,  # Use double quantization for better accuracy
+                    bnb_4bit_quant_type="fp4"
+                )
+                self.use_bnb = True
+                print("Using BitsAndBytes 4-bit quantization")
+                
+            elif self.bits == 8:
+                self.bnb_config = BitsAndBytesConfig(
+                    load_in_8bit=True,
+                    llm_int8_enable_fp32_cpu_offload=False
+                )
+                self.use_bnb = True
+                print("Using BitsAndBytes 8-bit quantization")
+            else:
+                print(f"BitsAndBytes doesn't support {self.bits}-bit quantization. Using manual implementation.")
+                
+        except ImportError:
+            print("BitsAndBytes not found. Using manual quantization implementation.")
+        except Exception as e:
+            print(f"Error setting up BitsAndBytes: {e}. Using manual implementation.")
+    
+    def _quantize_weights_bnb(self, weight):
+        """Quantize weights using BitsAndBytes"""
+        try:
+            import bitsandbytes as bnb
+
+            # Ensure weight is on CUDA device
+            if weight.device.type != 'cuda':
+                print(f"Moving weight from {weight.device} to {self.device}")
+                weight = weight.to(self.device)
+            
+            if self.bits == 4:
+                # Use FP4 for asymmetric quantization
+                self._bnb_layer = bnb.nn.LinearFP4(
+                    self.in_features,
+                    self.out_features,
+                    bias=self.bias is not None,
+                    compute_dtype=torch.float32
+                )
+                
+            elif self.bits == 8:
+                # Use 8-bit quantization
+                self._bnb_layer = bnb.nn.Linear8bitLt(
+                    self.in_features,
+                    self.out_features,
+                    bias=self.bias is not None,
+                    has_fp16_weights=False,
+                    threshold=6.0
+                )
+
+            # Load the original weights into the BnB layer
+            self._bnb_layer.weight.data = weight.clone()
+            if self.bias is not None:
+                self._bnb_layer.bias.data = self.bias.clone()
+
+            # Move to CUDA to trigger quantization
+            self._bnb_layer = self._bnb_layer.to(self.device)
+
+            # Store quantization metadata
+            self.bnb_quantization_info = {
+                'bits': self.bits,
+                'quant_type': ("fp4" if self.bits == 4 else "int8"),
+                'original_shape': weight.shape,
+                'original_dtype': weight.dtype
+            }
+            
+        except Exception as e:
+            print(f"BitsAndBytes quantization failed: {e}. Falling back to manual implementation.")
+            self.use_bnb = False
+            # Move weight back to original device if needed before manual quantization
+            if weight.device != self.device:
+                weight = weight.to(self.device)
+            self._quantize_weights_manual(weight)
+    
+    def _quantize_weights_manual(self, weight):
+        """Manual quantization implementation (your original code)"""
         if self.bits == 8:
             if self.symmetric:
                 qmin, qmax = -127, 127  # Reserve -128 for symmetric
@@ -95,8 +199,41 @@ class QuantizedBaseLayer(nn.Module):
             self.register_buffer('scales', scales)
             self.register_buffer('zero_points', zero_points.to(torch.int32))
     
+    def _quantize_weights(self, weight):
+        """Main quantization method that chooses between BnB and manual"""
+        if self.use_bnb:
+            self._quantize_weights_bnb(weight)
+        else:
+            self._quantize_weights_manual(weight)
+    
     def dequantize_weights(self):
-        """Dequantize weights: x = scale * (q - zero_point)"""
+        """Dequantize weights using the appropriate method"""
+        if self.use_bnb:
+            return self._dequantize_weights_bnb()
+        else:
+            return self._dequantize_weights_manual()
+    
+    def _dequantize_weights_bnb(self):
+        """Dequantize weights using BitsAndBytes"""
+        try:
+            if hasattr(self, '_bnb_layer'):
+                # For BnB layers, we can access the weight directly
+                # The layer handles dequantization internally
+                return self._bnb_layer.weight.data.float()
+            else:
+                raise AttributeError("BnB layer not found")
+                
+        except Exception as e:
+            print(f"BitsAndBytes dequantization failed: {e}. Using fallback.")
+            # Fallback - return a zero tensor with correct shape
+            return torch.zeros(
+                (self.out_features, self.in_features), 
+                device=self.device, 
+                dtype=torch.float32
+            )
+    
+    def _dequantize_weights_manual(self):
+        """Manual dequantization implementation (your original code)"""
         if self.per_channel:
             # Expand scales and zero_points for broadcasting
             scales = self.scales.view(-1, 1).expand_as(self.quantized_weight)
@@ -110,21 +247,31 @@ class QuantizedBaseLayer(nn.Module):
         return dequantized
     
     def forward(self, x):
-        # Dequantize weights during forward pass
+        """Forward pass using the appropriate method"""
+        if self.use_bnb:
+            return self._forward_bnb(x)
+        else:
+            return self._forward_manual(x)
+    
+    def _forward_bnb(self, x):
+        """Forward pass using BitsAndBytes - just calls the existing layer"""
+        try:
+            if hasattr(self, '_bnb_layer'):
+                # Just call the existing BnB layer - NO creation here!
+                return self._bnb_layer(x)
+            else:
+                raise AttributeError("BnB layer not found")
+            
+        except Exception as e:
+            print(f"BitsAndBytes forward failed: {e}. Falling back to manual dequantization.")
+            # Fallback to manual method
+            dequantized_weight = self.dequantize_weights()
+            return torch.nn.functional.linear(x, dequantized_weight, self.bias)
+    
+    def _forward_manual(self, x):
+        """Forward pass using manual dequantization"""
         dequantized_weight = self.dequantize_weights()
         return torch.nn.functional.linear(x, dequantized_weight, self.bias)
-    
-    def get_quantization_info(self):
-        """Return quantization parameters for inspection"""
-        return {
-            'scales': self.scales,
-            'zero_points': self.zero_points,
-            'bits': self.bits,
-            'symmetric': self.symmetric,
-            'per_channel': self.per_channel,
-            'quantized_weight_shape': self.quantized_weight.shape,
-            'quantized_weight_dtype': self.quantized_weight.dtype
-        }
 
 class MarsLayer(BaseTunerLayer):
     adapter_layer_names = ("up_project",)
@@ -447,7 +594,7 @@ class SharedAttentionAdapter(nn.Module):
         # Split into parts
         parts = transformed.chunk(self.num_enabled, dim=-1)
 
-        return parts
+        return dict(zip(self.enabled, parts))
 
 class Linear(nn.Module, MarsLayer):
     def __init__(self, base_layer, adapter_name, r, alpha, projection_type, **kwargs):

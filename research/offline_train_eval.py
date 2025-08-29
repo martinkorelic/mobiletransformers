@@ -104,6 +104,7 @@ class PEFTMethod(Enum):
     """Enum for supported PEFT methods."""
     LORA = "lora"
     MARS = "mars"
+    QMARS = "qmars"
     LORA_XS = "lora_xs"
     LOHA = "loha"
     VB_LORA = "vb_lora"
@@ -382,7 +383,7 @@ class PEFTTrainer:
         print(f"Loading model: {self.model_id}")
 
         quantization_config = None
-        if self.peft_method == "qlora":
+        if self.peft_method == "qlora" or self.peft_method == "qmars":
             try:
                 from transformers import BitsAndBytesConfig
                 
@@ -489,6 +490,18 @@ class PEFTTrainer:
             # Mars implementation
             self.model = create_mars_model(
                 self.base_model, 
+                self.lora_targets,
+                r=self.lora_rank,
+                lora_dropout=self.lora_dropout,
+                bias=self.bias,
+                alpha=self.lora_alpha,
+                **self.extra_peft_config
+            )
+        elif self.peft_method == "qmars":
+            # Mars implementation
+            self.model = prepare_model_for_kbit_training(self.base_model)
+            self.model = create_mars_model(
+                self.model, 
                 self.lora_targets,
                 r=self.lora_rank,
                 lora_dropout=self.lora_dropout,
@@ -684,7 +697,6 @@ class PEFTTrainer:
         elif self.peft_method.startswith("abl"):
             self.model.base_model.save_pretrained(self.output_dir)
             print(f"Ablation adapters saved to: {self.output_dir}")
-        #elif self.peft_method == "vb_lora":
         else:
             # Default PEFT saving
             self.model.save_pretrained(self.output_dir)
@@ -818,9 +830,9 @@ def task_all_experiments(peft_method = "lora", adapter_name = "lora", output_dir
     tasks = ["boolq", "logiqa", "arc_e", "winogrande", "arc_c", "hellaswag"]
     ranks = [2, 8, 32]
 
-    # If lora_xs is used we multiply the rank by 32, because it has small amount of trainable parameters
+    # If lora_xs is used we multiply the rank by 8, because it has small amount of trainable parameters
     if peft_method == "lora_xs":
-        ranks = [r * 32 for r in ranks]
+        ranks = [r * 8 for r in ranks]
 
     for rank in ranks:
         for task in tasks:
@@ -889,33 +901,10 @@ def ablation_training_experiment():
                 print("Error occured:", e)
 
 if __name__ == "__main__":
-
-    def run_task_1():
-        n_bits = [4, 8]
-
-        for n_bit in n_bits:
-            task_all_experiments("mars", "mars",
-                                    output_dir_res=f"./experiment_results/TinyLlama_v1.1-mars-opt3-q{n_bit}",
-                                    extra_peft_config={"optimization_level": 3, "quant_n_bits": n_bit})
-    
-    #################################
-
-    def run_task_2():
-        n_bits = [4, 8]
-
-        for n_bit in n_bits:
-            task_all_experiments("mars", "mars",
-                                    output_dir_res=f"./experiment_results/TinyLlama_v1.1-mars-opt4-q{n_bit}",
-                                    extra_peft_config={"optimization_level": 4, "quant_n_bits": n_bit})
-
     
     #################################
 
     def run_task_3():
-    
-        methods = ["lora_xs", "vb_lora", "loha"]
-
-        for m in methods:
-            task_all_experiments(m, "lora", output_dir_res=f"./experiment_results/TinyLlama_v1.1-{m}")
+        task_all_experiments("mars", "mars", extra_peft_config={"optimization_level": 3, "quant_n_bits": 4})
     
     run_task_3()

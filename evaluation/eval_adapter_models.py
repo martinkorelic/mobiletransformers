@@ -1,13 +1,16 @@
+from safetensors import safe_open
 import torch, os, json
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, AutoConfig
 from peft_models.ablation.config import AblationConfig
 from peft_models.ablation.model import AblationModel
+from peft_models.lora_xs.initialization_utils import find_and_initialize
 from peft_models.mars.config import MarsConfig
 from peft_models.mars.model import MarsModel
 
 from peft import PeftModel, PeftConfig, get_peft_model
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
+from peft.tuners.lora import LoraConfig
 
 from research.utils import load_mars_adapters
 
@@ -80,6 +83,10 @@ class CustomPeftModel(DeepEvalBaseLLM):
                 with open(adapter_config_path, "r", encoding="utf-8") as f:
                     ablation_config = json.load(f)
                 config = AblationConfig(**ablation_config)
+            elif adapter_name == "lora_xs":
+                with open(adapter_config_path, "r", encoding="utf-8") as f:
+                    lora_xs_config = json.load(f)
+                config = LoraConfig(**lora_xs_config)
 
             # Load the model config to get base model path
             base_model_name = config.base_model_name_or_path
@@ -88,7 +95,7 @@ class CustomPeftModel(DeepEvalBaseLLM):
             # TODO: Which adapter model, maybe merge?
             print(f"Loading PEFT adapters from {adapter_path}...")
 
-            if adapter_name == "qlora":
+            if adapter_name == "qlora" or adapter_name == "qmars":
                 try:
                     from transformers import BitsAndBytesConfig
                     
@@ -114,7 +121,7 @@ class CustomPeftModel(DeepEvalBaseLLM):
 
             if adapter_name == "lora" or adapter_name == "qlora":
                 self.model = PeftModel.from_pretrained(base_model, adapter_path, config=config)
-            elif adapter_name == "mars":
+            elif adapter_name == "mars" or adapter_name == "qmars":
                 
                 # Create PeftModel
                 model = get_peft_model(base_model, config, adapter_name="mars")
@@ -132,6 +139,47 @@ class CustomPeftModel(DeepEvalBaseLLM):
                 self.model = load_mars_adapters(model, adapter_tensors)
 
                 print(f"Loaded Ablation adapters from {adapter_tensors}.")
+            elif adapter_name == "lora_xs":            
+
+                self.model = get_peft_model(base_model, config)
+
+                adapter_name = "default"
+                peft_config_dict = {adapter_name: config}
+
+                reconstr_config = {
+                    'reconstruction_type': "svd",
+                    'reconstr_mode': "separated",
+                    'half_init_dec': False,
+                    'replacement_module_random_init': False,
+                    'r_squared': True,
+                    'svd': {
+                        'rank': config.r,
+                        'n_iter': 10,
+                        'random_state': 42
+                    }
+                }
+
+                reconstr_type = reconstr_config['reconstruction_type']
+
+                # in order to accelerate model preparation, svd iterations will be set to 1.
+                reconstr_config['svd']['n_iter'] = 1
+
+                find_and_initialize(self.model, peft_config_dict, adapter_name=adapter_name, reconstr_type=reconstr_type, writer=None, reconstruct_config=reconstr_config)
+
+                peft_model_weights = {}
+                with safe_open(adapter_tensors, framework="pt", device="cpu") as f:
+                    for key in f.keys():
+                        peft_model_weights[key] = f.get_tensor(key)
+                renamed_state_dict = {
+                    k.replace(
+                        "lora_A", "lora_A.default"
+                    ).replace(
+                        "lora_B", "lora_B.default"
+                    ).replace(
+                        "_lora_latent", ".default_lora_latent"): v
+                    for (k, v) in peft_model_weights.items() if "classifier.out_proj" not in k
+                }
+                self.model.load_state_dict(renamed_state_dict, strict=False)
         else:
             self.model = AutoModelForCausalLM.from_config(config)
             state_dict = load_file(model_path)

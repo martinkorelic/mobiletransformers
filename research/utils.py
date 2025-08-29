@@ -208,3 +208,6 @@ def load_peft_metrics(npz_path):
         'layers': layers,
         'layer_names': list(layers.keys())
     }
+
+if __name__ == "__main__":
+    inspect_adapter_model("experiment_results/TinyLlama_v1.1-lora_xs/TinyLlama_v1.1-lora_xs-arc_c-r64-a2/adapter_model.safetensors")

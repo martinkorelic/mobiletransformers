@@ -71,15 +71,14 @@ class MarsModel(BaseTuner):
                     # Compute shared outputs only once
                     qkv_outputs = module.shared_qkv(kwargs['hidden_states'])
                     # Store them in the module for the projection layers to use
+
                     module.shared_qkv._shared_outputs = qkv_outputs
                     return None
                 
                 # Register the hook on the attention layer to compute shared outputs once
                 module.register_forward_pre_hook(compute_shared_qkv, with_kwargs=True)
 
-                # Define pre-hook for projections
                 def pass_qkv_inputs(module, args):
-
                     if module is None or not hasattr(module, 'shared_qkv'):
                         return args
 
@@ -87,12 +86,18 @@ class MarsModel(BaseTuner):
                     if shared_outputs is None:
                         return args
 
-                    try:
-                        idx = enabled_list.index(module.projection_type)
-                    except ValueError:
+                    # Get the specific output for this projection type
+                    if module.projection_type not in shared_outputs:
                         return args
 
-                    shared_output = shared_outputs[idx]
+                    shared_output = shared_outputs[module.projection_type]
+                    
+                    # Delete the specific key to free memory
+                    del module.shared_qkv._shared_outputs[module.projection_type]
+                    
+                    # Optional: Clean up the entire dict when empty
+                    if not module.shared_qkv._shared_outputs:
+                        del module.shared_qkv._shared_outputs
 
                     # Return original input paired with shared output
                     return (shared_output,) + args
