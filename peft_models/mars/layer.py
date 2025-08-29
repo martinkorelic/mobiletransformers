@@ -54,7 +54,7 @@ class QuantizedBaseLayer(nn.Module):
                     bnb_4bit_quant_type="fp4"
                 )
                 self.use_bnb = True
-                print("Using BitsAndBytes 4-bit quantization")
+                #print("Using BitsAndBytes 4-bit quantization")
                 
             elif self.bits == 8:
                 self.bnb_config = BitsAndBytesConfig(

@@ -16,16 +16,16 @@ TRAIN_BUILDER:
   # Qwen/Qwen3-Embedding-0.6B
   # intfloat/multilingual-e5-small
   
-  model_id: microsoft/Phi-3-mini-4k-instruct
+  model_id: TinyLlama/TinyLlama_v1.1
   output: "./build/train_models"
 
   # If building generation model -> text-generation
   # If building the embedding model -> feature-extraction
-  task_type: feature-extraction
+  task_type: text-generation
 
   # Whether to add loss to the model
   # Set to true if you need a training model, otherwise false
-  training_mode: false
+  training_mode: true
 
   ############ TRAINING CONFIGURATION ############
 
@@ -95,7 +95,7 @@ TRAIN_BUILDER:
     #  3 - partial trainable layers (frozen and fused down projection layers) with full quantization
     optimization_level: 3
     modules_to_preserve_errors:
-      - q
+      - 
     modules_to_quantize:
       - up
       - down
@@ -148,17 +148,21 @@ ARTIFACT_BUILDER:
   embedding_model: ./build/embedding_models/embedding_model.onnx
 
   # NOTE: Use trainer.builder to build the training model first
-  gen_train_artifacts: false
+  gen_train_artifacts: true
 
   # NOTE: Use inference.builder to build inference model first
-  gen_inference_artifacts: true
+  gen_inference_artifacts: false
 
   # NOTE: Use trainer.builder to build just the embedding model first
   gen_rag_artifacts: false
 
+  # EXPORTING OPTIONS
+
   export_inference_config: true
   export_tokenizer: true
   export_merger: false
+  # Exports the dataset inside the train directory
+  export_dataset: false
 
   test_training: false
   test_eval: false
@@ -216,7 +220,7 @@ ARTIFACT_BUILDER:
     saveSteps: 50
     gradAccumSteps: 2
     
-    mergedWeightsAtEnd: true
+    mergedWeightsAtEnd: false
     saveModelAtEnd: true
 
     datasetOptions:
@@ -276,9 +280,6 @@ ARTIFACT_BUILDER:
       memoryConfigId: high_perf
       # Execution Provider
       executionProvider: cpu # xnnpack, cpu
-
-  # Exports the dataset inside the train directory
-  export_dataset: true
 
   # Delete the generated models from the "*_models" directories
   delete_models: false

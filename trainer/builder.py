@@ -213,6 +213,8 @@ def apply_metadata(model_path, model_id):
     graph_metadata_entry.key = "model_id"
     graph_metadata_entry.value = str(model_id)
     model.graph.metadata_props.append(graph_metadata_entry)
+
+    return model
     
     # Get paths for potential files to delete
     data_path = model_path.with_suffix(model_path.suffix + ".data")
@@ -376,11 +378,11 @@ def optimum_hf_export(model_id,
     export(my_model, ocl, onnx_path, opset, do_constant_folding=not training_mode)
 
     # Apply some metadata to model
-    apply_metadata(onnx_path, model_id)
+    onnx_model = apply_metadata(onnx_path, model_id)
 
     # Add pooling operations to the embedding model and save
     if task_type == "feature-extraction" and add_pooling:
-        add_pooling_to_onnx_model(onnx_path, model_id, f"{model_output}/embedding_model.onnx")
+        add_pooling_to_onnx_model(onnx_model, model_id, f"{model_output}/embedding_model.onnx")
 
     # Save gradient layer names
     if training_mode:
@@ -404,7 +406,8 @@ def optimum_hf_export(model_id,
     # Apply dynamic quantization to non-trainable layers
     if quantize:
         lora_target = [] if not training_mode else lora_target
-        onnx_dynamic_quantization(onnx_path.absolute().as_posix(),
+        onnx_dynamic_quantization(onnx_model,
+                                  onnx_path.absolute().as_posix(),
                                   f"{model_output}/quant_model.onnx",
                                   #exclude_weights=lora_target,
                                   weight_type=weight_type,
@@ -416,15 +419,14 @@ def optimum_hf_export(model_id,
         if task_type == "feature-extraction" and add_pooling:
             add_pooling_to_onnx_model(f"{model_output}/quant_model.onnx", model_id, f"{model_output}/embedding_quant_model.onnx")
 
-def onnx_dynamic_quantization(onnx_model_path,
+def onnx_dynamic_quantization(onnx_model,
+                              onnx_model_path,
                               onnx_model_quant_output,
                               weight_type=QuantType.QInt16,
                               exclude_weights=[],
                               exclude_extra_layers=[],
                               exclude_specific=False,
                               exclude_specific_layers=[]):
-
-    onnx_model = onnx.load(onnx_model_path)
 
     nodes_to_not_quantize = []
 
@@ -546,6 +548,12 @@ def parse_arguments():
         type=int,
         default=16,
         help="Rank for the given LoRA method. Default is 16."
+    )
+    parser.add_argument(
+        "--lora_alpha",
+        type=int,
+        default=32,
+        help="Alpha for the PEFT method."
     )
     parser.add_argument(
         "--quantize",

@@ -3,7 +3,7 @@ import onnx
 from onnx import helper, TensorProto
 from huggingface_hub import hf_hub_download
 
-def add_pooling_to_onnx_model(onnx_model_path, model_id, output_model_path):
+def add_pooling_to_onnx_model(model, model_id, output_model_path):
     """
     Add pooling operations to an ONNX model based on sentence-transformer configuration.
     
@@ -18,9 +18,6 @@ def add_pooling_to_onnx_model(onnx_model_path, model_id, output_model_path):
     
     # Load pooling configuration from HuggingFace Hub
     pooling_config = load_pooling_config_from_hub(model_id)
-    
-    # Load the original ONNX model
-    model = onnx.load(onnx_model_path)
     
     # Add pooling operations to the model
     modified_model = add_pooling_operations(model, pooling_config)

@@ -23,31 +23,115 @@ from tools.utils import preload_dataset
 from trainer.utils import DataCollatorForSupervisedDataset, taskname_to_deepeval_preprocess_function
 from tools.parser_config import TASK_NAME_TO_DATASET, TRAIN_CONFIG, ARTIFACT_CONFIG, ARTIFACT_VALIDATOR_CONFIG
 
+import numpy as np
+import json
+import os
+
 class CosineLRScheduler:
     """Cosine Learning Rate Scheduler for ONNX Runtime Training."""
-    def __init__(self, optimizer, total_steps, warmup_steps, min_lr=0.0, initial_lr=0.001):
+    def __init__(self, optimizer, warmup_steps, total_steps, min_lr=0.0, initial_lr=0.001):
         self.optimizer = optimizer
         self.total_steps = total_steps
         self.warmup_steps = warmup_steps
         self.min_lr = min_lr
         self.initial_lr = initial_lr
         self.current_step = 0
+        
+        # Set initial learning rate
+        if warmup_steps > 0:
+            initial_warmup_lr = 0.0  # Start from 0 during warmup
+        else:
+            initial_warmup_lr = initial_lr  # No warmup, start at target LR
+        self.optimizer.set_learning_rate(initial_warmup_lr)
 
-    def step(self):
+    def step(self, increment=True):
         """Update learning rate with warmup + cosine decay."""
-        self.current_step += 1
+        if increment:
+            self.current_step += 1
 
-        if self.current_step < self.warmup_steps:
+        if self.current_step <= self.warmup_steps:
             # Linear warmup: Increase LR from 0 to initial_lr
             new_lr = (self.initial_lr * self.current_step) / self.warmup_steps
         else:
             # Cosine decay after warmup
             decay_step = self.current_step - self.warmup_steps
             decay_total = self.total_steps - self.warmup_steps
-            cos_decay = 0.5 * (1 + np.cos(np.pi * decay_step / decay_total))
-            new_lr = self.min_lr + (self.initial_lr - self.min_lr) * cos_decay
+            
+            # Handle edge case where decay_total might be 0
+            if decay_total <= 0:
+                new_lr = self.min_lr
+            else:
+                cos_decay = 0.5 * (1 + np.cos(np.pi * decay_step / decay_total))
+                new_lr = self.min_lr + (self.initial_lr - self.min_lr) * cos_decay
 
+        # Ensure LR doesn't go below min_lr
+        new_lr = max(new_lr, self.min_lr)
         self.optimizer.set_learning_rate(new_lr)
+        
+    def get_learning_rate(self):
+        """Get current learning rate from optimizer."""
+        return self.optimizer.get_learning_rate()
+    
+    def state_dict(self):
+        """Return the state of the scheduler as a dictionary."""
+        return {
+            'total_steps': self.total_steps,
+            'warmup_steps': self.warmup_steps,
+            'min_lr': self.min_lr,
+            'initial_lr': self.initial_lr,
+            'current_step': self.current_step,
+        }
+    
+    def load_state_dict(self, state_dict, update_total_steps=None):
+        """Load the scheduler state from a dictionary."""
+        self.warmup_steps = state_dict['warmup_steps']
+        self.min_lr = state_dict['min_lr']
+        self.initial_lr = state_dict['initial_lr']
+        self.current_step = state_dict['current_step']
+        
+        # Handle total_steps change
+        if update_total_steps is not None:
+            print(f"Updating total_steps from {state_dict['total_steps']} to {update_total_steps}")
+            self.total_steps = update_total_steps
+        else:
+            self.total_steps = state_dict['total_steps']
+        
+        # Update optimizer with current learning rate without incrementing step
+        self.step(increment=False)
+    
+    def save_checkpoint(self, filepath):
+        """Save scheduler state to a file."""
+        state = self.state_dict()
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        with open(filepath, 'w') as f:
+            json.dump(state, f, indent=2)
+    
+    def load_checkpoint(self, filepath):
+        """Load scheduler state from a file."""
+        with open(filepath, 'r') as f:
+            state = json.load(f)
+        self.load_state_dict(state)
+    
+    def reset(self):
+        """Reset the scheduler to initial state."""
+        self.current_step = 0
+        if self.warmup_steps > 0:
+            initial_lr = 0.0
+        else:
+            initial_lr = self.initial_lr
+        self.optimizer.set_learning_rate(initial_lr)
+    
+    def get_last_lr(self):
+        """Get the last computed learning rate (for compatibility with PyTorch schedulers)."""
+        return [self.get_learning_rate()]
+    
+    def __repr__(self):
+        return (f"CosineLRScheduler(warmup_steps={self.warmup_steps}, "
+                f"total_steps={self.total_steps}, min_lr={self.min_lr}, "
+                f"initial_lr={self.initial_lr}, current_step={self.current_step})")
 
 
 class ORTDataCurator:
@@ -80,7 +164,7 @@ class ORTDataCurator:
         self._setup_dataset(task_name)
 
         ds = preload_dataset(self.dataset_id)
-        self.prepare_dataset(ds, custom_preprocess=taskname_to_deepeval_preprocess_function(self.dataset_config))
+        self.prepare_dataset(ds, custom_preprocess=taskname_to_deepeval_preprocess_function(self.dataset_config.value))
 
     def _setup_dataset(self, dataset_input):
         """Setup dataset configuration from simple string identifier or enum."""
@@ -241,11 +325,14 @@ class ORTTrainingArguments:
         self.peft_target = data.get("peft_target", None)
         self.trainable_parameter_count = data.get("trainable_parameter_count", 0)
 
+        return self
+
 class ORTTrainer:
 
     def __init__(self,
                 training_model_dir,
                 args : ORTTrainingArguments = None,
+                load_from_state=False,
                 inference_model_path="inference_model.onnx",
                 callbacks=None,
                 seed=42
@@ -260,26 +347,34 @@ class ORTTrainer:
         self.optimizer = None
         self.tokenizer = None
         self.seed = seed
+        self.scheduler = None
+        self.load_from_state = load_from_state
+
+        if self.load_from_state:
+            
+            with open(f"{self.training_model_dir}/training_state.json", "r") as f:
+                self.state = json.load(f)
 
         self._load_train_config()
 
         self._set_seed()
 
         self.data_curator = ORTDataCurator(model_id=self.args.model_id,
-                              max_dataset_length=self.args.max_dataset_length,
-                              remove_long_samples=self.args.remove_long_samples,
-                              max_context_length=self.args.max_sequence_length,
-                              test_ratio=self.args.dataset_test_ratio,
-                              split=self.args.dataset_split,
-                              shuffle=self.args.dataset_shuffle,
-                              batch_size=self.args.dataset_batch_size
-                              )
+                                            task_name=self.args.task_name,
+                                            max_dataset_length=self.args.max_dataset_length,
+                                            remove_long_samples=self.args.remove_long_samples,
+                                            max_context_length=self.args.max_sequence_length,
+                                            test_ratio=self.args.dataset_test_ratio,
+                                            split=self.args.dataset_split,
+                                            shuffle=self.args.dataset_shuffle,
+                                            batch_size=self.args.dataset_batch_size
+                                            )
         
         self.train_model_name = self._create_model_name()
         
     def _load_train_config(self):
 
-        if args is not None:
+        if self.args is not None:
             return
         
         self.args = ORTTrainingArguments().load_from_json(self.training_model_dir)
@@ -302,7 +397,7 @@ class ORTTrainer:
         # Save the training config
         self.save_training_config()
         
-        self.state = CheckpointState.load_checkpoint(f"{self.training_model_dir}/checkpoint")
+        self.checkpoint_state = CheckpointState.load_checkpoint(f"{self.training_model_dir}/checkpoint")
 
         # TODO: Customize
         sess_options = SessionOptions()
@@ -315,7 +410,7 @@ class ORTTrainer:
         sess_options.add_session_config_entry("session.intra_op.allow_spinning", "0")
         sess_options.add_session_config_entry("session.inter_op.allow_spinning", "0")
 
-        self.model = Module(f"{self.training_model_dir}/training_model.onnx", self.state, f"{self.training_model_dir}/eval_model.onnx", session_options=sess_options)
+        self.model = Module(f"{self.training_model_dir}/training_model.onnx", self.checkpoint_state, f"{self.training_model_dir}/eval_model.onnx", session_options=sess_options)
         self.optimizer = Optimizer(f"{self.training_model_dir}/optimizer_model.onnx", self.model)
         
         train_dataset = self.data_curator.dataset["train"]
@@ -342,7 +437,7 @@ class ORTTrainer:
             collate_fn=self.data_curator.collator.numpy_call
         )
 
-         # Calculate total steps
+        # Calculate total steps
         steps_per_epoch = len(dataloader)
         total_epoch_steps = self.args.num_train_epochs * steps_per_epoch
         
@@ -350,11 +445,35 @@ class ORTTrainer:
         total_steps = self.args.max_steps if self.args.max_steps is not None else total_epoch_steps
         
         # Scheduler
-        scheduler = self.set_scheduler_type(total_steps)
+        self.scheduler = self.set_scheduler_type(total_steps)
+
+        # Handle checkpoint resuming
+        resume_from_step = 0
+        resume_from_epoch = 0
+
+        if self.load_from_state:
+            # Load checkpoint and get the step/epoch we're resuming from
+            resume_from_step = self.state.get('current_global_step', 0)
+            resume_from_epoch = self.state.get('current_epoch', 0)
+            
+            # Load scheduler state
+            if 'scheduler_state' in self.state:
+                # Option 1: Strict loading (assumes total_steps hasn't changed)
+                self.scheduler.load_state_dict(self.state['scheduler_state'])
+                
+                # Option 2: Allow total_steps to change
+                # self.scheduler.load_state_dict(checkpoint_data['scheduler_state'], strict=False)
+                
+                # Option 3: Update total_steps and preserve progress
+                # self.scheduler.load_state_dict(checkpoint_data['scheduler_state'], 
+                #                               update_total_steps=total_steps, 
+                #                               preserve_progress=True)
+            
+            print(f"Resuming training from step {resume_from_step}, epoch {resume_from_epoch}")
 
         # Main training loop
-        global_step = 0
-        epoch = 0
+        global_step = resume_from_step
+        epoch = resume_from_epoch
         pbar = tqdm(total=total_steps, desc="ONNX Runtime Training")
         
         accumulated_loss = 0.0
@@ -362,10 +481,23 @@ class ORTTrainer:
 
         logs = []
 
+        if self.load_from_state and global_step > 0 and self.args.max_steps:
+            total_steps += self.args.max_steps
+
         while global_step < total_steps:
-            for batch in dataloader:
+
+            # Skip to the right epoch if resuming
+            if epoch < resume_from_epoch:
+                epoch += 1
+                continue
+
+            for batch_idx, batch in enumerate(dataloader):
                 if global_step >= total_steps:
                     break
+
+                # Skip batches if we're resuming mid-epoch
+                if epoch == resume_from_epoch and batch_idx < (resume_from_step % steps_per_epoch):
+                    continue
                 
                 pbar.write(f"[INFO] Epoch {epoch}, Step {global_step}")
                 input_ids_np = batch['input_ids']
@@ -392,13 +524,13 @@ class ORTTrainer:
 
                     avg_loss = accumulated_loss / self.args.grad_accum_steps
 
-                    pbar.write(f"[INFO] Training loss step: {avg_loss}")
+                    pbar.write(f"[INFO] Training average loss step: {avg_loss}")
                     pbar.write(f"[INFO] LR: {self.optimizer.get_learning_rate()}")
 
                     # Reset accumulated loss
                     accumulated_loss = 0.0
                 
-                scheduler.step()
+                self.scheduler.step()
 
                 global_step += 1
                 pbar.update(1)
@@ -406,19 +538,26 @@ class ORTTrainer:
                 step_info = {
                     "step": global_step,
                     "epoch": epoch,
-                    "loss": current_loss,
+                    "loss": current_loss.item(),
                     "cpu_mem": psutil.Process().memory_info().rss / 1e9,
                     "gpu_mem": torch.cuda.memory_allocated() / 1e9,
                     "learning_rate": self.optimizer.get_learning_rate()
                 }
 
-                pbar.write(step_info)
+                pbar.write(str(step_info))
                 logs.append(step_info)
+
+                if self.args.save_steps and (global_step + 1) % self.args.save_steps == 0:
+                    self.save_checkpoint({
+                        "scheduler_state": self.scheduler.state_dict()
+                    })
+
                 
                 if global_step >= total_steps:
                     break
-                    
-            epoch += 1
+            
+            if global_step >= total_steps:     
+                epoch += 1
 
         pbar.close()
 
@@ -434,7 +573,7 @@ class ORTTrainer:
         logs.append({
                     "step": global_step,
                     "epoch": epoch,
-                    "loss": current_loss,
+                    "loss": current_loss.item(),
                     "cpu_mem": psutil.Process().memory_info().rss / 1e9,
                     "gpu_mem": torch.cuda.memory_allocated() / 1e9,
                     "train_runtime": total_runtime,
@@ -444,6 +583,15 @@ class ORTTrainer:
         # Save logs
         with open(f"{self.training_model_dir}/training_logs.json", mode="w", encoding="utf-8") as f:
             json.dump(logs, f, ensure_ascii=False)
+        
+        # Training state
+
+        # Save the checkpoint and state
+        self.save_checkpoint({
+            "scheduler_state": self.scheduler.state_dict(),
+            "current_global_step": global_step,
+            "current_epoch": epoch,
+        })
 
         if self.args.export_inference:
 
@@ -453,7 +601,7 @@ class ORTTrainer:
             self.model.export_model_for_inferencing(f"{self.training_model_dir}/{self.inference_model_path}", [ out_name for out_name in self.model.output_names() if out_name not in exclude_nodes])
 
             del self.model
-            del self.state
+            del self.checkpoint_state
             del self.optimizer
             gc.collect()
 
@@ -476,8 +624,12 @@ class ORTTrainer:
         
         return f"{model_short_name}-{self.args.peft_method}-{self.data_curator.dataset_config.value.lower()}-r{self.args.peft_rank}-a{alpha_ratio}"
 
-    def save_checkpoint(self):
-        CheckpointState.save_checkpoint(self.state, f"{self.training_model_dir}/checkpoint")
+    def save_checkpoint(self, state_data=None):
+        CheckpointState.save_checkpoint(self.checkpoint_state, f"{self.training_model_dir}/checkpoint")
+
+        if state_data:
+            with open(f"{self.training_model_dir}/training_state.json", "w") as f:
+                json.dump(state_data, f, ensure_ascii=False)
 
     def _set_seed(self):
         """Set random seed for reproducibility."""
@@ -516,8 +668,8 @@ class ORTTrainer:
             "timestamp": datetime.now().isoformat()
         }
         
-        os.makedirs(self.output_dir, exist_ok=True)
-        config_path = os.path.join(self.output_dir, "training_configuration.json")
+        os.makedirs(self.training_model_dir, exist_ok=True)
+        config_path = os.path.join(self.training_model_dir, "training_configuration.json")
         
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
@@ -684,38 +836,12 @@ def parse_arguments():
 
 
 if __name__ == "__main__":
-    args = parse_arguments()
+    #args = parse_arguments()
 
-    print(f"{ARTIFACT_VALIDATOR_CONFIG} arguments:")
-    for arg, value in vars(args).items():
-        print(f"{arg}: {value}")
-
-    data_cur = ORTDataCurator(model_id=args.model_id,
-                              max_dataset_length=args.test_training_config["maxDatasetLength"],
-                              remove_long_samples=args.test_training_config["removeLongSample"],
-                              max_context_length=args.test_training_config["maxSequenceLength"],
-                              test_ratio=args.test_training_config["testRatio"],
-                              split=args.test_training_config["split"],
-                              shuffle=args.test_training_config["shuffle"],
-                              batch_size=args.test_training_config["batchSize"]
-                              )
-
-    ds = preload_dataset(TASK_NAME_TO_DATASET[args.test_training_config["taskName"]])
-
-    data_cur.prepare_dataset(ds, custom_preprocess=taskname_to_deepeval_preprocess_function(args.test_training_config["taskName"]))
-
-    # NOTE: Only validator for cosine scheduler for now
-    ort_args = ORTTrainingArguments(grad_accum_steps=args.test_training_config["gradAccumSteps"],
-                                learning_rate=args.test_scheduler_config["cosineLearningRate"],
-                                min_learning_rate=args.test_scheduler_config["minLearningRate"],
-                                num_train_epochs=args.test_training_config["numTrainEpochs"],
-                                warmup_steps=args.test_scheduler_config["warmupSteps"],
-                                max_steps=args.test_training_config["maxSteps"],
-                                max_sequence_length=args.test_training_config["maxSequenceLength"],
-                                save_steps=args.test_training_config["saveSteps"],
-                                scheduler_type="cosine"
-                                )
+    #print(f"{ARTIFACT_VALIDATOR_CONFIG} arguments:")
+    #for arg, value in vars(args).items():
+    #    print(f"{arg}: {value}")
     
-    trainer = ORTTrainer(args.training_artifact_dir, ort_args)
+    trainer = ORTTrainer("build/train", load_from_state=True)
 
     trainer.train()
