@@ -156,7 +156,7 @@ ARTIFACT_BUILDER:
   # NOTE: Use trainer.builder to build just the embedding model first
   gen_rag_artifacts: false
 
-  # EXPORTING OPTIONS
+  ### EXPORTING OPTIONS ###
 
   export_inference_config: true
   export_tokenizer: true
@@ -213,7 +213,7 @@ ARTIFACT_BUILDER:
     repoName: tinyllama 
     onnxName: quant_model
     
-    taskName: logiqa
+    taskName: arc_e
     batchSize: 1
     numTrainEpochs: 1
     maxSteps: 20
@@ -224,16 +224,16 @@ ARTIFACT_BUILDER:
     saveModelAtEnd: true
 
     datasetOptions:
-      trainFile: logiqa_train
+      trainFile: arc_e
       datasetBatchSize: 64
       maxSequenceLength: 512
       maxDatasetLength: 256
-      removeLongSample: true
+      removeLongSamples: true
       datasetSplit: false
       datasetShuffle: false
       testRatio: 0.1
 
-    schedulerType: linear # "linear", "cosine"
+    schedulerType: cosine # "linear", "cosine"
     schedulerOptions:
       # Cosine options
       minLearningRate: 0

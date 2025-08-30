@@ -101,9 +101,10 @@ class QuantizedBaseLayer(nn.Module):
                 )
 
             # Load the original weights into the BnB layer
-            self._bnb_layer.weight.data = weight.clone()
+            # Clone weights to avoid any potential view issues
+            self._bnb_layer.weight.data = weight.detach().clone()
             if self.bias is not None:
-                self._bnb_layer.bias.data = self.bias.clone()
+                self._bnb_layer.bias.data = self.bias.detach().clone()
 
             # Move to CUDA to trigger quantization
             self._bnb_layer = self._bnb_layer.to(self.device)
@@ -218,8 +219,12 @@ class QuantizedBaseLayer(nn.Module):
         try:
             if hasattr(self, '_bnb_layer'):
                 # For BnB layers, we can access the weight directly
-                # The layer handles dequantization internally
-                return self._bnb_layer.weight.data.float()
+                # Clone to avoid view issues during autograd
+                weight_data = self._bnb_layer.weight.data
+                if hasattr(weight_data, 'clone'):
+                    return weight_data.detach().clone().float()
+                else:
+                    return weight_data.float()
             else:
                 raise AttributeError("BnB layer not found")
                 
@@ -257,8 +262,13 @@ class QuantizedBaseLayer(nn.Module):
         """Forward pass using BitsAndBytes - just calls the existing layer"""
         try:
             if hasattr(self, '_bnb_layer'):
-                # Just call the existing BnB layer - NO creation here!
-                return self._bnb_layer(x)
+                output = self._bnb_layer(x)
+                # For 8-bit layers, clone the output to avoid view+inplace issues
+                if self.bits == 8 and hasattr(output, 'data'):
+                    # Clone to break the view relationship and avoid autograd issues
+                    output = output.clone()
+                
+                return output
             else:
                 raise AttributeError("BnB layer not found")
             

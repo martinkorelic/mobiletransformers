@@ -81,7 +81,7 @@ def gen_artifacts(train_dir,
             "rank": params["rank"],
             "alpha": params["alpha"],
             "peft_target": params["peft_target"],
-            "trainable_parameter_count": params["trainable_parameter_count"]
+            "trainable_parameter_count": params["trainable_parameter_count"],
             **training_config
             #"frozen_params": frozen_params
         }, f, ensure_ascii=False)

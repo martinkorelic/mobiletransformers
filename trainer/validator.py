@@ -163,7 +163,7 @@ class ORTDataCurator:
         self.dataset = None
         self._setup_dataset(task_name)
 
-        ds = preload_dataset(self.dataset_id)
+        ds = preload_dataset(self.dataset_id, self.dataset_name)
         self.prepare_dataset(ds, custom_preprocess=taskname_to_deepeval_preprocess_function(self.dataset_config.value))
 
     def _setup_dataset(self, dataset_input):
@@ -209,7 +209,7 @@ class ORTDataCurator:
         # Convert the list of tokenized samples into a Dataset
         dataset = dataset.map(process_sample, batched=(self.batch_size > 1), batch_size=self.batch_size)
 
-        if self.remove_long_samples != None:
+        if self.remove_long_samples:
             dataset = dataset.filter(filter_sample, batched=False)
 
         dataset = dataset.remove_columns(raw_columns)
@@ -351,9 +351,12 @@ class ORTTrainer:
         self.load_from_state = load_from_state
 
         if self.load_from_state:
-            
-            with open(f"{self.training_model_dir}/training_state.json", "r") as f:
-                self.state = json.load(f)
+            try:
+                with open(f"{self.training_model_dir}/training_state.json", "r") as f:
+                    self.state = json.load(f)
+            except FileNotFoundError:
+                print("No training state found.")
+                self.load_from_state = False
 
         self._load_train_config()
 
@@ -669,12 +672,12 @@ class ORTTrainer:
         }
         
         os.makedirs(self.training_model_dir, exist_ok=True)
-        config_path = os.path.join(self.training_model_dir, "training_configuration.json")
+        config_path = os.path.join(self.training_model_dir, "training_information.json")
         
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
         
-        print(f"Training configuration saved to: {config_path}")
+        print(f"Training information saved to: {config_path}")
 
 def check_duplicate_initializers(onnx_model_path):
     """
