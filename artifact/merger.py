@@ -1,6 +1,6 @@
 import onnx
 import numpy as np
-from onnx import helper, TensorProto
+from onnx import StringStringEntryProto, helper, TensorProto
 import onnxruntime as ort
 
 def create_onnx_chunking_model(
@@ -348,6 +348,164 @@ def create_lora_merger_model(output_path="lora_merger.onnx", quantized=True):
     print(f"✅ LoRA merger model saved to {output_path} with quantized={quantized}")
     return model
 
+def create_lora_merger_model_2(output_path="lora_merger.onnx", quantized_inputs=True, quantized_outputs=True):
+    """
+    Creates an ONNX LoRA merger model with configurable input/output quantization.
+    
+    Args:
+        output_path (str): Path where the ONNX model will be saved
+        quantized_inputs (bool): Whether the base weight inputs are quantized
+        quantized_outputs (bool): Whether the outputs should be quantized
+        
+    Returns:
+        onnx.ModelProto: The created ONNX model
+        
+    Input tensors (when quantized_inputs=True):
+        - weight_quantized: Base model weights in UINT8 quantized format
+        - x_scale: Scale factor for base weight quantization (FLOAT scalar)
+        - x_zero_point: Zero point for base weight quantization (UINT8 scalar)
+        
+    Input tensors (when quantized_inputs=False):
+        - weight: Base model weights in FLOAT format
+        
+    Common input tensors:
+        - adapter_A: LoRA A matrix (FLOAT [rank, in_features])
+        - adapter_B: LoRA B matrix (FLOAT [out_features, rank])
+        - alpha: Scaling factor for LoRA contribution (FLOAT scalar)
+        
+    Output tensors (when quantized_outputs=True):
+        - merged_weight_quantized: Final merged weights in UINT8 quantized format
+        - merged_scale: Scale factor for merged weight quantization (FLOAT scalar)
+        - merged_zero_point: Zero point for merged weight quantization (UINT8 scalar)
+        
+    Output tensors (when quantized_outputs=False):
+        - merged_weight: Final merged weights in FLOAT format
+    """
+    import onnx
+    from onnx import helper, TensorProto
+    from onnx.onnx_ml_pb2 import StringStringEntryProto
+
+    inputs = []
+    outputs = []
+    nodes = []
+
+    # Define inputs based on quantized_inputs flag
+    if quantized_inputs:
+        inputs.append(helper.make_tensor_value_info("weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]))
+        inputs.append(helper.make_tensor_value_info("x_scale", TensorProto.FLOAT, []))
+        inputs.append(helper.make_tensor_value_info("x_zero_point", TensorProto.UINT8, []))
+    else:
+        inputs.append(helper.make_tensor_value_info("weight", TensorProto.FLOAT, ["out_features", "in_features"]))
+
+    # LoRA inputs (common for all configurations)
+    inputs.append(helper.make_tensor_value_info("adapter_A", TensorProto.FLOAT, ["rank", "in_features"]))
+    inputs.append(helper.make_tensor_value_info("adapter_B", TensorProto.FLOAT, ["out_features", "rank"]))
+    inputs.append(helper.make_tensor_value_info("alpha", TensorProto.FLOAT, []))
+
+    # Define outputs based on quantized_outputs flag
+    if quantized_outputs:
+        outputs.append(helper.make_tensor_value_info("merged_weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]))
+        outputs.append(helper.make_tensor_value_info("merged_scale", TensorProto.FLOAT, []))
+        outputs.append(helper.make_tensor_value_info("merged_zero_point", TensorProto.UINT8, []))
+    else:
+        outputs.append(helper.make_tensor_value_info("merged_weight", TensorProto.FLOAT, ["out_features", "in_features"]))
+
+    # Step 1: Dequantize base weights if needed
+    if quantized_inputs:
+        nodes.append(helper.make_node(
+            "DequantizeLinear",
+            inputs=["weight_quantized", "x_scale", "x_zero_point"],
+            outputs=["base_weight_fp32"],
+            name="dequantize_base_weights"
+        ))
+        base_input = "base_weight_fp32"
+    else:
+        base_input = "weight"
+
+    # Step 2: Compute LoRA delta
+    nodes.append(helper.make_node(
+        "MatMul",
+        inputs=["adapter_B", "adapter_A"],
+        outputs=["lora_delta"],
+        name="compute_lora_delta"
+    ))
+    
+    # Step 3: Scale LoRA delta by alpha
+    nodes.append(helper.make_node(
+        "Mul",
+        inputs=["lora_delta", "alpha"],
+        outputs=["scaled_lora_delta"],
+        name="scale_lora_delta"
+    ))
+
+    # Step 4: Add LoRA delta to base weights
+    nodes.append(helper.make_node(
+        "Add",
+        inputs=[base_input, "scaled_lora_delta"],
+        outputs=["merged_weight_fp32"],
+        name="add_lora_delta"
+    ))
+
+    # Step 5: Handle output based on quantized_outputs flag
+    if quantized_outputs:
+        nodes.append(helper.make_node(
+            "DynamicQuantizeLinear",
+            inputs=["merged_weight_fp32"],
+            outputs=["merged_weight_quantized", "merged_scale", "merged_zero_point"],
+            name="quantize_merged"
+        ))
+    else:
+        # output is float, rename directly
+        nodes.append(helper.make_node(
+            "Identity",
+            inputs=["merged_weight_fp32"],
+            outputs=["merged_weight"],
+            name="identity_output"
+        ))
+
+    # Create the graph
+    graph = helper.make_graph(
+        nodes=nodes,
+        name="LoRAMergerModel",
+        inputs=inputs,
+        outputs=outputs,
+        doc_string=f"LoRA merger model for merging adapters (inputs: {'quantized' if quantized_inputs else 'float'}, outputs: {'quantized' if quantized_outputs else 'float'})."
+    )
+
+    # Create the model
+    model = helper.make_model(
+        graph, 
+        producer_name="LoRAMerger_v1.0", 
+        producer_version="1.0.0",
+        doc_string=f"LoRA (Low-Rank Adaptation) weight merger for PEFT models. Input quantization: {quantized_inputs}, Output quantization: {quantized_outputs}.",
+        model_version=1,
+        opset_imports=[helper.make_opsetid("", 11)]
+    )
+    
+    # Add quantization metadata to the model
+    metadata_entries = [
+        ("quantized_inputs", str(quantized_inputs).lower()),
+        ("quantized_outputs", str(quantized_outputs).lower()),
+        ("input_type", "quantized" if quantized_inputs else "float"),
+        ("output_type", "quantized" if quantized_outputs else "float")
+    ]
+    
+    for key, value in metadata_entries:
+        entry = StringStringEntryProto()
+        entry.key = key
+        entry.value = value
+        model.metadata_props.append(entry)
+
+    onnx.checker.check_model(model)
+    onnx.save(model, output_path)
+    
+    # Updated print statement to reflect the new flags
+    input_type = "quantized" if quantized_inputs else "float"
+    output_type = "quantized" if quantized_outputs else "float"
+    print(f"✅ LoRA merger model saved to {output_path} (inputs: {input_type}, outputs: {output_type})")
+    
+    return model
+
 def test_all_lora_merger_models(
     quantized_model_path="lora_merger_quantized.onnx",
     float_model_path="lora_merger_float.onnx"
@@ -438,6 +596,231 @@ def test_all_lora_merger_models(
         else:
             print("  ✗ FAIL")
 
+def create_mars_merger_model_2(output_path="mars_merger_model.onnx", quantized_inputs=True, quantized_outputs=True):
+    """
+    Creates a fixed ONNX model that merges PEFT (MARS) weights with base weights.
+    
+    MARS (Multi Adapter Rank Sharing) is a parameter-efficient fine-tuning method
+    that decomposes adapter weights into shared and adapter-specific components.
+    
+    The mathematical operation performed is:
+    merged_weight = base_weight + alpha * (adapter_B @ intermediate_chunk @ shared_A)
+    
+    Where:
+    - base_weight: Original model weights (quantized or float)
+    - adapter_B: Adapter-specific "B" matrix [out_features, rank]
+    - intermediate: Shared intermediate matrix [N*rank, shared_rank] containing chunks for N adapters
+    - intermediate_chunk: Slice of intermediate for current adapter [rank, shared_rank]
+    - shared_A: Shared "A" matrix [shared_rank, in_features]
+    - alpha: Scaling factor for the adapter contribution
+    
+    The matrix multiplication chain:
+    1. adapter_B [out_features, rank] @ intermediate_chunk [rank, shared_rank] 
+       → [out_features, shared_rank]
+    2. result @ shared_A [shared_rank, in_features] 
+       → [out_features, in_features]
+    3. Scale by alpha and add to base weights
+    
+    Args:
+        output_path (str): Path where the ONNX model will be saved
+        quantized_inputs (bool): Whether the base weight inputs are quantized
+        quantized_outputs (bool): Whether the outputs should be quantized
+        
+    Returns:
+        onnx.ModelProto: The created ONNX model
+        
+    Input tensors (when quantized_inputs=True):
+        - weight_quantized: Base model weights in UINT8 quantized format
+        - x_zero_point: Zero point for base weight quantization (UINT8 scalar)
+        - x_scale: Scale factor for base weight quantization (FLOAT scalar)
+        
+    Input tensors (when quantized_inputs=False):
+        - weight: Base model weights in FLOAT format
+        
+    Common input tensors:
+        - shared_A: Shared component matrix (FLOAT [shared_rank, in_features])
+        - intermediate: Combined intermediate matrix for all adapters (FLOAT [N*rank, shared_rank])
+        - adapter_B: Adapter-specific B matrix (FLOAT [out_features, rank])
+        - adapter_index: Index of the adapter to use (INT64 scalar)
+        - rank: Rank of the adapter (INT64 scalar)
+        - alpha: Scaling factor for adapter contribution (FLOAT scalar)
+        
+    Output tensors (when quantized_outputs=True):
+        - merged_weight_quantized: Final merged weights in UINT8 quantized format
+        - merged_zero_point: Zero point for merged weight quantization (UINT8 scalar)
+        - merged_scale: Scale factor for merged weight quantization (FLOAT scalar)
+        
+    Output tensors (when quantized_outputs=False):
+        - merged_weight: Final merged weights in FLOAT format
+    """
+    
+    # Define inputs based on quantized_inputs flag
+    if quantized_inputs:
+        inputs = [
+            helper.make_tensor_value_info("weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]),
+            helper.make_tensor_value_info("x_zero_point", TensorProto.UINT8, []),
+            helper.make_tensor_value_info("x_scale", TensorProto.FLOAT, []),
+        ]
+    else:
+        inputs = [
+            helper.make_tensor_value_info("weight", TensorProto.FLOAT, ["out_features", "in_features"]),
+        ]
+
+    # Define outputs based on quantized_outputs flag
+    if quantized_outputs:
+        outputs = [
+            helper.make_tensor_value_info("merged_weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]),
+            helper.make_tensor_value_info("merged_zero_point", TensorProto.UINT8, []),
+            helper.make_tensor_value_info("merged_scale", TensorProto.FLOAT, [])
+        ]
+    else:
+        outputs = [
+            helper.make_tensor_value_info("merged_weight", TensorProto.FLOAT, ["out_features", "in_features"]),
+        ]
+
+    # Common inputs regardless of quantization flags
+    common_inputs = [
+        helper.make_tensor_value_info("shared_A", TensorProto.FLOAT, ["shared_rank", "in_features"]),
+        helper.make_tensor_value_info("intermediate", TensorProto.FLOAT, ["n_times_rank", "shared_rank"]),
+        helper.make_tensor_value_info("adapter_B", TensorProto.FLOAT, ["out_features", "rank"]),
+        helper.make_tensor_value_info("adapter_index", TensorProto.INT64, []),
+        helper.make_tensor_value_info("rank", TensorProto.INT64, []),
+        helper.make_tensor_value_info("alpha", TensorProto.FLOAT, []),
+    ]
+    inputs.extend(common_inputs)
+
+    nodes = []
+
+    # Step 1: get base_weight_fp32
+    if quantized_inputs:
+        nodes.append(
+            helper.make_node(
+                "DequantizeLinear",
+                inputs=["weight_quantized", "x_scale", "x_zero_point"],
+                outputs=["base_weight_fp32"],
+                name="dequantize_base_weights"
+            )
+        )
+    else:
+        # just rename directly
+        nodes.append(
+            helper.make_node(
+                "Identity",
+                inputs=["weight"],
+                outputs=["base_weight_fp32"],
+                name="pass_through_base_weight"
+            )
+        )
+
+    # Step 2: calculate slice boundaries
+    nodes.append(
+        helper.make_node("Mul", ["adapter_index", "rank"], ["slice_start"], name="compute_slice_start")
+    )
+    nodes.append(
+        helper.make_node("Add", ["slice_start", "rank"], ["slice_end"], name="compute_slice_end")
+    )
+    nodes.append(
+        helper.make_node("Unsqueeze", ["slice_start"], ["slice_start_1d"], axes=[0], name="unsqueeze_slice_start")
+    )
+    nodes.append(
+        helper.make_node("Unsqueeze", ["slice_end"], ["slice_end_1d"], axes=[0], name="unsqueeze_slice_end")
+    )
+    nodes.append(
+        helper.make_node(
+            "Constant", [], ["axes_0"],
+            value=helper.make_tensor("axes_0_tensor", TensorProto.INT64, [1], [0])
+        )
+    )
+    nodes.append(
+        helper.make_node(
+            "Slice", ["intermediate", "slice_start_1d", "slice_end_1d", "axes_0"],
+            ["chunked_intermediate"], name="slice_intermediate"
+        )
+    )
+
+    # Step 3: adapter_B @ chunked_intermediate
+    nodes.append(
+        helper.make_node("MatMul", ["adapter_B", "chunked_intermediate"], ["adapter_times_chunk"], name="adapter_chunk_matmul")
+    )
+
+    # Step 4: (adapter_B @ chunked) @ shared_A
+    nodes.append(
+        helper.make_node("MatMul", ["adapter_times_chunk", "shared_A"], ["lora_delta_prealpha"], name="final_matmul")
+    )
+
+    # Step 5: alpha scaling
+    nodes.append(
+        helper.make_node("Mul", ["lora_delta_prealpha", "alpha"], ["lora_delta"], name="scale_alpha")
+    )
+
+    # Step 6: add LoRA delta
+    nodes.append(
+        helper.make_node("Add", ["base_weight_fp32", "lora_delta"], ["merged_weight_fp32"], name="add_delta")
+    )
+
+    # Step 7: handle output based on quantized_outputs flag
+    if quantized_outputs:
+        nodes.append(
+            helper.make_node(
+                "DynamicQuantizeLinear",
+                inputs=["merged_weight_fp32"],
+                outputs=["merged_weight_quantized", "merged_scale", "merged_zero_point"],
+                name="quantize_merged"
+            )
+        )
+    else:
+        # just output the floating-point
+        nodes.append(
+            helper.make_node(
+                "Identity",
+                inputs=["merged_weight_fp32"],
+                outputs=["merged_weight"],
+                name="identity_output"
+            )
+        )
+
+    # put together the graph
+    graph = helper.make_graph(
+        nodes=nodes,
+        name="MARS Merger",
+        inputs=inputs,
+        outputs=outputs,
+        doc_string=f"MARS merger model for merging adapters (inputs: {'quantized' if quantized_inputs else 'float'}, outputs: {'quantized' if quantized_outputs else 'float'})."
+    )
+
+    model = helper.make_model(
+        graph,
+        producer_name="MARS_Merger_v1.0",
+        producer_version="1.0.0",
+        doc_string=f"MARS (Multi-Adapter Rank Sharing) weight merger for PEFT models. Input quantization: {quantized_inputs}, Output quantization: {quantized_outputs}.",
+        model_version=1,
+        domain="com.martinkorelic.mars",
+        opset_imports=[helper.make_opsetid("", 11)]
+    )
+    
+    metadata_entries = [
+        ("quantized_inputs", str(quantized_inputs).lower()),
+        ("quantized_outputs", str(quantized_outputs).lower()),
+        ("input_type", "quantized" if quantized_inputs else "float"),
+        ("output_type", "quantized" if quantized_outputs else "float")
+    ]
+    
+    for key, value in metadata_entries:
+        entry = StringStringEntryProto()
+        entry.key = key
+        entry.value = value
+        model.metadata_props.append(entry)
+
+    onnx.checker.check_model(model)
+    onnx.save(model, output_path)
+    
+    # Updated print statement to reflect the new flags
+    input_type = "quantized" if quantized_inputs else "float"
+    output_type = "quantized" if quantized_outputs else "float"
+    print(f"MARS merger model saved to {output_path} (inputs: {input_type}, outputs: {output_type})")
+    
+    return model
+
 def create_mars_merger_model(output_path="mars_merger_model.onnx", quantized=True):
     """
     Creates a fixed ONNX model that merges PEFT (MARS) weights with quantized base weights.
@@ -486,7 +869,7 @@ def create_mars_merger_model(output_path="mars_merger_model.onnx", quantized=Tru
         - merged_scale: Scale factor for merged weight quantization (FLOAT scalar)
     """
     
-# Dynamic inputs depending on quantized or not
+    # Dynamic inputs depending on quantized or not
     if quantized:
         inputs = [
             helper.make_tensor_value_info("weight_quantized", TensorProto.UINT8, ["out_features", "in_features"]),

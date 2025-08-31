@@ -28,7 +28,7 @@ from tools.utils import move_files_excluding, delete_directory, load_and_save_da
 from tools.parser_config import ARTIFACT_CONFIG, TRAIN_CONFIG, INFERENCE_CONFIG, TASK_NAME_TO_DATASET
 from tools.tokenizer_export import export_tokenizer_config
 
-from artifact.merger import create_mars_merger_model, create_lora_merger_model
+from artifact.merger import create_mars_merger_model, create_lora_merger_model, create_mars_merger_model_2, create_lora_merger_model_2
 
 def gen_artifacts(train_dir,
                   artifact_dir="artifacts",
@@ -73,9 +73,7 @@ def gen_artifacts(train_dir,
                                 artifact_directory = artifact_dir
                                 )
     
-    # Export training configs
-    with open(f'{artifact_dir}/{train_cfg_file}', "w", encoding="utf-8") as f:
-        json.dump({
+    extended_training_config = {
             "requires_grad": requires_grad,
             "peft_mapping": params["peft_mapping"],
             "rank": params["rank"],
@@ -83,8 +81,13 @@ def gen_artifacts(train_dir,
             "peft_target": params["peft_target"],
             "trainable_parameter_count": params["trainable_parameter_count"],
             **training_config
-            #"frozen_params": frozen_params
-        }, f, ensure_ascii=False)
+        }
+
+    # Export training configs
+    with open(f'{artifact_dir}/{train_cfg_file}', "w", encoding="utf-8") as f:
+        json.dump(extended_training_config, f, ensure_ascii=False)
+
+    return extended_training_config
 
 def onnx_checktrain(model_dir,
                     model_id,
@@ -199,11 +202,11 @@ def force_dequantize_external_and_save(model, output_path, external_data_filenam
     # Force DequantizeLinear tensors to external manually BEFORE converting everything else
     for initializer in model.graph.initializer:
         # Check if initializer name ends with x_scale or x_zero_point
-        is_dequant_tensor = (initializer.name.endswith('weight_scale') or 
-                           initializer.name.endswith('weight_zero_point'))
+        # TODO: Hard coded
+        is_dequant_tensor = (initializer.name.startswith("model.layers")) and (initializer.name.endswith("MatMul.weight") or initializer.name.endswith("MatMul.weight_zero_point") or initializer.name.endswith("MatMul.weight_scale"))
         
         if is_dequant_tensor and initializer.data_location != onnx.TensorProto.EXTERNAL:
-            #print(f"Forcing DequantizeLinear tensor to external: {initializer.name}")
+            print(f"Forcing DequantizeLinear tensor to external: {initializer.name}")
             
             # Convert tensor data to raw_data format first
             # This ensures the tensor has raw_data field that set_external_data expects
@@ -388,6 +391,7 @@ def gen_genai(model_id,
               large_model=False,
               test_generation=False,
               test_generation_config={},
+              force_external=False,
               check_model=True,
               opset_version=18):
     """
@@ -403,10 +407,9 @@ def gen_genai(model_id,
 
     new_model_namepath = f'{new_model_path}/{new_model_name}.onnx'
 
-    if weight_input:
+    if weight_input and training_config:
 
-        with open(f'{training_config}', 'r') as f:
-            requires_grad_layers = json.load(f)["requires_grad"]
+        requires_grad_layers = training_config["requires_grad"]
         
         # Extract initializers from the model
         initializers = {init.name: init for init in model.graph.initializer}
@@ -470,8 +473,9 @@ def gen_genai(model_id,
         )
 
     # We set size threshold to 0 to force all tensors to be saved as externally and later to be replaced easily in inference session
-    print("[INFO] Forcing external initializers...")
-    model = force_dequantize_external_and_save(model, new_model_namepath)
+    if force_external or training_config:
+        print("[INFO] Forcing external initializers...")
+        model = force_dequantize_external_and_save(model, new_model_namepath)
     print("[INFO] Saving the model...")
     onnx.save(model, new_model_namepath, save_as_external_data=True, location=f'{new_model_name}.onnx.data', size_threshold=0)
 
@@ -561,6 +565,7 @@ def convert_pipeline(model_id,
     except Exception as e:
         print(f"[ERROR] An error occurred: {e}")
     
+    extended_train_config = None
     if gen_train_artifacts:
 
         # Add peft method to training config
@@ -568,7 +573,7 @@ def convert_pipeline(model_id,
         train_config['modelId'] = model_id
 
         # Generate training artifacts
-        gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=train_model_name, training_config=train_config)
+        extended_train_config = gen_artifacts(train_dir=train_dir, artifact_dir=f'{build_dir}/train', model_name=train_model_name, training_config=train_config)
         print("[INFO] Generated training artifacts.")
 
     if test_training:
@@ -581,7 +586,7 @@ def convert_pipeline(model_id,
     if gen_inference_artifacts and inference_config["type"] == "native":
         gen_genai(model_id=model_id,
                   model_path=f'{inference_dir}/{inference_model_name}',
-                  training_config=f'{train_dir}/training_config.json',
+                  training_config=extended_train_config,
                   new_model_name=inference_export_config["output_inference_model"],
                   new_model_path=f'{build_dir}/inference',
                   large_model=large_model,
@@ -590,7 +595,8 @@ def convert_pipeline(model_id,
                   include_metadata=inference_export_config["include_metadata"],
                   opset_version=inference_export_config["opset"],
                   #test_generation_config=test_generation_config,
-                  check_model=inference_export_config["check_model"])
+                  check_model=inference_export_config["check_model"],
+                  force_external=inference_export_config["force_external_initializers"])
         print("[INFO] Generated the artifact inference model graph.")
 
         # Move the rest of the files
@@ -625,12 +631,12 @@ def convert_pipeline(model_id,
         elif peft_method == "mars":
             # We need both quantized and non-quantized merger models
             if 'optimization_level' in kwargs["train_builder_config"][peft_method] and kwargs["train_builder_config"][peft_method]['optimization_level'] <= 1:
-                create_mars_merger_model(f'{build_dir}/train/mars_merger_model.onnx', quantized=False)
-            create_mars_merger_model(f'{build_dir}/train/mars_qmerger_model.onnx', quantized=True)
+                create_mars_merger_model_2(f'{build_dir}/train/mars_merger_model.onnx', quantized_inputs=False, quantized_outputs=inference_export_config["quantized_merged_output"])
+            create_mars_merger_model_2(f'{build_dir}/train/mars_qmerger_model.onnx', quantized_inputs=True, quantized_outputs=inference_export_config["quantized_merged_output"])
 
             # We also need basic LoRA merger models for this PEFT method
-            create_lora_merger_model(f'{build_dir}/train/lora_qmerger_model.onnx', quantized=True)
-            create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx', quantized=False)
+            create_lora_merger_model_2(f'{build_dir}/train/lora_qmerger_model.onnx', quantized_inputs=True, quantized_outputs=inference_export_config["quantized_merged_output"])
+            create_lora_merger_model_2(f'{build_dir}/train/lora_merger_model.onnx', quantized_inputs=False, quantized_outputs=inference_export_config["quantized_merged_output"])
         else:
             raise ValueError("Unsupported PEFT method.")
         

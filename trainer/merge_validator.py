@@ -402,17 +402,6 @@ class PEFTMergeValidator:
             print(f"  - {adapter_name}: {list(params.keys())}")
         
         print(f"\nPEFT mappings: {len(self.peft_mapping)}")
-        
-        # Print merged parameters summary
-        merged_params = self.get_merged_parameters()
-        print(f"\nMerged parameters dictionary:")
-        for base_layer_name, layer_params in merged_params.items():
-            print(f"  - {base_layer_name}:")
-            for param_name, param_value in layer_params.items():
-                if isinstance(param_value, np.ndarray):
-                    print(f"    {param_name}: shape {param_value.shape}, dtype {param_value.dtype}")
-                else:
-                    print(f"    {param_name}: {param_value}")
 
 
 def create_peft_merge_validator(trainer: ORTTrainer, training_artifact_dir: str) -> PEFTMergeValidator:
@@ -549,42 +538,11 @@ def parse_arguments():
 
 
 if __name__ == "__main__":
-    args = parse_arguments()
 
-    print(f"{ARTIFACT_VALIDATOR_CONFIG} arguments:")
-    for arg, value in vars(args).items():
-        print(f"{arg}: {value}")
-
-    data_cur = ORTDataCurator(model_id=args.model_id,
-                              max_dataset_length=args.test_training_config["maxDatasetLength"],
-                              remove_long_samples=args.test_training_config["removeLongSample"],
-                              max_context_length=args.test_training_config["maxSequenceLength"],
-                              test_ratio=args.test_training_config["testRatio"],
-                              split=args.test_training_config["split"],
-                              shuffle=args.test_training_config["shuffle"],
-                              batch_size=args.test_training_config["batchSize"]
-                              )
-
-    ds = preload_dataset(TASK_NAME_TO_DATASET[args.test_training_config["taskName"]])
-
-    data_cur.prepare_dataset(ds, custom_preprocess=taskname_to_deepeval_preprocess_function(args.test_training_config["taskName"]))
-
-    # NOTE: Only validator for cosine scheduler for now
-    ort_args = ORTTrainingArguments(grad_accum_steps=args.test_training_config["gradAccumSteps"],
-                                learning_rate=args.test_scheduler_config["cosineLearningRate"],
-                                min_learning_rate=args.test_scheduler_config["minLearningRate"],
-                                num_train_epochs=args.test_training_config["numTrainEpochs"],
-                                warmup_steps=args.test_scheduler_config["warmupSteps"],
-                                max_steps=args.test_training_config["maxSteps"],
-                                max_sequence_length=args.test_training_config["maxSequenceLength"],
-                                save_steps=args.test_training_config["saveSteps"],
-                                scheduler_type="cosine"
-                                )
-    
-    trainer = ORTTrainer(args.training_artifact_dir, ort_args, data_cur)
+    trainer = ORTTrainer("build/train", load_from_state=True)
 
     trainer.train()
 
-    validator = create_peft_merge_validator(trainer, args.training_artifact_dir)
+    validator = create_peft_merge_validator(trainer, "")
 
     validator.compute_base_layers_from_adapters(save_directory=os.path.join(args.training_artifact_dir, 'temp_weights/'))

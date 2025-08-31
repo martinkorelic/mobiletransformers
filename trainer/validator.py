@@ -3,6 +3,7 @@ import random
 import textwrap
 from typing import Dict, List
 import onnx, time, os, gc, json
+import onnxruntime as ort
 
 import psutil
 import torch
@@ -324,6 +325,7 @@ class ORTTrainingArguments:
         self.peft_alpha = data.get("alpha", None)
         self.peft_target = data.get("peft_target", None)
         self.trainable_parameter_count = data.get("trainable_parameter_count", 0)
+        self.peft_mapping = data.get("peft_mapping", None)
 
         return self
 
@@ -391,15 +393,7 @@ class ORTTrainer:
         else:
             raise ValueError("Unsupported scheduler type. Use 'linear' or 'cosine'.")
 
-    def train(self):
-        """
-        Checks the model if the outputs are training correctly as well as evaluation.
-        Exports model for inference if needed or transfers the weights to an already existing inference model.
-        """
-
-        # Save the training config
-        self.save_training_config()
-        
+    def load_onnx_trainer(self):
         self.checkpoint_state = CheckpointState.load_checkpoint(f"{self.training_model_dir}/checkpoint")
 
         # TODO: Customize
@@ -415,11 +409,22 @@ class ORTTrainer:
 
         self.model = Module(f"{self.training_model_dir}/training_model.onnx", self.checkpoint_state, f"{self.training_model_dir}/eval_model.onnx", session_options=sess_options)
         self.optimizer = Optimizer(f"{self.training_model_dir}/optimizer_model.onnx", self.model)
+
+    def train(self):
+        """
+        Checks the model if the outputs are training correctly as well as evaluation.
+        Exports model for inference if needed or transfers the weights to an already existing inference model.
+        """
+
+        # Save the training config
+        self.save_training_config()
+        
+        self.load_onnx_trainer()
         
         train_dataset = self.data_curator.dataset["train"]
 
         total_samples = len(train_dataset)
-        steps_per_epoch = total_samples // self.data_curator.batch_size
+        steps_per_epoch = total_samples // self.args.batch_size
         total_epoch_steps = self.args.num_train_epochs * steps_per_epoch
 
         if self.args.max_steps is not None:
@@ -679,6 +684,400 @@ class ORTTrainer:
         
         print(f"Training information saved to: {config_path}")
 
+    def _extract_parameters(self):
+        """Extract base layer and adapter parameters from checkpoint state."""
+        if self.checkpoint_state is None:
+            raise ValueError("Trainer checkpoint state is None. Make sure training has been completed.")
+        
+        # Get parameters object from checkpoint state
+        parameters = self.checkpoint_state.parameters
+        
+        # Get all parameter names and objects by iterating over parameters
+        # Each item is a tuple: (param_name, Parameter object)
+        checkpoint_params = list(parameters)
+        
+        print(f"[INFO] Found {len(checkpoint_params)} parameters in checkpoint")
+        
+        # Extract base layer parameters (quantized weights, scales, zero_points)
+        self._extract_base_layer_params(checkpoint_params)
+        
+        # Extract adapter parameters
+        self._extract_adapter_params(checkpoint_params)
+
+        self.create_merged_parameters()
+    
+    def _extract_base_layer_params(self, checkpoint_params: list):
+        """Extract quantized base layer parameters."""
+        for base_layer_name in self.peft_mapping.keys():
+            base_params = {}
+
+            if base_layer_name.startswith('base_model.model.model.'):
+                base_layer_name = base_layer_name.replace('base_model.model.model.', 'backbone.model.')
+            
+            # Look for quantized weight, scale, and zero_point parameters
+            weight_quantized_name = f"{base_layer_name}.weight_quantized"
+            weight_scale_name = f"{base_layer_name}.weight_scale"
+            weight_zero_point_name = f"{base_layer_name}.weight_zero_point"
+            weight_noquantized_name = f"{base_layer_name}.weight"
+            
+            # Iterate through parameter tuples: (param_name, Parameter object)
+            for param_name, param_obj in checkpoint_params:
+                if param_name == weight_quantized_name:
+                    base_params['weight_quantized'] = param_obj.data
+                    print(f"[INFO] Found quantized weight: {param_name}")
+                elif param_name == weight_scale_name:
+                    base_params['x_scale'] = param_obj.data
+                    print(f"[INFO] Found weight scale: {param_name}")
+                elif param_name == weight_zero_point_name:
+                    base_params['x_zero_point'] = param_obj.data
+                    print(f"[INFO] Found weight zero point: {param_name}")
+                elif param_name == weight_noquantized_name:
+                    base_params['weight'] = param_obj.data
+                    print(f"[INFO] Found non-quantized weights: {param_name}")
+            
+            if base_params:
+                self.base_layer_params[base_layer_name] = base_params
+                print(f"[INFO] Extracted base layer params for: {base_layer_name}")
+            else:
+                print(f"[WARNING] No quantized parameters found for base layer: {base_layer_name}")
+    
+    def _extract_adapter_params(self, checkpoint_params: list):
+        """Extract adapter parameters for merging."""
+        # Get all unique adapter names from the mapping
+
+        self.adapter_params = {}
+        for base_layer_name, adapter_names in self.peft_mapping.items():
+
+            # Prefix renaming if needed
+            if base_layer_name.startswith('base_model.model.model.'):
+                base_layer_name = base_layer_name.replace('base_model.model.model.', 'backbone.model.')
+
+            if base_layer_name not in self.adapter_params:
+                self.adapter_params[base_layer_name] = {}
+
+            for input_name, adapter_name in adapter_names.items():
+
+                # Do not handle non string names, just add them to adapter params
+                if not isinstance(adapter_name, str):
+                    self.adapter_params[base_layer_name][input_name] = adapter_name
+                    continue
+
+                # Prefix renaming if needed
+                if adapter_name.startswith('base_model.model.model.'):
+                    adapter_name = adapter_name.replace('base_model.model.model.', 'backbone.model.')
+
+                adapter_name = f'{adapter_name}.weight'
+                # Iterate through parameter tuples: (param_name, Parameter object)
+                for param_name, param_obj in checkpoint_params:
+
+                    # Prefix renaming if needed
+                    if param_name.startswith('base_model.model.model.'):
+                        param_name = param_name.replace('base_model.model.model.', 'backbone.model.')
+
+                    if adapter_name == param_name:
+
+                        self.adapter_params[base_layer_name][input_name] = param_obj.data
+
+                        print(f"[INFO] Found adapter param: {param_name}")
+    
+    def get_base_layer_params(self, base_layer_name: str) -> Dict[str, np.ndarray]:
+        """
+        Get quantized parameters for a specific base layer.
+        
+        Args:
+            base_layer_name: Name of the base layer
+            
+        Returns:
+            Dictionary containing weight_quantized, weight_scale, weight_zero_point
+        """
+        return self.base_layer_params.get(base_layer_name, {})
+    
+    def get_adapter_params(self, adapter_name: str) -> Dict[str, np.ndarray]:
+        """
+        Get parameters for a specific adapter.
+        
+        Args:
+            adapter_name: Name of the adapter
+            
+        Returns:
+            Dictionary containing adapter parameters
+        """
+        return self.adapter_params.get(adapter_name, {})
+    
+    def get_mapping_for_base_layer(self, base_layer_name: str):
+        """
+        Get the PEFT mapping configuration for a specific base layer.
+        
+        Args:
+            base_layer_name: Name of the base layer
+            
+        Returns:
+            Dictionary containing adapter mappings for the base layer
+        """
+        return self.peft_mapping.get(base_layer_name, {})
+    
+    def create_merged_parameters(self):
+        self.input_adapter_parameters = {}
+        self.output_adapter_parameters = {}
+
+        for base_name, base_params in self.base_layer_params.items():
+            self.input_adapter_parameters[base_name] = {
+                **base_params,
+                **self.adapter_params[base_name]
+            }
+
+            self.output_adapter_parameters[base_name] = {}
+
+            # Quantized weight output
+            if 'weight_quantized' in self.input_adapter_parameters[base_name]:
+                self.output_adapter_parameters[base_name] = {
+                    'merged_weight_quantized': None,
+                    'merged_zero_point': None,
+                    'merged_scale': None
+                }
+            # Full precision weight output
+            elif 'weight' in self.input_adapter_parameters[base_name]:
+                self.output_adapter_parameters[base_name] = {
+                    'merged_weight': None
+                }
+
+            # check for None, empty, or empty numpy arrays
+            for key, value in self.input_adapter_parameters[base_name].items():
+                if value is None:
+                    print(f"[WARNING]: {base_name} -> {key} is None")
+
+                elif isinstance(value, (list, tuple, dict)) and len(value) == 0:
+                    print(f"[WARNING]: {base_name} -> {key} is an empty {type(value).__name__}")
+
+                elif isinstance(value, np.ndarray) and value.size == 0:
+                    print(f"[WARNING]: {base_name} -> {key} is an empty numpy array")
+
+                # convert plain Python ints or floats to numpy arrays
+                if isinstance(value, (int, np.integer)):
+                    self.input_adapter_parameters[base_name][key] = np.array(value, dtype=np.int64)
+                    #print(f"[INFO]: Converted {base_name} -> {key} to numpy int64 array")
+
+                elif isinstance(value, (float, np.floating)):
+                    self.input_adapter_parameters[base_name][key] = np.array(value, dtype=np.float32)
+                    #print(f"[INFO]: Converted {base_name} -> {key} to numpy float32 array")
+
+    def _load_peft_mapping(self):
+        """Load the training configuration containing PEFT mapping."""
+        try:
+            
+            self.peft_mapping = self.args.peft_mapping
+
+            # 1. Populate self.merger_models
+            self.merger_models = {}
+
+            # get all .onnx files ending with merger_model.onnx or qmerger_model.onnx
+            all_merger_files = [
+                f for f in os.listdir(self.training_model_dir)
+                if f.endswith("merger_model.onnx")
+            ]
+
+            for fname in all_merger_files:
+                # extract method name from the file name
+                # e.g. "lora_merger_model.onnx" → "lora"
+                method_name = fname.split("_")[0]
+                method_dict = self.merger_models.setdefault(method_name, {})
+
+                full_path = os.path.join(self.training_model_dir, fname)
+
+                if fname.endswith("qmerger_model.onnx"):
+                    method_dict["quantized"] = full_path
+                else:
+                    method_dict["full_precision"] = full_path
+
+                if not self.peft_mapping:
+                    raise ValueError("No 'peft_mapping' found in training config")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Training config file not found: {self.training_config_path}")
+        except json.JSONDecodeError:
+            raise ValueError(f"Invalid JSON in training config file: {self.training_config_path}")
+
+    def _build_merger_models(self):
+        """
+        Builds the onnxruntime sessions for each merger model
+        and stores them in self.merger_models[method_name]["quantized"/"full_precision"]
+        """
+        for method_name, models in self.merger_models.items():
+            for precision, path in models.items():
+                print(f"Loading {precision} merger model for method {method_name} from {path}")
+                session = ort.InferenceSession(path)
+                self.merger_models[method_name][precision] = session
+    
+    def clear_merger_models(self):
+        """
+        Cleanly releases and deletes all loaded merger ONNX inference sessions
+        from memory.
+        """
+        if hasattr(self, "merger_models"):
+            for method_name, merger_types in self.merger_models.items():
+                for precision, session in merger_types.items():
+                    if isinstance(session, ort.InferenceSession):
+                        print(f"[INFO] Releasing inference session for method '{method_name}' ({precision})")
+                        session._sess = None
+                        del session
+                # remove references from dictionary
+                self.merger_models[method_name].clear()
+            self.merger_models.clear()
+        
+        print("[INFO] All merger inference sessions cleared from memory.")
+
+    def export_model_for_inference(self, merged_weight_quantized = True, save_directory: str = None):
+
+        self.merged_weight_quantized = merged_weight_quantized
+        self.merger_models = {}
+        self.base_layer_params = {}
+        self.adapter_params = {}
+        self.input_adapter_parameters = {}
+        self.output_adapter_parameters = {}
+
+        # Instantiate peft mapping
+        self._load_peft_mapping()
+
+        if self.model is None:
+            self.load_onnx_trainer()
+        
+        # Extract parameters from checkpoint
+        self._extract_parameters()
+
+        self._build_merger_models()
+
+        for base_layer, input_layers in self.input_adapter_parameters.items():
+
+            print(f"[DEBUG] Computing merge for base_layer: {base_layer}")
+            
+            # Print input layer keys and their shapes
+            for key, val in input_layers.items():
+                if isinstance(val, np.ndarray):
+                    print(f"[DEBUG] Input '{key}' shape: {val.shape}")
+                else:
+                    print(f"[WARNING] Input '{key}' is not a numpy array, type={type(val)}")
+            
+            # Run the MARS merger technique
+            if 'shared_A' in input_layers:
+                self._run_merger_model(self.merger_models['mars'], base_layer, input_layers)
+            # Run the LoRA merger technique
+            elif 'adapter_A' in input_layers:
+                # We do not need rank input here
+                input_layers.pop("rank", None)
+                self._run_merger_model(self.merger_models['lora'], base_layer, input_layers)
+
+        print(f"\n[DEBUG] Finished merging. Output adapter parameters:")
+        for base_layer, output_dict in self.output_adapter_parameters.items():
+            print(f"  - Base layer: {base_layer}")
+            for name, arr in output_dict.items():
+                if isinstance(arr, np.ndarray):
+                    print(f"      * {name}: shape={arr.shape}")
+                else:
+                    print(f"      * {name}: type={type(arr)} (not a numpy array)")
+        
+        # Save to disk
+        if not save_directory:
+            save_directory = os.path.join(self.training_model_dir, "merged")
+        
+        os.makedirs(save_directory, exist_ok=True)
+        for base_layer, output_dict in self.output_adapter_parameters.items():
+            save_path = os.path.join(save_directory, f"{base_layer}.npz")
+            np.savez(save_path, **output_dict)
+            print(f"[INFO] Saved merged parameters for {base_layer} to {save_path}")
+    
+    def _run_merger_model(self, merger_models: dict, base_layer: str, input_layers: dict):
+        """
+        Runs the quantized or full precision merger technique of the PEFT method.
+        """
+
+        session = None
+        
+        if 'weight_quantized' in input_layers:
+
+            session = merger_models["quantized"]
+
+            if self.merged_weight_quantized:
+                merged_weight_quantized, merged_zero_point, merged_scale = session.run(None, input_layers)
+
+                are_equal = np.array_equal(input_layers['weight_quantized'], merged_weight_quantized)
+                print(f"weight quantized are exactly equal: {are_equal}")
+
+                are_equal = np.array_equal(input_layers['x_scale'], merged_scale)
+                print(f"x scale are exactly equal: {are_equal}")
+
+                are_equal = np.array_equal(input_layers['x_zero_point'], merged_zero_point)
+                print(f"zero point are exactly equal: {are_equal}")
+
+                #print(input_layers)
+
+                # Debug outputs
+                print(f"[DEBUG] merged_weight_quantized shape: {merged_weight_quantized.shape if isinstance(merged_weight_quantized, np.ndarray) else 'not ndarray'}")
+                print(f"[DEBUG] merged_zero_point shape: {merged_zero_point.shape if isinstance(merged_zero_point, np.ndarray) else 'not ndarray'}")
+                print(f"[DEBUG] merged_scale shape: {merged_scale.shape if isinstance(merged_scale, np.ndarray) else 'not ndarray'}")
+                
+                if isinstance(merged_weight_quantized, np.ndarray) and merged_weight_quantized.size == 0:
+                    print(f"[WARNING] merged_weight_quantized is empty!")
+                if isinstance(merged_zero_point, np.ndarray) and merged_zero_point.size == 0:
+                    print(f"[WARNING] merged_zero_point is empty!")
+                if isinstance(merged_scale, np.ndarray) and merged_scale.size == 0:
+                    print(f"[WARNING] merged_scale is empty!")
+
+                self.output_adapter_parameters[base_layer] = {
+                    'weight_quantized': merged_weight_quantized,
+                    'weight_scale': merged_scale,
+                    'weight_zero_point': merged_zero_point
+                }
+            else:
+
+                merged_weight = session.run(None, input_layers)[0]
+                
+                # Debug output
+                print(f"[DEBUG] merged_weight type: {type(merged_weight)}")
+                if isinstance(merged_weight, np.ndarray):
+                    print(f"[DEBUG] merged_weight shape: {merged_weight.shape}")
+                    if merged_weight.size == 0:
+                        print(f"[WARNING] merged_weight is empty!")
+                else:
+                    print(f"[WARNING] merged_weight is not a numpy array")
+
+                self.output_adapter_parameters[base_layer] = {
+                    'weight': merged_weight
+                }
+        
+        elif 'weight' in input_layers:
+
+            session = merger_models["full_precision"]
+
+            merged_weight = session.run(None, input_layers)[0]
+            
+            # Debug output
+            print(f"[DEBUG] merged_weight type: {type(merged_weight)}")
+            if isinstance(merged_weight, np.ndarray):
+                print(f"[DEBUG] merged_weight shape: {merged_weight.shape}")
+                if merged_weight.size == 0:
+                    print(f"[WARNING] merged_weight is empty!")
+            else:
+                print(f"[WARNING] merged_weight is not a numpy array")
+
+            self.output_adapter_parameters[base_layer] = {
+                'weight': merged_weight
+            }
+
+    def print_summary(self):
+        """Print a summary of extracted parameters."""
+        print("\n" + "="*50)
+        print("PEFT Merge Validator Summary")
+        print("="*50)
+        
+        print(f"Base layers found: {len(self.base_layer_params)}")
+        for base_layer_name, params in self.base_layer_params.items():
+            print(f"  - {base_layer_name}: {list(params.keys())}")
+        
+        print(f"\nAdapters found: {len(self.adapter_params)}")
+        for adapter_name, params in self.adapter_params.items():
+            print(f"  - {adapter_name}: {list(params.keys())}")
+        
+        print(f"\nPEFT mappings: {len(self.peft_mapping)}")
+
 def check_duplicate_initializers(onnx_model_path):
     """
     Loads an ONNX model and checks if there are duplicate initializers
@@ -845,6 +1244,8 @@ if __name__ == "__main__":
     #for arg, value in vars(args).items():
     #    print(f"{arg}: {value}")
     
-    trainer = ORTTrainer("build/train", load_from_state=True)
+    trainer = ORTTrainer("build/train-arc-e", load_from_state=False)
 
-    trainer.train()
+    #trainer.train()
+
+    trainer.export_model_for_inference(merged_weight_quantized=False)

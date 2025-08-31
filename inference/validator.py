@@ -129,7 +129,7 @@ class ORTransformerGenerator:
     """
     
     def __init__(self, model_id, model_name, model_dir, generation_config = {'type': 'native'}, 
-                 load_merged_weights=False, **kwargs):
+                 load_merged_weights=False, merged_weights_dir = None, **kwargs):
         """
         Initialize the ONNX model generator.
         
@@ -146,6 +146,7 @@ class ORTransformerGenerator:
         self.model_dir = model_dir
         self.model_path = os.path.join(model_dir, model_name)
         self.kwargs = kwargs
+        self.merged_weights_dir = merged_weights_dir
         
         # Load and process generation config
         self.generation_config = self._load_generation_config(generation_config)
@@ -207,24 +208,23 @@ class ORTransformerGenerator:
         """Initialize ONNX runtime session with optional external initializers."""
         sess_options = SessionOptions()    
         sess_options.enable_profiling = False
-        sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess_options.enable_mem_pattern = True
         sess_options.enable_cpu_mem_arena = True
-        
-        external_initializers = []
+        #sess_options.log_severity_level = 0  # Enable verbose logging
+        #sess_options.log_verbosity_level = 0
+        sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+
+        if load_merged_weights:
+            external_names, external_values = self._load_external_initializers()
         
         if load_merged_weights:
-            external_initializers = self._load_external_initializers()
-        
-        if external_initializers:
-            external_init_map = {name: val for name, val in external_initializers}
+            sess_options.add_external_initializers(external_names, external_values)
             session = InferenceSession(
                 self.model_path,
                 sess_options=sess_options,
-                providers=['CPUExecutionProvider'],
-                external_initializers=external_init_map
+                providers=['CPUExecutionProvider']
             )
-            print(f"[INFO] Loaded {len(external_initializers)} external initializers")
+            print(f"[INFO] Loaded {len(external_names)} external initializers")
         else:
             session = InferenceSession(
                 self.model_path,
@@ -236,29 +236,39 @@ class ORTransformerGenerator:
     
     def _load_external_initializers(self):
         """Load external initializers from merged weights directory."""
-        merged_weights_dir = self.kwargs.get('temp_weights_dir', './build/train/temp_weights/')
+        
         external_initializers = []
         
-        if not os.path.exists(merged_weights_dir):
-            print(f"[WARNING] Merged weights directory not found: {merged_weights_dir}")
+        if not os.path.exists(self.merged_weights_dir):
+            print(f"[WARNING] Merged weights directory not found: {self.merged_weights_dir}")
             return external_initializers
         
-        print(f"[INFO] Loading external initializers from {merged_weights_dir}")
+        print(f"[INFO] Loading external initializers from {self.merged_weights_dir}")
         
-        for fname in os.listdir(merged_weights_dir):
+        external_names = []
+        external_values = []
+
+        for fname in os.listdir(self.merged_weights_dir):
             if fname.endswith(".npz"):
-                npz_path = os.path.join(merged_weights_dir, fname)
+                npz_path = os.path.join(self.merged_weights_dir, fname)
                 weights = np.load(npz_path)
                 base_layer_name = os.path.splitext(fname)[0]
                 
                 for key in weights.files:
                     arr = weights[key]
                     full_key_name = f"{base_layer_name}.{key}"
+
+                    # Renaming conventions
+                    full_key_name = full_key_name.replace("self_attn", "attn")
+                    full_key_name = full_key_name.replace("base_layer", "MatMul")
+                    full_key_name = full_key_name.replace("backbone.model", "model")
+
                     initializer = rt.OrtValue.ortvalue_from_numpy(arr)
-                    external_initializers.append((full_key_name, initializer))
+                    external_values.append(initializer)
+                    external_names.append(full_key_name)
                     print(f"[DEBUG] External initializer: {full_key_name} shape={arr.shape}")
         
-        return external_initializers
+        return external_names, external_values
     
     def _determine_input_config(self):
         """Determine input configuration based on model inputs."""
@@ -310,7 +320,8 @@ class ORTransformerGenerator:
         # Prepare the prompt with chat template if needed
         processed_prompt = self._prepare_prompt(prompt)
         
-        print(f"[INFO] Generating with prompt:\n{processed_prompt}")
+        if decode_between:
+            print(f"[INFO] Generating with prompt:\n{processed_prompt}")
         
         # Call the generation function with all necessary parameters
         return generate_tokens_onnx(

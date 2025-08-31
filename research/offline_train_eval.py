@@ -116,10 +116,14 @@ class PEFTMethod(Enum):
     ABLATION_B = "abl_B"
     ABLATION_C = "abl_C"
     ABLATION_D = "abl_D"
-    ABLATION_E = "abl_E"
-    ABLATION_F = "abl_F"
-    ABLATION_G = "abl_G"
-    ABLATION_H = "abl_H"
+    LORAQ4 = "loraq4"
+    LORAQ8 = "loraq8"
+
+    # Not actually in use
+    #ABLATION_E = "abl_E"
+    #ABLATION_F = "abl_F"
+    #ABLATION_G = "abl_G"
+    #ABLATION_H = "abl_H"
     
     @classmethod
     def get_available_methods(cls):
@@ -383,22 +387,45 @@ class PEFTTrainer:
         print(f"Loading model: {self.model_id}")
 
         quantization_config = None
-        if self.peft_method == "qlora" or self.peft_method == "qmars":
+        # Handle different PEFT methods with quantization
+        if self.peft_method in ["qlora", "qmars", "loraq4", "loraq8"]:
             try:
                 from transformers import BitsAndBytesConfig
                 
-                quantization_config = BitsAndBytesConfig(
-                    # Load the model with 4-bit quantization
-                    load_in_4bit=True,
-                    # Use double quantization
-                    bnb_4bit_use_double_quant=True,
-                    # Use 4-bit Normal Float for storing the base model weights in GPU memory
-                    bnb_4bit_quant_type="nf4",
-                    # De-quantize the weights to 32-bit float before the forward/backward pass
-                    bnb_4bit_compute_dtype=torch.float32,
-                )
-                print("Using 4-bit quantization for QLoRA")
-                
+                if self.peft_method in ["qlora", "qmars"]:
+                    # Original 4-bit quantization for QLoRA/QMARS
+                    quantization_config = BitsAndBytesConfig(
+                        # Load the model with 4-bit quantization
+                        load_in_4bit=True,
+                        # Use double quantization
+                        bnb_4bit_use_double_quant=True,
+                        # Use 4-bit Normal Float for storing the base model weights in GPU memory
+                        bnb_4bit_quant_type="nf4",
+                        # De-quantize the weights to 32-bit float before the forward/backward pass
+                        bnb_4bit_compute_dtype=torch.float32,
+                    )
+                    print("Using 4-bit quantization for QLoRA/QMARS")
+                    
+                elif self.peft_method == "loraq4":
+                    # 4-bit quantization with int4 for LoRA
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_use_double_quant=True,
+                        bnb_4bit_quant_type="fp4",  # Using fp4 for int4-like quantization
+                        bnb_4bit_compute_dtype=torch.float32,
+                    )
+                    print("Using 4-bit int4 quantization for LoRAQ4")
+                    
+                elif self.peft_method == "loraq8":
+                    # 8-bit quantization for LoRA with optimized settings
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_8bit=True,
+                        llm_int8_threshold=6.0,  # Default threshold for outlier detection
+                        llm_int8_enable_fp32_cpu_offload=False,  # Set to True if you need CPU offloading
+                        # llm_int8_skip_modules can be added if certain modules need to be skipped
+                    )
+                    print("Using 8-bit int8 quantization for LoRAQ8")
+                    
             except ImportError as e:
                 print(f"Warning: BitsAndBytesConfig not available for quantization: {e}")
                 print("Loading model without quantization")
@@ -474,7 +501,7 @@ class PEFTTrainer:
                 **self.extra_peft_config
             )
             self.model = get_peft_model(self.base_model, lora_config)
-        elif self.peft_method == "qlora":
+        elif self.peft_method in ["qlora", "loraq4", "loraq8"]:
             qlora_config = LoraConfig(
                 r=self.lora_rank,
                 lora_alpha=self.lora_alpha,
@@ -904,7 +931,33 @@ if __name__ == "__main__":
     
     #################################
 
+    def run_task_1():
+        methods = ["loraq4", "loraq8"]
+        for m in methods:
+            task_all_experiments(m, m, output_dir_res=f"./experiment_results/TinyLlama_v1.1-{m}-fix")
+        #opt_level = [3, 4]
+
+        #for o in opt_level:
+        #    task_all_experiments("mars", "mars", output_dir_res=f"./experiment_results/TinyLlama_v1.1-mars-opt{o}-q8-fix", extra_peft_config={"optimization_level": o, "quant_n_bits": 8})
+
+    def run_task_2():
+        methods = ["abl_0", "abl_A", "abl_B", "abl_C", "abl_D", "abl_G", "abl_H"]
+        for m in methods:
+            task_all_experiments(m, "ablation", output_dir_res=f"./experiment_results/TinyLlama_v1.1-{m}")
+
     def run_task_3():
-        task_all_experiments("mars", "mars", extra_peft_config={"optimization_level": 3, "quant_n_bits": 4})
-    
-    run_task_3()
+        task_all_experiments("lora", "lora", output_dir_res="./experiment_results/TinyLlama_v1.1-lora")
+        task_all_experiments("qlora", "qlora", output_dir_res="./experiment_results/TinyLlama_v1.1-qlora")
+        task_all_experiments("mars", "mars", output_dir_res="./experiment_results/TinyLlama_v1.1-mars-opt0-new")
+        task_all_experiments("mars", "mars", output_dir_res="./experiment_results/TinyLlama_v1.1-mars-opt1-new", extra_peft_config={"optimization_level": 1})
+        task_all_experiments("qmars", "qmars", output_dir_res="./experiment_results/TinyLlama_v1.1-qmars")
+
+    def run_task_4():
+        opt_level = [3, 4]
+        n_bits = [4, 8]
+
+        for o in opt_level:
+            for n_bit in n_bits:
+                task_all_experiments("mars", "mars", output_dir_res=f"./experiment_results/TinyLlama_v1.1-mars-opt{o}-q{n_bit}-new", extra_peft_config={"optimization_level": o, "quant_n_bits": n_bit})
+
+    run_task_1()

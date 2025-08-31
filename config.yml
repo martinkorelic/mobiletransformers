@@ -44,7 +44,7 @@ TRAIN_BUILDER:
     - up_proj
 
   lora_rank: 8
-  lora_alpha: 8
+  lora_alpha: 16
   quantize: true
   # Weight types for quantizing (dynamic quantization can only use UInt8, so this field does not change anything for dynamic quantization)
   weight_type: "QInt8"
@@ -89,10 +89,11 @@ TRAIN_BUILDER:
     config: config
   mars:
     #  Optimization level to enable with other configurations:
-    #  0 - fully trainable all layers and no quantization
-    #  1 - fully trainable layers with partial quantization (specified in `modules_to_quantize`)
-    #  2 - fully trainable layers with full quantization
-    #  3 - partial trainable layers (frozen and fused down projection layers) with full quantization
+    # 0 - fully trainable all layers and no quantization
+    # 1 - partial trainable layers (frozen and fused down projection layers) with no quantization
+    # 2 - fully trainable layers with partial quantization (specified in `modules_to_quantize`)
+    # 3 - fully trainable layers with full quantization
+    # 4 - partial trainable layers (frozen and fused down projection layers) with full quantization
     optimization_level: 3
     modules_to_preserve_errors:
       - 
@@ -121,10 +122,10 @@ INFERENCE_BUILDER:
 
   # Combinations of quantized model weights (inputs)
   # - DequantizeLinear of uint8 (dynamic_quantize=true + force_transpose_inputs=true + use_qdq=true)
-  # - DequantizeLinear of int4 (force_transpose_inputs=false + use_qdq=true)
+  # - DequantizeLinear of int4 (dynamic_quantize=false + force_transpose_inputs=false + use_qdq=true)
   # - MatMulNBits operator of int8 (all false)
-  dynamic_quantize: false
-  force_transpose_inputs: false
+  dynamic_quantize: true
+  force_transpose_inputs: true
   use_qdq: true
 
   prompt_templates: false
@@ -148,10 +149,10 @@ ARTIFACT_BUILDER:
   embedding_model: ./build/embedding_models/embedding_model.onnx
 
   # NOTE: Use trainer.builder to build the training model first
-  gen_train_artifacts: true
+  gen_train_artifacts: false
 
   # NOTE: Use inference.builder to build inference model first
-  gen_inference_artifacts: false
+  gen_inference_artifacts: true
 
   # NOTE: Use trainer.builder to build just the embedding model first
   gen_rag_artifacts: false
@@ -159,8 +160,9 @@ ARTIFACT_BUILDER:
   ### EXPORTING OPTIONS ###
 
   export_inference_config: true
-  export_tokenizer: true
-  export_merger: false
+  export_tokenizer: false
+  export_merger: true
+
   # Exports the dataset inside the train directory
   export_dataset: false
 
@@ -168,13 +170,19 @@ ARTIFACT_BUILDER:
   test_eval: false
 
   inference_export_config:
-  # Whether to include trainable weights as model input
+    # Whether to include trainable weights as model input
     weight_input : false
     # Whether to include the model metadata
     include_metadata: true
     opset: 20
     output_inference_model: "quant_model"
     check_model : false
+
+    # Define whether the merged weights will be quantized or full precision
+    quantized_merged_output: false
+
+    # Force external initializers
+    force_external_initializers: true
   
   inference_config:
     # Currently only native works for the application
@@ -214,7 +222,7 @@ ARTIFACT_BUILDER:
     onnxName: quant_model
     
     taskName: arc_e
-    batchSize: 1
+    batchSize: 4
     numTrainEpochs: 1
     maxSteps: 20
     saveSteps: 50
@@ -228,16 +236,16 @@ ARTIFACT_BUILDER:
       datasetBatchSize: 64
       maxSequenceLength: 512
       maxDatasetLength: 256
-      removeLongSamples: true
+      removeLongSamples: false
       datasetSplit: false
       datasetShuffle: false
-      testRatio: 0.1
+      testRatio: 0.0
 
     schedulerType: cosine # "linear", "cosine"
     schedulerOptions:
       # Cosine options
       minLearningRate: 0
-      cosineLearningRate: 0.0001
+      cosineLearningRate: 0.00001
       warmupSteps: 10
       # Linear options
       linearLearningRate: 0.0001

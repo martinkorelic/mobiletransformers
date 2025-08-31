@@ -298,7 +298,8 @@ class MarsLayer(BaseTunerLayer):
         n_bits = kwargs.get("quant_n_bits", 8)
         
         # Apply dynamic quantization to base layer if requested
-        if self.quantize_base and isinstance(base_layer, nn.Linear):
+        # Do not apply quantization if exporting for ONNX
+        if self.quantize_base and not self.onnx_export and isinstance(base_layer, nn.Linear):
             self.base_layer = QuantizedBaseLayer(
                 base_layer,
                 n_bits
