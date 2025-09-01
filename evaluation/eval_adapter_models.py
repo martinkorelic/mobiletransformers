@@ -44,7 +44,7 @@ class CustomPeftModel(DeepEvalBaseLLM):
         is_adapter_model = False
 
         ############## LOAD FROM LOCAL WEIGHTS ##############
-        if adapter_name == "base":
+        if adapter_name == "local":
             self.name = model_name
             self.device = device
             
@@ -60,23 +60,21 @@ class CustomPeftModel(DeepEvalBaseLLM):
             
             # Load and replace weights with merged ONNX weights
             self._load_merged_weights(adapter_path)
+
+        elif adapter_name == "base":
+            # Only load the base model
+            self.name = model_name
+            self.device = device
             
-            # Set tokenizer
-            self.tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+            if base_model is None:
+                raise ValueError("Base model name/ID must be provided")
             
-            # Load generation config if available
-            try:
-                self.generation_config = GenerationConfig.from_pretrained(base_model_name)
-                self.model.generation_config = self.generation_config
-                print("Loaded generation config from base model.")
-                
-                # Custom generation config
-                self.generation_config.early_stopping = True
-                self.generation_config.max_new_tokens = 3
-                
-            except Exception as e:
-                print("No generation config found. Using default settings.")
-                self.generation_config = self.model.generation_config
+            base_model_name = base_model
+            
+            print(f"Loading base model: {base_model_name}")
+            
+            # Load the base model directly from model ID
+            self.model = AutoModelForCausalLM.from_pretrained(base_model_name)
 
         ############## LOAD FROM ADAPTER CONFIG ##############
         else:

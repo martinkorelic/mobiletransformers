@@ -22,6 +22,7 @@ class MarsModel(BaseTuner):
         self.optimization_level =  peft_config[adapter_name].optimization_level
         self.only_export = peft_config[adapter_name].onnx_export
         self.quant_n_bits = peft_config[adapter_name].quant_n_bits
+        self.use_bnb = peft_config[adapter_name].use_bnb
 
         # Based on optimization level set configurations
         if  peft_config[adapter_name].optimization_level == 0:
@@ -234,6 +235,7 @@ class MarsModel(BaseTuner):
         module_config['trainable_down'] = self.trainable_down
         module_config['onnx_export'] = self.only_export
         module_config['quant_n_bits'] = self.quant_n_bits
+        module_config['use_bnb'] = self.use_bnb
 
         if isinstance(target, Linear):
             target.update_layer(

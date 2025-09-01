@@ -13,7 +13,8 @@ TASK_EPOCHS = {
     "arc_e": 4,
     "winogrande": 4,
     "arc_c": 4,
-    "hellaswag": 1
+    "hellaswag": 1,
+    "mini_personalqa": 6
 }
 
 BATCH_SIZE = 32

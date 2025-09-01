@@ -85,6 +85,10 @@ class MarsConfig(PeftConfig):
         metadata={"help": "Whether to enable orthogonal initialization in intermediate matrices."},
     )
     quant_n_bits: int = field(default=8, metadata={"help": "Quantization type (bits for quantized weights) for MARS. Can be either '8' or '4'."})
+    use_bnb: bool = field(
+        default=True,
+        metadata={"help": "Whether to use BitsAndBytes to quantize base layers."},
+    )
     onnx_export: bool = field(
         default=False,
         metadata={"help": "Whether to prepare the model for ONNX export (disable quantization)."},

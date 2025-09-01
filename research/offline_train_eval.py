@@ -53,7 +53,8 @@ from trainer.utils import (
     process_sample_boolq_deepeval,
     process_sample_arc_deepeval,
     process_sample_logiqa_deepeval,
-    process_sample_winogrande_deepeval
+    process_sample_winogrande_deepeval,
+    process_sample_minipersonalqa
 )
 
 from deepeval.benchmarks import BoolQ, ARC, LogiQA, Winogrande, HellaSwag
@@ -62,6 +63,7 @@ from deepeval.benchmarks.modes import ARCMode
 class SLModel(Enum):
     TINYLLAMA = "TinyLlama/TinyLlama_v1.1",
     LLAMA = "meta-llama/Llama-3.2-1B"
+    QWEN05 = "Qwen/Qwen2-0.5B"
     QWEN = "Qwen/Qwen2.5-1.5B",
     GEMMA = "google/gemma-2-2b"
  
@@ -95,8 +97,8 @@ DATASET_MAPPING = {
     PEFTBenchmarkDataset.ARC_C.value : ("allenai/ai2_arc", "arc_train_deepeval", "ARC-Challenge"),
 
     ### Mobile tasks
-    PEFTBenchmarkDataset.MINI_PERSONALQA.value : ("data/MiniPersonalQA_train", "TODO"),
-    PEFTBenchmarkDataset.MINI_RECOMMENDATION.value : ("data/MiniRecommendation_train", "TODO"),
+    PEFTBenchmarkDataset.MINI_PERSONALQA.value : ("data/MiniPersonalQA_train", "minipersonalqa"),
+    PEFTBenchmarkDataset.MINI_RECOMMENDATION.value : ("data/MiniRecommendation_train", "minirecommendation"),
 
 }
 
@@ -788,6 +790,8 @@ def prepare_dataset(dataset: Dataset, preprocess_id, tokenizer, max_dataset_leng
             return process_sample_logiqa_deepeval(sample, tokenizer, (batch_size > 1))
         elif preprocess_id == DATASET_MAPPING[PEFTBenchmarkDataset.WINOGRANDE.value][1]:
             return process_sample_winogrande_deepeval(sample, tokenizer, (batch_size > 1))
+        elif preprocess_id == DATASET_MAPPING[PEFTBenchmarkDataset.MINI_PERSONALQA.value][1]:
+            return process_sample_minipersonalqa(sample, tokenizer, (batch_size > 1))
 
         return tokenizer(sample, return_dict=True, tokenize=True, return_tensors="pt", padding=True, add_generation_prompt=False)
     
@@ -893,6 +897,54 @@ def task_all_experiments(peft_method = "lora", adapter_name = "lora", output_dir
             except Exception as e:
                 print("Error occured:", e)
 
+def task_mobile_experiments(peft_method = "lora", adapter_name = "lora", output_dir_res="./experiment_results", extra_peft_config = {}):
+    """
+    Baseline task experiment script function.
+    
+    Trains and evaluates adapter methods on BoolQ, LogiQA, ARC_E, Winogrande, ARC_C and HellaSwag benchmark.
+    """
+
+    tasks = ["mini_personalqa"]
+    ranks = [8]
+
+    # If lora_xs is used we multiply the rank by 8, because it has small amount of trainable parameters
+    if peft_method == "lora_xs":
+        ranks = [r * 8 for r in ranks]
+
+    for rank in ranks:
+        for task in tasks:
+
+            try:
+                trainer = PEFTTrainer(
+                    model_id=SLModel.QWEN05.value,
+                    dataset=task,
+                    peft_method=peft_method,
+                    lora_rank=rank,
+                    batch_size=BATCH_SIZE,
+                    per_device_batch_size=PER_DEVICE_BATCH_SIZE,
+                    gradient_accumulation_steps=GRADIENT_ACCUMULATION,
+                    num_epochs=TASK_EPOCHS[task],
+                    output_dir=output_dir_res,
+                    extra_peft_config=extra_peft_config
+                )
+
+                trainer.train()
+                output_dir = trainer.output_dir
+                dataset_config = trainer.dataset_config
+
+                del trainer
+                gc.collect()
+
+                evaluator = PEFTEval(output_dir, dataset_config, adapter_name=adapter_name)
+                evaluator.eval()
+
+                del evaluator
+                gc.collect()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print("Error occured:", e)
+
 def ablation_training_experiment():
     """
     Ablation training metric experiment.
@@ -946,18 +998,22 @@ if __name__ == "__main__":
             task_all_experiments(m, "ablation", output_dir_res=f"./experiment_results/TinyLlama_v1.1-{m}")
 
     def run_task_3():
+        task_all_experiments("mars", "mars", output_dir_res="./experiment_results/TinyLlama_v1.1-mars-opt0-new")
         task_all_experiments("lora", "lora", output_dir_res="./experiment_results/TinyLlama_v1.1-lora")
         task_all_experiments("qlora", "qlora", output_dir_res="./experiment_results/TinyLlama_v1.1-qlora")
-        task_all_experiments("mars", "mars", output_dir_res="./experiment_results/TinyLlama_v1.1-mars-opt0-new")
+        
         task_all_experiments("mars", "mars", output_dir_res="./experiment_results/TinyLlama_v1.1-mars-opt1-new", extra_peft_config={"optimization_level": 1})
         task_all_experiments("qmars", "qmars", output_dir_res="./experiment_results/TinyLlama_v1.1-qmars")
 
     def run_task_4():
         opt_level = [3, 4]
-        n_bits = [4, 8]
+        n_bits = [8]
 
         for o in opt_level:
             for n_bit in n_bits:
-                task_all_experiments("mars", "mars", output_dir_res=f"./experiment_results/TinyLlama_v1.1-mars-opt{o}-q{n_bit}-new", extra_peft_config={"optimization_level": o, "quant_n_bits": n_bit})
+                task_all_experiments("mars", "mars", output_dir_res=f"./experiment_results/TinyLlama_v1.1-mars-opt{o}-q{n_bit}-new", extra_peft_config={"optimization_level": o, "quant_n_bits": n_bit, "use_bnb": False})
 
-    run_task_1()
+    def run_task_5():
+        task_mobile_experiments("mars", "mars", output_dir_res="./experiment_results/TinyLlama_v1.1-mars-minipersonalqa")
+
+    run_task_5()

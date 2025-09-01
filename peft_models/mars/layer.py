@@ -5,7 +5,7 @@ import torch.nn as nn
 from research.experiments import create_orthogonal_matrices
 
 class QuantizedBaseLayer(nn.Module):
-    def __init__(self, original_linear, bits=8, symmetric = True, per_channel=True):
+    def __init__(self, original_linear, bits=8, use_bnb = True, symmetric = True, per_channel=True):
         super().__init__()
         self.in_features = original_linear.in_features
         self.out_features = original_linear.out_features
@@ -13,6 +13,7 @@ class QuantizedBaseLayer(nn.Module):
         self.per_channel = per_channel
         self.symmetric = symmetric
         self.device = original_linear.weight.device
+        self.use_bnb = use_bnb
         
         # Check for bitsandbytes availability
         self._check_bnb_availability()
@@ -28,9 +29,14 @@ class QuantizedBaseLayer(nn.Module):
     
     def _check_bnb_availability(self):
         """Check if bitsandbytes is available and supports our configuration"""
-        self.use_bnb = False
         self.bnb_config = None
         
+        if not self.use_bnb:
+            return
+        
+        # Check BNB availability
+        self.use_bnb = False
+
         try:
             import bitsandbytes as bnb
             from transformers import BitsAndBytesConfig
@@ -296,13 +302,15 @@ class MarsLayer(BaseTunerLayer):
         self.trainable_down = kwargs.get("trainable_down", True)
         self.onnx_export = kwargs.get("onnx_export", False)
         n_bits = kwargs.get("quant_n_bits", 8)
+        use_bnb = kwargs.get("use_bnb", False)
         
         # Apply dynamic quantization to base layer if requested
         # Do not apply quantization if exporting for ONNX
         if self.quantize_base and not self.onnx_export and isinstance(base_layer, nn.Linear):
             self.base_layer = QuantizedBaseLayer(
                 base_layer,
-                n_bits
+                n_bits,
+                use_bnb
             )
         else:
             self.base_layer = base_layer
@@ -414,7 +422,7 @@ class MarsLayer(BaseTunerLayer):
         Vt_truncated = Vt[:max_rank, :]
         
         # Store U and Sigma separately for potential future use
-        self._store_svd_components(U_truncated, S_truncated)
+        #self._store_svd_components(U_truncated, S_truncated)
         
         # Replace up projection with Vt
         self.up_project[adapter_name] = nn.Linear(rank, self.out_features, bias=False)
