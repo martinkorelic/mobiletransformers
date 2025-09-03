@@ -10,13 +10,15 @@ TRAIN_BUILDER:
   # cjvt/GaMS-2B-Instruct
   # TinyLlama/TinyLlama_v1.1
   # microsoft/Phi-3-mini-4k-instruct
+  # Qwen/Qwen2-0.5B
+  # HuggingFaceTB/SmolLM2-135M
 
   # Embedding model:
   # sentence-transformers/all-MiniLM-L6-v2
   # Qwen/Qwen3-Embedding-0.6B
   # intfloat/multilingual-e5-small
   
-  model_id: TinyLlama/TinyLlama_v1.1
+  model_id: HuggingFaceTB/SmolLM2-135M
   output: "./build/train_models"
 
   # If building generation model -> text-generation
@@ -30,8 +32,8 @@ TRAIN_BUILDER:
   ############ TRAINING CONFIGURATION ############
 
   # Currently supported PEFT methods:
-  # lora, lora-xs, mars
-  train_method: mars
+  # lora, lora-xs, mars, all
+  train_method: all
 
   # LoRA target modules
   lora_target:
@@ -55,8 +57,8 @@ TRAIN_BUILDER:
     opset: 20
 
     # Whether to add pooling operations for sentence-transformers / embedding models to the onnx model
-    # Uncheck this if creating generation model
-    add_pooling: true
+    # Uncheck this if creating text generation model
+    add_pooling: false
 
     # Any extra layers to exclude from quantization
     exclude_extra_layers:
@@ -101,6 +103,7 @@ TRAIN_BUILDER:
       - up
       - down
       - gate
+  all:
 
 ###################### INFERENCE BUILDER CONFIGURATION ######################
 INFERENCE_BUILDER:
@@ -140,7 +143,7 @@ ARTIFACT_BUILDER:
   build_path: "./build"
 
   # This will join path with the TRAIN_BUILDER.output/train_models
-  training_model: "quant_model.onnx"
+  training_model: "model.onnx"
 
   # This will join path with the INFERENCE_BUILDER.output/inference_models
   inference_model: "model.onnx"
@@ -149,10 +152,10 @@ ARTIFACT_BUILDER:
   embedding_model: ./build/embedding_models/embedding_model.onnx
 
   # NOTE: Use trainer.builder to build the training model first
-  gen_train_artifacts: false
+  gen_train_artifacts: true
 
   # NOTE: Use inference.builder to build inference model first
-  gen_inference_artifacts: true
+  gen_inference_artifacts: false
 
   # NOTE: Use trainer.builder to build just the embedding model first
   gen_rag_artifacts: false
@@ -160,8 +163,8 @@ ARTIFACT_BUILDER:
   ### EXPORTING OPTIONS ###
 
   export_inference_config: true
-  export_tokenizer: false
-  export_merger: true
+  export_tokenizer: true
+  export_merger: false
 
   # Exports the dataset inside the train directory
   export_dataset: false
@@ -218,24 +221,26 @@ ARTIFACT_BUILDER:
   
   train_config:
     # Name of local model repository (custom)
-    repoName: tinyllama 
+    repoName: qwen2 
     onnxName: quant_model
     
-    taskName: arc_e
-    batchSize: 4
+    taskName: mini_personalqa
+    batchSize: 2
     numTrainEpochs: 1
     maxSteps: 20
-    saveSteps: 50
+    saveSteps: 10
     gradAccumSteps: 2
     
-    mergedWeightsAtEnd: false
+    mergeWeightsAtEnd: false
     saveModelAtEnd: true
+    # Will load from training state if available
+    loadFromState: true
 
     datasetOptions:
-      trainFile: arc_e
+      trainFile: MiniPersonalQA_train
       datasetBatchSize: 64
-      maxSequenceLength: 512
-      maxDatasetLength: 256
+      maxSequenceLength: null
+      maxDatasetLength: null
       removeLongSamples: false
       datasetSplit: false
       datasetShuffle: false
@@ -245,7 +250,7 @@ ARTIFACT_BUILDER:
     schedulerOptions:
       # Cosine options
       minLearningRate: 0
-      cosineLearningRate: 0.00001
+      cosineLearningRate: 0.0001
       warmupSteps: 10
       # Linear options
       linearLearningRate: 0.0001

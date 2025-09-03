@@ -10,7 +10,7 @@ import torch
 import safetensors.torch
 import os
 from scipy.linalg import subspace_angles
-import research.cca_core as cca_core
+import research.pytorch_experiments.cca_core as cca_core
 
 
 MODEL_ID = "TinyLlama/TinyLlama_v1.1"

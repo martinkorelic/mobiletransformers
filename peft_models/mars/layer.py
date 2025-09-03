@@ -2,7 +2,7 @@ from peft.tuners.tuners_utils import BaseTunerLayer
 import torch
 import torch.nn as nn
 
-from research.experiments import create_orthogonal_matrices
+from research.pytorch_experiments.matrix_experiments import create_orthogonal_matrices
 
 class QuantizedBaseLayer(nn.Module):
     def __init__(self, original_linear, bits=8, use_bnb = True, symmetric = True, per_channel=True):

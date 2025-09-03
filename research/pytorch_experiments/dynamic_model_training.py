@@ -5,7 +5,7 @@ import os
 import torch
 
 from peft_models.mars.config import MarsConfig
-from research.model_training import count_trainable_parameters, create_peft_model, get_training_args, list_trainable_layers, load_peft_model, set_manual_seed
+from research.pytorch_experiments.model_training import count_trainable_parameters, create_peft_model, get_training_args, list_trainable_layers, load_peft_model, set_manual_seed
 from peft import PeftModel, LoraConfig, get_peft_model
 from safetensors.torch import load_file, save_file
 from transformers import Trainer, TrainerState

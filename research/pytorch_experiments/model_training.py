@@ -39,7 +39,7 @@ from trainer.utils import (
     process_sample_logiqa_deepeval
 )
 from peft_models.lora_xs.initialization_utils import find_and_initialize
-from .visualization_trainer import PEFTUsageCallback
+from ..visualization_trainer import PEFTUsageCallback
 from peft_models.mars.test import get_mars_linear_layers, visualize_layer_metrics_with_changes
 
 

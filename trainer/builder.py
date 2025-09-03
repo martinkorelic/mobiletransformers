@@ -12,7 +12,7 @@ import onnx
 import numpy as np
 from onnx import helper, TensorProto, numpy_helper
 from optimum.exporters.onnx import OnnxConfigWithLoss, export
-from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfig, Phi3OnnxConfig, BertOnnxConfig
+from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfig, Phi3OnnxConfig, BertOnnxConfig, Qwen2OnnxConfig
 
 from transformers import AutoModelForCausalLM, AutoConfig, AutoModel
 from peft import PeftModel, LoraConfig, get_peft_model
@@ -284,12 +284,15 @@ def optimum_hf_export(model_id,
         model = AutoModel.from_pretrained(model_id, trust_remote_code=True, token=os.environ["HF_TOKEN"])
     config = AutoConfig.from_pretrained(model_id, token=os.environ["HF_TOKEN"])
 
+    # TODO: Add support for other architectures
     if config.architectures[0] == "LlamaForCausalLM":
         ocl = LlamaOnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
     elif config.architectures[0] == "GemmaForCausalLM" or config.architectures[0] == "Gemma2ForCausalLM":
         ocl = GemmaOnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
     elif config.architectures[0] == "Phi3ForCausalLM":
         ocl = Phi3OnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
+    elif config.architectures[0] == "Qwen2ForCausalLM":
+        ocl = Qwen2OnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
     elif config.architectures[0] == "BertModel":
         ocl = BertOnnxConfig(config, task=task_type)
 
@@ -347,6 +350,16 @@ def optimum_hf_export(model_id,
         )
 
         lora_model = get_peft_model(model, mars_config, adapter_name="mars")
+    elif training_mode and train_method == "all":
+        # Make only linear layers trainable
+        for name, module in model.named_modules():
+            if isinstance(module, (torch.nn.Linear)):
+                for param in module.parameters():
+                    param.requires_grad = True
+            else:
+                for param in module.parameters():
+                    param.requires_grad = False
+        lora_model = model
     elif not training_mode or train_method == "nolora":
         lora_model = model
 
@@ -358,7 +371,10 @@ def optimum_hf_export(model_id,
             mapping = create_lora_mapping(lora_model)
 
     if training_mode:
-        my_model = OnnxTrainerWrapper(lora_model.base_model.model)
+        if train_method != "all":
+            my_model = OnnxTrainerWrapper(lora_model.base_model.model)
+        else:
+            my_model = OnnxTrainerWrapper(lora_model)
         my_model.train()
     elif task_type == "text-generation":
         my_model = OnnxInferenceWrapper(lora_model)
