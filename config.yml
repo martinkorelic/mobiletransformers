@@ -12,6 +12,7 @@ TRAIN_BUILDER:
   # microsoft/Phi-3-mini-4k-instruct
   # Qwen/Qwen2-0.5B
   # HuggingFaceTB/SmolLM2-135M
+  # HuggingFaceTB/SmolLM2-360M
 
   # Embedding model:
   # sentence-transformers/all-MiniLM-L6-v2

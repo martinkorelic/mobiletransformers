@@ -23,7 +23,7 @@ def inspect_adapter_model(filepath="adapter_model.safetensors"):
             
             for name in tensor_names:
                 tensor = f.get_tensor(name)
-                print(f"{name}: {tuple(tensor.shape)}")
+                print(f"{name}: {tuple(tensor.shape)} | {tensor.dtype}")
                 
     except Exception as e:
         print(f"Error loading {filepath}: {e}")
@@ -210,4 +210,4 @@ def load_peft_metrics(npz_path):
     }
 
 if __name__ == "__main__":
-    inspect_adapter_model("experiment_results/TinyLlama_v1.1-lora_xs/TinyLlama_v1.1-lora_xs-arc_c-r64-a2/adapter_model.safetensors")
+    inspect_adapter_model("experiment_results/TinyLlama_v1.1-qmars-arc_e-r32-a2/adapter_model.safetensors")
