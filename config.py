@@ -5,6 +5,13 @@ load_dotenv()
 
 HF_TOKEN = os.environ.get('HF_TOKEN')
 
+# Azure OpenAI Configuration
+AZURE_OPENAI_ENDPOINT = os.environ.get('AZURE_OPENAI_ENDPOINT')
+AZURE_OPENAI_API_KEY = os.environ.get('AZURE_OPENAI_API_KEY')
+AZURE_DEPLOYMENT_NAME = os.environ.get('AZURE_DEPLOYMENT_NAME')
+AZURE_MODEL_NAME = os.environ.get('AZURE_MODEL_NAME')
+AZURE_API_VERSION = os.environ.get('AZURE_API_VERSION')
+
 #### EXPERIMENT CONFIG ####
 
 TASK_EPOCHS = {

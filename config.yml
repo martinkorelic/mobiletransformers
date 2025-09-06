@@ -19,7 +19,7 @@ TRAIN_BUILDER:
   # Qwen/Qwen3-Embedding-0.6B
   # intfloat/multilingual-e5-small
   
-  model_id: HuggingFaceTB/SmolLM2-135M
+  model_id: Qwen/Qwen2-0.5B
   output: "./build/train_models"
 
   # If building generation model -> text-generation
@@ -33,7 +33,7 @@ TRAIN_BUILDER:
   ############ TRAINING CONFIGURATION ############
 
   # Currently supported PEFT methods:
-  # lora, lora-xs, mars, all
+  # lora, lora-xs, mars, all (all linear layers trainable)
   train_method: all
 
   # LoRA target modules
@@ -153,10 +153,10 @@ ARTIFACT_BUILDER:
   embedding_model: ./build/embedding_models/embedding_model.onnx
 
   # NOTE: Use trainer.builder to build the training model first
-  gen_train_artifacts: true
+  gen_train_artifacts: false
 
   # NOTE: Use inference.builder to build inference model first
-  gen_inference_artifacts: false
+  gen_inference_artifacts: true
 
   # NOTE: Use trainer.builder to build just the embedding model first
   gen_rag_artifacts: false
@@ -236,6 +236,8 @@ ARTIFACT_BUILDER:
     saveModelAtEnd: true
     # Will load from training state if available
     loadFromState: true
+    # Will track, profile and save training step metrics
+    profileMetrics: true
 
     datasetOptions:
       trainFile: MiniPersonalQA_train

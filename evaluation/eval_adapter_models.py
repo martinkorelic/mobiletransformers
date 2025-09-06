@@ -61,7 +61,10 @@ class CustomPeftModel(DeepEvalBaseLLM):
             
             model_path = adapter_tensors
         else:
-            raise FileNotFoundError("No 'adapter_config.json' or 'config.json' and their corresponding weights found!")
+            if adapter_name == "base":
+                print("No corresponding adapter weights found, using only base model")
+            else:
+                raise FileNotFoundError("No 'adapter_config.json' or 'config.json' and their corresponding weights found!")
 
         if os.path.exists(base_config_path):
 
@@ -209,6 +212,8 @@ class CustomPeftModel(DeepEvalBaseLLM):
                     for (k, v) in peft_model_weights.items() if "classifier.out_proj" not in k
                 }
                 self.model.load_state_dict(renamed_state_dict, strict=False)
+        elif adapter_name == "base":
+            self.model = AutoModelForCausalLM.from_pretrained(base_model)
         else:
             self.model = AutoModelForCausalLM.from_config(config)
             state_dict = load_file(model_path)

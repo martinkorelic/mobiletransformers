@@ -298,6 +298,7 @@ class ORTransformerGenerator:
                  sampling=None,
                  output_name="logits",
                  decode_between=False,
+                 use_chat_template=False,
                  **generation_kwargs):
         """
         Generate text using the loaded ONNX model.
@@ -318,17 +319,18 @@ class ORTransformerGenerator:
             sampling = self.generation_config["sampling"]
         
         # Prepare the prompt with chat template if needed
-        processed_prompt = self._prepare_prompt(prompt)
+        if use_chat_template:
+            prompt = self._prepare_prompt(prompt)
         
         if decode_between:
-            print(f"[INFO] Generating with prompt:\n{processed_prompt}")
+            print(f"[INFO] Generating with prompt:\n{prompt}")
         
         # Call the generation function with all necessary parameters
         return generate_tokens_onnx(
             tokenizer=self.tokenizer,
             model=self.session,
             config=self.config,
-            prompt=processed_prompt,
+            prompt=prompt,
             max_length=max_length,
             sampling=sampling,
             output_name=output_name,

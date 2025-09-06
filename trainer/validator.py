@@ -318,6 +318,9 @@ class ORTTrainingArguments:
             self.max_sequence_length = dataset.get("maxSequenceLength", 512)
             self.max_dataset_length = dataset.get("maxDatasetLength", 100)
             self.remove_long_samples = dataset.get("removeLongSamples", True)
+
+            if self.dataset_batch_size is None:
+                self.dataset_batch_size = 64
         
         # Peft method
         self.peft_method = data.get("peftMethod", None)
@@ -1244,7 +1247,7 @@ if __name__ == "__main__":
     #for arg, value in vars(args).items():
     #    print(f"{arg}: {value}")
     
-    trainer = ORTTrainer("build/train-arc-e", load_from_state=False)
+    trainer = ORTTrainer("build/train-qwen2-recommendation-mobile", load_from_state=False)
 
     #trainer.train()
 

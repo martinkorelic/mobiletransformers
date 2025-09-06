@@ -1,11 +1,5 @@
-import numpy as np
-from safetensors import safe_open
-import torch, os, json
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, AutoConfig
-
+from transformers import AutoTokenizer
 from deepeval.models import DeepEvalBaseLLM
-from safetensors.torch import load_file
-
 from inference.validator import ORTransformerGenerator
 
 class CustomPeftONNXModel(DeepEvalBaseLLM):

@@ -34,6 +34,12 @@ class DataCollatorForSupervisedDataset:
         # Construct attention mask dynamically: 1 for non-pad tokens, 0 for pad tokens
         attention_mask = input_ids.ne(pad_token_id).long()
 
+        print(input_ids)
+        print(labels)
+        print(attention_mask)
+
+        raise ValueError("STOP")
+
         # Convert to requested tensor format
         if return_tensors == "np":
             return {
@@ -57,6 +63,63 @@ class DataCollatorForSupervisedDataset:
     def pytorch_call(self, instances: List[Dict]) -> Dict[str, torch.Tensor]:
         """Convenience method that returns PyTorch tensors."""
         return self.__call__(instances, return_tensors="pt")
+
+
+def process_sample_minirecommendation(samples, tokenizer, batched=True):
+    
+    def format_question(data_point):
+        """Format the recommendation prompt"""
+        user_query = data_point["prompt"]
+        category = data_point["category"]
+        
+        # Build the formatted question
+        formatted = f"Recommend best actions based on this user query: {user_query}"
+        
+        return formatted
+    
+    def format_answer(data_point):
+        """Format the recommendation answer"""
+        return data_point["recommendation"]
+
+    def generate_prompt(data_point):
+        question = format_question(data_point) + "\n\nAnswer: "
+        answer = format_answer(data_point)
+        
+        question_tokens = tokenizer(question, return_tensors="pt", padding=False)["input_ids"][0]
+        answer_tokens = tokenizer(answer, return_tensors="pt", padding=False, add_special_tokens=False)["input_ids"][0]
+
+        # Concatenate the token sequences
+        input_ids = torch.cat([question_tokens, answer_tokens], dim=0)
+        labels = input_ids.clone()
+        labels[:len(question_tokens)] = -100
+
+        return (
+            input_ids.squeeze(0),
+            labels.squeeze(0)
+        )
+    
+    if batched:
+        batch = {
+            "input_ids": [],
+            "labels": []
+        }
+        for i in range(len(samples["prompt"])):
+            sample = {
+                "type": samples["type"][i],
+                "category": samples["category"][i],
+                "prompt": samples["prompt"][i],
+                "recommendation": samples["recommendation"][i]
+            }
+
+            input_ids, labels = generate_prompt(sample)
+            batch["input_ids"].append(input_ids)
+            batch["labels"].append(labels)
+        
+        return batch
+    else:
+        tk = generate_prompt(samples)
+
+    return tk
 
 def process_sample_minipersonalqa(samples, tokenizer, batched=True):
     
@@ -467,6 +530,9 @@ def taskname_to_deepeval_preprocess_function(preprocess_id):
         return process_sample_winogrande_deepeval
     elif preprocess_id == "mini_personalqa":
         return process_sample_minipersonalqa
+    elif preprocess_id == 'mini_recommendation':
+        print("USING RECOMMENDATRION")
+        return process_sample_minirecommendation
 
     return None
 

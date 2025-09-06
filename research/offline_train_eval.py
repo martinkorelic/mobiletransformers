@@ -54,7 +54,8 @@ from trainer.utils import (
     process_sample_arc_deepeval,
     process_sample_logiqa_deepeval,
     process_sample_winogrande_deepeval,
-    process_sample_minipersonalqa
+    process_sample_minipersonalqa,
+    process_sample_minirecommendation
 )
 
 from deepeval.benchmarks import BoolQ, ARC, LogiQA, Winogrande, HellaSwag
@@ -97,8 +98,8 @@ DATASET_MAPPING = {
     PEFTBenchmarkDataset.ARC_C.value : ("allenai/ai2_arc", "arc_train_deepeval", "ARC-Challenge"),
 
     ### Mobile tasks
-    PEFTBenchmarkDataset.MINI_PERSONALQA.value : ("data/MiniPersonalQA_train", "minipersonalqa"),
-    PEFTBenchmarkDataset.MINI_RECOMMENDATION.value : ("data/MiniRecommendation_train", "minirecommendation"),
+    PEFTBenchmarkDataset.MINI_PERSONALQA.value : ("data/MiniPersonalQA_train", "mini_personalqa"),
+    PEFTBenchmarkDataset.MINI_RECOMMENDATION.value : ("data/MiniRecommendation_train", "mini_recommendation"),
 
 }
 
@@ -792,6 +793,8 @@ def prepare_dataset(dataset: Dataset, preprocess_id, tokenizer, max_dataset_leng
             return process_sample_winogrande_deepeval(sample, tokenizer, (batch_size > 1))
         elif preprocess_id == DATASET_MAPPING[PEFTBenchmarkDataset.MINI_PERSONALQA.value][1]:
             return process_sample_minipersonalqa(sample, tokenizer, (batch_size > 1))
+        elif preprocess_id == DATASET_MAPPING[PEFTBenchmarkDataset.MINI_RECOMMENDATION.value][1]:
+            return process_sample_minirecommendation(sample, tokenizer, (batch_size > 1))
 
         return tokenizer(sample, return_dict=True, tokenize=True, return_tensors="pt", padding=True, add_generation_prompt=False)
     
