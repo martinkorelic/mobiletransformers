@@ -332,7 +332,7 @@ def plot_temperature_individual_subplots(file_path, name="temp"):
 #plot_temperature_individual_subplots('experiment_results/on-device-benchmarks/mars32-opt4-temp-usage.json', name="MARS OPT4 ($r$ = 32)")
 
 # CPU usage plot
-#plot_cpu_usage_individual_subplots('experiment_results/on-device-benchmarks/mars32-opt4-cpu-usage.json', metric='cpu_usage_percent', name="MARS OPT4 ($r$ = 32)")
+plot_cpu_usage_individual_subplots('experiment_results/on-device-benchmarks/mars32-opt4-cpu-usage.json', metric='cpu_usage_percent', name="MARS OPT4 ($r$ = 32)")
 
 # RAM usage plots
 #plot_ram_usage_filled(['experiment_results/on-device-benchmarks/lora32-mem-usage.json', 'experiment_results/on-device-benchmarks/mars32-opt3-mem-usage.json', 'experiment_results/on-device-benchmarks/mars32-opt4-mem-usage.json'],

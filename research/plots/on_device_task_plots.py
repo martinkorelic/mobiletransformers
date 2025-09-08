@@ -1,5 +1,7 @@
-from collections import defaultdict
 import json
+import matplotlib
+matplotlib.rcParams['pdf.fonttype'] = 42
+matplotlib.rcParams['ps.fonttype'] = 42
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -204,11 +206,11 @@ def plot_training_metrics(file_path, output_filename='training_metrics.pdf', nam
     print(f"Training metrics plot saved as: {output_filename}")
 
 # Plot accuracy Mini PersonalQA
-#plot_accuracy_comparison(['experiment_results/train-qwen2-personalqa-mobile/base_eval_results.json', 'experiment_results/train-qwen2-personalqa-mobile/eval_results.json'], 
-#                         ['Base model', 'On-device fine-tuned model'])
+plot_accuracy_comparison(['experiment_results/train-qwen2-personalqa-mobile/base_eval_results.json', 'experiment_results/train-qwen2-personalqa-mobile/eval_results.json'], 
+                         ['Base model', 'On-device fine-tuned model'])
 
 # Mini PersonalQA training metrics
-#plot_training_metrics('experiment_results/train-qwen2-personalqa-mobile/training_logs.json', name="Mini PersonalQA")
+plot_training_metrics('experiment_results/train-qwen2-personalqa-mobile/training_logs.json', name="Mini PersonalQA", output_filename="on_device_training_metrics_personalqa.pdf")
 
 # Mini Recommendation training metrics   
-#plot_training_metrics('experiment_results/train-qwen2-recommendation-mobile/training_logs.json', name="Mini Recommendation")
+plot_training_metrics('experiment_results/train-qwen2-recommendation-mobile/training_logs.json', name="Mini Recommendation", output_filename="on_device_training_metrics_recommendation.pdf")

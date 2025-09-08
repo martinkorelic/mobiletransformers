@@ -1,4 +1,7 @@
 import json
+import matplotlib
+matplotlib.rcParams['pdf.fonttype'] = 42
+matplotlib.rcParams['ps.fonttype'] = 42
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -193,34 +196,40 @@ def ablation_plots():
                         'experiment_results/TinyLlama_v1.1-abl_B',
                         'experiment_results/TinyLlama_v1.1-abl_C',
                         'experiment_results/TinyLlama_v1.1-abl_D',
-                        'experiment_results/TinyLlama_v1.1-loraq4'],
+                        'experiment_results/TinyLlama_v1.1-loraq4',
+                        'experiment_results/TinyLlama_v1.1-loraq8'],
                         ['Variant A',
                             'Variant B',
                             'Variant C',
                             'Variant D',
-                            'Variant E'], rank=2, title='Ablation study benchmarks ($r = 2$)', output_filename='ablation_radar_r2.pdf')
+                            'Variant E (LoRA int4)',
+                            'Variant F (LoRA int8)'], rank=2, title='Ablation study benchmarks ($r = 2$)', output_filename='ablation_radar_r2.pdf')
 
     plot_peft_radar_chart(['experiment_results/TinyLlama_v1.1-abl_A',
                         'experiment_results/TinyLlama_v1.1-abl_B',
                         'experiment_results/TinyLlama_v1.1-abl_C',
                         'experiment_results/TinyLlama_v1.1-abl_D',
-                        'experiment_results/TinyLlama_v1.1-loraq4'],
+                        'experiment_results/TinyLlama_v1.1-loraq4',
+                        'experiment_results/TinyLlama_v1.1-loraq8'],
                         ['Variant A',
                             'Variant B',
                             'Variant C',
                             'Variant D',
-                            'Variant E'], rank=8, title='Ablation study benchmarks ($r = 8$)', output_filename='ablation_radar_r8.pdf')
+                            'Variant E (LoRA int4)',
+                            'Variant F (LoRA int8)'], rank=8, title='Ablation study benchmarks ($r = 8$)', output_filename='ablation_radar_r8.pdf')
 
     plot_peft_radar_chart(['experiment_results/TinyLlama_v1.1-abl_A',
                         'experiment_results/TinyLlama_v1.1-abl_B',
                         'experiment_results/TinyLlama_v1.1-abl_C',
                         'experiment_results/TinyLlama_v1.1-abl_D',
-                        'experiment_results/TinyLlama_v1.1-loraq4'],
+                        'experiment_results/TinyLlama_v1.1-loraq4',
+                        'experiment_results/TinyLlama_v1.1-loraq8'],
                         ['Variant A',
                             'Variant B',
                             'Variant C',
                             'Variant D',
-                            'Variant E'], rank=32, title='Ablation study benchmarks ($r = 32$)', output_filename='ablation_radar_r32.pdf')
+                            'Variant E (LoRA int4)',
+                            'Variant F (LoRA int8)'], rank=32, title='Ablation study benchmarks ($r = 32$)', output_filename='ablation_radar_r32.pdf')
 
 
 def mars_plots():
@@ -281,3 +290,9 @@ def combined_plots():
                         'experiment_results/TinyLlama_v1.1-mars-opt3-q8'],
                         ['Variant E',
                             'MARS OPT3 (int8)'], rank=32, title='Comparison benchmark ($r = 32$)', output_filename='comparison_radar_r32.pdf')
+    
+
+# Plots
+ablation_plots()
+mars_plots()
+combined_plots()
