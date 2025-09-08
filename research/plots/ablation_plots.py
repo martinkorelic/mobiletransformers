@@ -5,9 +5,6 @@ matplotlib.rcParams['ps.fonttype'] = 42
 import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
-import matplotlib.pyplot as plt
-import numpy as np
-from pathlib import Path
 
 def parse_metric_key(metric_key, module):
     """

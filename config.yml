@@ -34,7 +34,7 @@ TRAIN_BUILDER:
 
   # Currently supported PEFT methods:
   # lora, lora-xs, mars, all (all linear layers trainable)
-  train_method: all
+  train_method: lora
 
   # LoRA target modules
   lora_target:
@@ -46,7 +46,7 @@ TRAIN_BUILDER:
     - down_proj
     - up_proj
 
-  lora_rank: 8
+  lora_rank: 32
   lora_alpha: 16
   quantize: true
   # Weight types for quantizing (dynamic quantization can only use UInt8, so this field does not change anything for dynamic quantization)
@@ -91,13 +91,13 @@ TRAIN_BUILDER:
   lora-xs:
     config: config
   mars:
-    #  Optimization level to enable with other configurations:
+    # Optimization level to enable with other configurations:
     # 0 - fully trainable all layers and no quantization
     # 1 - partial trainable layers (frozen and fused down projection layers) with no quantization
     # 2 - fully trainable layers with partial quantization (specified in `modules_to_quantize`)
     # 3 - fully trainable layers with full quantization
     # 4 - partial trainable layers (frozen and fused down projection layers) with full quantization
-    optimization_level: 3
+    optimization_level: 4
     modules_to_preserve_errors:
       - 
     modules_to_quantize:
@@ -144,7 +144,7 @@ ARTIFACT_BUILDER:
   build_path: "./build"
 
   # This will join path with the TRAIN_BUILDER.output/train_models
-  training_model: "model.onnx"
+  training_model: "quant_model.onnx"
 
   # This will join path with the INFERENCE_BUILDER.output/inference_models
   inference_model: "model.onnx"
@@ -153,10 +153,10 @@ ARTIFACT_BUILDER:
   embedding_model: ./build/embedding_models/embedding_model.onnx
 
   # NOTE: Use trainer.builder to build the training model first
-  gen_train_artifacts: false
+  gen_train_artifacts: true
 
   # NOTE: Use inference.builder to build inference model first
-  gen_inference_artifacts: true
+  gen_inference_artifacts: false
 
   # NOTE: Use trainer.builder to build just the embedding model first
   gen_rag_artifacts: false
@@ -164,11 +164,11 @@ ARTIFACT_BUILDER:
   ### EXPORTING OPTIONS ###
 
   export_inference_config: true
-  export_tokenizer: true
+  export_tokenizer: false
   export_merger: false
 
   # Exports the dataset inside the train directory
-  export_dataset: false
+  export_dataset: true
 
   test_training: false
   test_eval: false
@@ -226,22 +226,24 @@ ARTIFACT_BUILDER:
     onnxName: quant_model
     
     taskName: mini_personalqa
-    batchSize: 2
+    batchSize: 4
     numTrainEpochs: 1
-    maxSteps: 20
-    saveSteps: 10
-    gradAccumSteps: 2
+    maxSteps: 5
+    saveSteps: 20
+    gradAccumSteps: 1
     
+    # Merges and exports weights at end of training
     mergeWeightsAtEnd: false
-    saveModelAtEnd: true
-    # Will load from training state if available
-    loadFromState: true
-    # Will track, profile and save training step metrics
-    profileMetrics: true
+    # Saves the checkpoint at the end of training
+    saveModelAtEnd: false
+    # Load from training state if available
+    loadFromState: false
+    # Track, profile and save training step metrics
+    profileMetrics: false
 
     datasetOptions:
       trainFile: MiniPersonalQA_train
-      datasetBatchSize: 64
+      datasetBatchSize: null
       maxSequenceLength: null
       maxDatasetLength: null
       removeLongSamples: false
@@ -265,7 +267,7 @@ ARTIFACT_BUILDER:
       # "opt3" - 6 / 4
       # "opt2" - 4 / 2
       # "opt1" - 1 / 1
-      coreConfigId: opt2
+      coreConfigId: opt3
       # Memory config id
       # "low_mem" - disables ONNX Runtime memory arena and pattern 
       # "high_perf" - enables ONNX Runtime memory arena and pattern 
