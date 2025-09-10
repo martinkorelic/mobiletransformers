@@ -3,10 +3,194 @@ import matplotlib
 matplotlib.rcParams['pdf.fonttype'] = 42
 matplotlib.rcParams['ps.fonttype'] = 42
 import matplotlib.pyplot as plt
-import numpy as np
 import os
 import glob
 from math import pi
+
+def plot_peft_radar_multiplots(peft_methods, ranks=[2, 8, 32], title="PEFT Methods Performance Comparison", output_filename='peft_radar_subplots.pdf'):
+    """
+    Create multiple radar chart subplots comparing PEFT methods across benchmark datasets for different ranks.
+    
+    Args:
+        peft_methods (list): List of tuples containing (peft_dir, peft_name)
+        ranks (list): List of ranks to analyze (e.g., [2, 8, 32])
+        title (str): Custom title for the overall plot
+        output_filename (str): Name of the output PDF file
+    
+    Returns:
+        None: Saves the plot as PDF
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.gridspec as gridspec
+    import numpy as np
+    from math import pi
+    import json
+    import os
+    import glob
+    
+    # Define benchmark datasets
+    benchmarks = ['arc_c', 'arc_e', 'winogrande', 'boolq', 'logiqa', 'hellaswag']
+    benchmark_labels = ['ARC-C', 'ARC-E', 'WinoGrande', 'BoolQ', 'LogiQA', 'HellaSwag']
+    
+    # Colors for different PEFT methods
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+              '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5']
+    
+    # Colors for benchmark labels (replaced yellow with purple)
+    benchmark_colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#9B59B6', '#DDA0DD']
+    
+    # Calculate subplot layout: 2 columns, n rows
+    n_subplots = len(ranks)
+    n_cols = 2
+    n_rows = (n_subplots + n_cols - 1) // n_cols  # Ceiling division
+    
+    # Create figure with GridSpec for better control
+    fig = plt.figure(figsize=(12, 5 * n_rows))
+    gs = gridspec.GridSpec(n_rows, n_cols, figure=fig)
+    
+    # Extract PEFT method names for unified legend
+    peft_names = [peft_name for _, peft_name in peft_methods]
+    
+    # Calculate angles for radar chart
+    angles = [n / float(len(benchmarks)) * 2 * pi for n in range(len(benchmarks))]
+    angles += angles[:1]  # Complete the circle
+    
+    # Process each rank
+    for rank_idx, rank in enumerate(ranks):
+        # Calculate subplot position using GridSpec - this properly centers odd subplots
+        if len(ranks) % 2 == 1 and rank_idx == len(ranks) - 1:
+            # Last subplot when odd number - span both columns to center it
+            ax = fig.add_subplot(gs[n_rows - 1, :], projection='polar')
+        else:
+            # Normal positioning for first subplots
+            row = rank_idx // n_cols
+            col = rank_idx % n_cols
+            ax = fig.add_subplot(gs[row, col], projection='polar')
+        
+        # Store results for all PEFT methods for this rank
+        all_results = {}
+        
+        # Process each PEFT method
+        for peft_dir, peft_name in peft_methods:
+            all_results[peft_name] = {}
+            
+            # Adjust rank for LoRA-XS
+            current_rank = rank
+            if peft_name == 'LoRA-XS':
+                if rank == 2:
+                    current_rank = 16
+                elif rank == 8:
+                    current_rank = 64
+                elif rank == 32:
+                    current_rank = 256
+            
+            # Search for subdirectories with the pattern
+            search_pattern = os.path.join(peft_dir, f"*-r{current_rank}-*")
+            subdirs = glob.glob(search_pattern)
+            
+            for subdir in subdirs:
+                if os.path.isdir(subdir):
+                    # Extract benchmark name from directory name
+                    dir_name = os.path.basename(subdir)
+                    
+                    # Find which benchmark this is
+                    benchmark_found = None
+                    for benchmark in benchmarks:
+                        if f"-{benchmark}-" in dir_name:
+                            benchmark_found = benchmark
+                            break
+                    
+                    if benchmark_found:
+                        # Look for eval_results.json in this directory
+                        result_file = os.path.join(subdir, "eval_results.json")
+                        if os.path.exists(result_file):
+                            try:
+                                with open(result_file, 'r') as f:
+                                    data = json.load(f)
+                                    all_results[peft_name][benchmark_found] = data.get('results', 0.0)
+                            except Exception as e:
+                                print(f"Error reading {result_file}: {e}")
+                                all_results[peft_name][benchmark_found] = 0.0
+            
+            # Ensure all benchmarks are present (fill missing with 0)
+            for benchmark in benchmarks:
+                if benchmark not in all_results[peft_name]:
+                    all_results[peft_name][benchmark] = 0.0
+        
+        # Plot each PEFT method on this subplot
+        for i, peft_name in enumerate(peft_names):
+            if peft_name in all_results:
+                # Get values for this PEFT method
+                values = [all_results[peft_name][benchmark] for benchmark in benchmarks]
+                values += values[:1]  # Complete the circle
+                
+                # Get color
+                color = colors[i % len(colors)]
+                
+                # Plot the line
+                ax.plot(angles, values, 'o-', linewidth=2.5, label=peft_name, 
+                       color=color, markersize=6)
+                
+                # Fill the area
+                ax.fill(angles, values, alpha=0.15, color=color)
+        
+        # Customize the subplot
+        ax.set_xticks(angles[:-1])
+        
+        # Set radial limits first
+        ax.set_ylim(0, 1.0)
+        ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
+        ax.set_yticklabels(['0.2', '0.4', '0.6', '0.8', '1.0'], fontsize=8, color='gray')
+        
+        # Add colored benchmark labels around the circle
+        for i, (angle, label) in enumerate(zip(angles[:-1], benchmark_labels)):
+            color = benchmark_colors[i % len(benchmark_colors)]
+            # Position labels further out from the circle
+            label_radius = 1.25
+            ax.text(angle, label_radius, label, 
+                   horizontalalignment='center', verticalalignment='center',
+                   fontsize=11, fontweight='bold', color='black',  # Keep text black
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', 
+                            edgecolor=color, alpha=0.9, linewidth=2))
+        
+        # Hide the default tick labels since we're using custom colored ones
+        ax.set_xticklabels([])
+        
+        # Add grid lines
+        ax.grid(True, alpha=0.3)
+        
+        # Set subplot title with LaTeX formatting
+        ax.set_title(f'Rank $r={rank}$', size=14, fontweight='bold', pad=35)
+    
+    # Add overall title
+    fig.suptitle(title, size=20, fontweight='bold', y=0.98)
+    
+    # Create unified legend
+    handles = []
+    labels = []
+    for i, peft_name in enumerate(peft_names):
+        color = colors[i % len(colors)]
+        # Create a line handle for the legend
+        line = plt.Line2D([0], [0], color=color, linewidth=2.5, marker='o', markersize=6)
+        handles.append(line)
+        labels.append(peft_name)
+    
+    # Add legend to the right of the entire figure
+    fig.legend(handles, labels, loc='center right', bbox_to_anchor=(0.98, 0.2), 
+               fontsize=14, frameon=True, fancybox=True, shadow=True)
+    
+    # Adjust layout to make room for legend and colored labels
+    plt.subplots_adjust(right=0.85, hspace=0.4, wspace=0.3)
+    
+    # Save and show
+    plt.savefig(output_filename, format='pdf', bbox_inches='tight', dpi=300)
+    plt.show()
+    
+    # Print summary
+    print(f"\\nRadar chart subplots saved as: {output_filename}")
+    print(f"Created {len(ranks)} subplots for ranks: {ranks}")
+    print(f"PEFT methods included: {', '.join(peft_names)}")
 
 def plot_peft_radar_chart(peft_directories, peft_names, rank=8, title="PEFT Methods Performance Comparison", output_filename='peft_radar_comparison.pdf'):
     """
@@ -88,7 +272,7 @@ def plot_peft_radar_chart(peft_directories, peft_names, rank=8, title="PEFT Meth
             peft_averages[peft_name] = 0.0
     
     # Set up the radar chart
-    fig, ax = plt.subplots(figsize=(12, 12), subplot_kw=dict(projection='polar'))
+    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(projection='polar'))
     
     # Calculate angles for each benchmark
     angles = [n / float(len(benchmarks)) * 2 * pi for n in range(len(benchmarks))]
@@ -109,19 +293,6 @@ def plot_peft_radar_chart(peft_directories, peft_names, rank=8, title="PEFT Meth
             
             # Fill the area
             ax.fill(angles, values, alpha=0.15, color=color)
-            
-            # Add value labels
-            #for angle, value, benchmark in zip(angles[:-1], values[:-1], benchmarks):
-            #    if value > 0:  # Only show label if there's a value
-            #        # Calculate label position (slightly outside the point)
-            #        label_distance = value + 0.05
-            #        x = angle
-            #        y = label_distance
-            #        ax.annotate(f'{value:.3f}', (x, y), xytext=(5, 5), 
-            #                   textcoords='offset points', fontsize=9, 
-            #                   color=color, fontweight='bold',
-            #                   bbox=dict(boxstyle='round,pad=0.2', facecolor='white', 
-            #                            edgecolor=color, alpha=0.8))
     
     # Customize the chart
     ax.set_xticks(angles[:-1])
@@ -142,7 +313,7 @@ def plot_peft_radar_chart(peft_directories, peft_names, rank=8, title="PEFT Meth
     plt.title(title, size=18, fontweight='bold', pad=40, x=0.6)
     
     # Add legend outside the plot
-    plt.legend(loc='upper right', bbox_to_anchor=(1.6, 1.0), fontsize=16)
+    plt.legend(loc='upper right', bbox_to_anchor=(1.4, 1.0), fontsize=16)
     
     # Add individual colored entries for each method
     for i, peft_name in enumerate(peft_names):
@@ -291,8 +462,57 @@ def combined_plots():
                         ['Variant E',
                             'MARS OPT3 (int8)'], rank=32, title='Comparison benchmark ($r = 32$)', output_filename='comparison_radar_r32.pdf')
     
+def q_combined_plots():
+    plot_peft_radar_chart([
+                        'experiment_results/TinyLlama_v1.1-qmars',
+                        'experiment_results/TinyLlama_v1.1-qlora'],
+                        ['QMARS',
+                            'QLoRA'], rank=2, title='QMARS vs QLoRA ($r = 2$)', output_filename='qmars_qlora_radar_r2.pdf')
+    
+    plot_peft_radar_chart([
+                        'experiment_results/TinyLlama_v1.1-qmars',
+                        'experiment_results/TinyLlama_v1.1-qlora'],
+                        ['QMARS',
+                            'QLoRA'], rank=8, title='QMARS vs QLoRA ($r = 8$)', output_filename='qmars_qlora_radar_r8.pdf')
+    
+    plot_peft_radar_chart([
+                        'experiment_results/TinyLlama_v1.1-qmars',
+                        'experiment_results/TinyLlama_v1.1-qlora'],
+                        ['QMARS',
+                            'QLoRA'], rank=32, title='QMARS vs QLoRA ($r = 32$)', output_filename='qmars_qlora_radar_r32.pdf')
+    
+def multiplot_qmars_qlora():
+    peft_methods = [
+    ('experiment_results/TinyLlama_v1.1-qmars', 'QMARS'),
+    ('experiment_results/TinyLlama_v1.1-qlora', 'QLoRA')
+    ]
+    plot_peft_radar_multiplots(peft_methods, ranks=[2, 8, 32], title='QMARS vs QLoRA', output_filename='qlora_qmars_radar.pdf')
 
+def multiplot_mars():
+    peft_methods = [
+        ('experiment_results/TinyLlama_v1.1-mars-opt0', 'MARS OPT0'),
+        ('experiment_results/TinyLlama_v1.1-mars-opt1', 'MARS OPT1'),
+        ('experiment_results/TinyLlama_v1.1-mars-opt3-q4', 'MARS OPT3 (fp4)'),
+        ('experiment_results/TinyLlama_v1.1-mars-opt3-q8', 'MARS OPT3 (int8)'),
+        ('experiment_results/TinyLlama_v1.1-mars-opt4-q4', 'MARS OPT4 (fp4)'),
+        ('experiment_results/TinyLlama_v1.1-mars-opt4-q8', 'MARS OPT4 (int8)')
+    ]
+    plot_peft_radar_multiplots(peft_methods, ranks=[2, 8, 32], title='MARS Methods Comparison', output_filename='mars_radar.pdf')
+
+def multiplot_mars_lora():
+    peft_methods = [
+        ('experiment_results/TinyLlama_v1.1-mars-opt0', 'MARS OPT0'),
+        ('experiment_results/TinyLlama_v1.1-mars-opt1', 'MARS OPT1'),
+        ('experiment_results/TinyLlama_v1.1-lora', 'LoRA')
+    ]
+    plot_peft_radar_multiplots(peft_methods, ranks=[2, 8, 32], title='MARS vs LoRA', output_filename='lora_mars_radar.pdf')
+
+#multiplot_qmars_qlora()
+#multiplot_mars()
+multiplot_mars_lora()
 # Plots
-ablation_plots()
-mars_plots()
-combined_plots()
+#ablation_plots()
+#mars_plots()
+#combined_plots()
+    
+#q_combined_plots()

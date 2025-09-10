@@ -60,7 +60,13 @@ def plot_peft_training_efficiency(peft_directories, peft_names, task_name, ranks
         
         for rank in ranks:
             # Search for subdirectories with the pattern for this rank and task
-            search_pattern = os.path.join(peft_dir, f"*-{task_name}-r{rank}-*")
+            # Determine ranks for this method
+            if peft_name == 'LoRA-XS':
+                lookup_rank = rank * 8 
+            else:
+                lookup_rank = rank
+
+            search_pattern = os.path.join(peft_dir, f"*-{task_name}-r{lookup_rank}-*")
             subdirs = glob.glob(search_pattern)
             
             for subdir in subdirs:
@@ -92,7 +98,7 @@ def plot_peft_training_efficiency(peft_directories, peft_names, task_name, ranks
                             print(f"Error reading {logs_file}: {e}")
     
     # Create the scatter plot with extra space for legends
-    fig, ax = plt.subplots(figsize=(12, 7))  # Made wider to accommodate larger legends
+    fig, ax = plt.subplots(figsize=(12, 8))  # Made wider to accommodate larger legends
     plt.subplots_adjust(right=0.30)  # Leave more space for legends
     
     # Plot connecting lines first (underneath dots)
@@ -526,7 +532,7 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
                           hatch=method_hatches)
             
             # Customize subplot
-            ax.set_ylabel('PEFT Methods', fontsize=14, fontweight='bold')
+            #ax.set_ylabel('PEFT Methods', fontsize=14, fontweight='bold')
             ax.set_xlabel('Accuracy per Million Parameters', fontsize=14, fontweight='bold')
             
             # Use scientific notation for x-axis
@@ -732,7 +738,7 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
                           hatch=method_hatches)
             
             # Customize subplot
-            ax.set_ylabel('PEFT Methods', fontsize=14, fontweight='bold')
+            #ax.set_ylabel('PEFT Methods', fontsize=14, fontweight='bold')
             ax.set_xlabel('Accuracy per MB GPU Memory', fontsize=14, fontweight='bold')
             
             # Use scientific notation for x-axis
@@ -753,6 +759,8 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
             ax.set_yticks(range(len(methods)))
             ax.set_yticklabels(methods)
             ax.grid(True, alpha=0.3, axis='x')
+
+            ax.set_xlim(right=0.0006)
             
             # Add value labels at the end of bars (match x-axis scale manually)
             for bar, efficiency in zip(bars, efficiencies):
@@ -804,7 +812,7 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
 def quant_hellaswag_plot():
     plot_peft_training_efficiency([
         'experiment_results/TinyLlama_v1.1-loraq4',
-        #'experiment_results/TinyLlama_v1.1-loraq8',
+        'experiment_results/TinyLlama_v1.1-abl_G-loraq8',
         'experiment_results/TinyLlama_v1.1-mars-opt3-q4',
         'experiment_results/TinyLlama_v1.1-mars-opt3-q8',
         'experiment_results/TinyLlama_v1.1-mars-opt4-q4',
@@ -812,11 +820,11 @@ def quant_hellaswag_plot():
         'experiment_results/TinyLlama_v1.1-qlora',
         'experiment_results/TinyLlama_v1.1-qmars'
     ], [
-        'LoRA (int4)',
-        #'LoRA (int8)',
-        'MARS OPT3 (int4)',
+        'LoRA (fp4)',
+        'LoRA (int8)',
+        'MARS OPT3 (fp4)',
         'MARS OPT3 (int8)',
-        'MARS OPT4 (int4)',
+        'MARS OPT4 (fp4)',
         'MARS OPT4 (int8)',
         'QLoRA',
         'QMARS'
@@ -837,7 +845,7 @@ def non_quant_hellaswag_plot():
         'LoRA-XS',
         'VB LoRA',
         'LoHA'
-    ], 'hellaswag', [2, 8, 32], x_axis_start=40, y_axis_start=4.2, y_axis_end=5.2, name="Full-precision PEFT Training - HellaSwag", output_filename="non_quant_peft_efficiency.pdf")
+    ], 'hellaswag', [2, 8, 32], x_axis_start=10, y_axis_start=4.2, y_axis_end=6.2, name="Full-precision PEFT Training - HellaSwag", output_filename="non_quant_peft_efficiency.pdf")
 
 def plot_3d_comparison():
     plot_peft_3d_comparison([
@@ -848,7 +856,7 @@ def plot_3d_comparison():
             'experiment_results/TinyLlama_v1.1-vb_lora',
             'experiment_results/TinyLlama_v1.1-loha',
             'experiment_results/TinyLlama_v1.1-loraq4',
-            #'experiment_results/TinyLlama_v1.1-loraq8',
+            'experiment_results/TinyLlama_v1.1-abl_G-loraq8',
             'experiment_results/TinyLlama_v1.1-mars-opt3-q4',
             'experiment_results/TinyLlama_v1.1-mars-opt3-q8',
             'experiment_results/TinyLlama_v1.1-mars-opt4-q4',
@@ -862,11 +870,11 @@ def plot_3d_comparison():
             'LoRA-XS',
             'VB LoRA',
             'LoHA',
-            'LoRA (int4)',
-            #'LoRA (int8)',
-            'MARS OPT3 (int4)',
+            'LoRA (fp4)',
+            'LoRA (int8)',
+            'MARS OPT3 (fp4)',
             'MARS OPT3 (int8)',
-            'MARS OPT4 (int4)',
+            'MARS OPT4 (fp4)',
             'MARS OPT4 (int8)',
             'QLoRA',
             'QMARS'
@@ -883,7 +891,7 @@ def parameter_efficiency_plot():
                 'experiment_results/TinyLlama_v1.1-vb_lora',
                 'experiment_results/TinyLlama_v1.1-loha',
                 'experiment_results/TinyLlama_v1.1-loraq4',
-                #'experiment_results/TinyLlama_v1.1-loraq8',
+                'experiment_results/TinyLlama_v1.1-abl_G-loraq8',
                 'experiment_results/TinyLlama_v1.1-mars-opt3-q4',
                 'experiment_results/TinyLlama_v1.1-mars-opt3-q8',
                 'experiment_results/TinyLlama_v1.1-mars-opt4-q4',
@@ -897,11 +905,11 @@ def parameter_efficiency_plot():
                 'LoRA-XS',
                 'VB LoRA',
                 'LoHA',
-                'LoRA (int4)',
-                #'LoRA (int8)',
-                'MARS OPT3 (int4)',
+                'LoRA (fp4)',
+                'LoRA (int8)',
+                'MARS OPT3 (fp4)',
                 'MARS OPT3 (int8)',
-                'MARS OPT4 (int4)',
+                'MARS OPT4 (fp4)',
                 'MARS OPT4 (int8)',
                 'QLoRA',
                 'QMARS'
@@ -916,7 +924,7 @@ def memory_efficiency_plot():
                 'experiment_results/TinyLlama_v1.1-vb_lora',
                 'experiment_results/TinyLlama_v1.1-loha',
                 'experiment_results/TinyLlama_v1.1-loraq4',
-                #'experiment_results/TinyLlama_v1.1-loraq8',
+                'experiment_results/TinyLlama_v1.1-abl_G-loraq8',
                 'experiment_results/TinyLlama_v1.1-mars-opt3-q4',
                 'experiment_results/TinyLlama_v1.1-mars-opt3-q8',
                 'experiment_results/TinyLlama_v1.1-mars-opt4-q4',
@@ -930,11 +938,11 @@ def memory_efficiency_plot():
                 'LoRA-XS',
                 'VB LoRA',
                 'LoHA',
-                'LoRA (int4)',
-                #'LoRA (int8)',
-                'MARS OPT3 (int4)',
+                'LoRA (fp4)',
+                'LoRA (int8)',
+                'MARS OPT3 (fp4)',
                 'MARS OPT3 (int8)',
-                'MARS OPT4 (int4)',
+                'MARS OPT4 (fp4)',
                 'MARS OPT4 (int8)',
                 'QLoRA',
                 'QMARS'
@@ -943,4 +951,6 @@ def memory_efficiency_plot():
 # Quant / Non quant PEFT plots
 #quant_hellaswag_plot()
 #non_quant_hellaswag_plot()
-memory_efficiency_plot()
+#memory_efficiency_plot()
+parameter_efficiency_plot()
+#plot_3d_comparison()
