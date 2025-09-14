@@ -32,7 +32,7 @@ def plot_ram_usage_filled(file_paths, custom_names=None, model_loading_time=25):
         raise ValueError(f"Number of custom names ({len(custom_names)}) must match number of files ({len(file_paths)})")
     
     # Create the plot
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 6))
     
     # Colors for different datasets
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
@@ -94,7 +94,7 @@ def plot_ram_usage_filled(file_paths, custom_names=None, model_loading_time=25):
         plt.text(text_x, peak_ram + 20, f'{peak_ram:.0f} MB', 
                 color=color, fontweight='bold', horizontalalignment='left',
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', 
-                         edgecolor=color, alpha=0.9))
+                         edgecolor=color, alpha=0.9), fontsize=16)
     
     # Add model loading time indicator - horizontal line at y=2000 from 0 to model_loading_time
     if model_loading_time > 0 and model_loading_time <= global_max_time:
@@ -103,17 +103,19 @@ def plot_ram_usage_filled(file_paths, custom_names=None, model_loading_time=25):
                 color='red', linewidth=3, alpha=0.8, label='_nolegend_')
         
         # Add text label on the horizontal line
-        plt.text(model_loading_time/2, 2050, 'Model Loading', fontsize=8,
+        plt.text(model_loading_time/2, 2050, 'Model Loading', fontsize=14,
                 horizontalalignment='center', color='red', fontweight='bold')
     
+    plt.tick_params(axis='both', which='major', labelsize=20)
+
     # Customize the plot
-    plt.title('On-device RAM Usage', fontsize=16, fontweight='bold')
-    plt.xlabel('Time (seconds)', fontsize=12)
-    plt.ylabel('RAM Usage (MB)', fontsize=12)
+    plt.title('On-device RAM Usage', fontsize=18, fontweight='bold')
+    plt.xlabel('Time (seconds)', fontsize=18)
+    plt.ylabel('RAM Usage (MB)', fontsize=18)
     plt.grid(True, alpha=0.3)
     
     # Create legend with colored patches and hatches
-    plt.legend(handles=legend_elements, loc='best')
+    plt.legend(handles=legend_elements, loc='lower center', fontsize=18)
     
     # Force x-axis to start from 0 and y-axis to start from 1000
     plt.xlim(left=0, right=global_max_time * 1.02)
@@ -189,7 +191,8 @@ def plot_cpu_usage_individual_subplots(file_path, metric='cpu_usage_percent', na
         ax.set_ylim(bottom=0)
         
         # Make subplots really thin
-        ax.tick_params(axis='y', labelsize=8)
+        ax.tick_params(axis='y', labelsize=10)
+        ax.tick_params(axis='x', labelsize=14)
         
         # Only show x-axis label on bottom subplot
         if i == 6:  # Last subplot
@@ -257,6 +260,7 @@ def plot_temperature_individual_subplots(file_path, name="temp"):
         for i, (zone, label) in enumerate(zip(expected_zones, zone_labels)):
             ax = axes[i]
             color = colors[i]
+            ax.tick_params(axis='both', which='major', labelsize=16)
             
             if zone in thermal_data:
                 # Sort by timestamp
@@ -306,12 +310,12 @@ def plot_temperature_individual_subplots(file_path, name="temp"):
             ax.set_ylim(60, 100)  # Typical CPU temperature range
             
             # Make subplots really thin
-            ax.tick_params(axis='y', labelsize=10)
-            ax.tick_params(axis='x', labelsize=10)
+            ax.tick_params(axis='y', labelsize=14)
+            ax.tick_params(axis='x', labelsize=14)
             
             # Only show x-axis label on bottom subplot
             if i == 2:  # Last subplot
-                ax.set_xlabel('Time (seconds)', fontsize=12)
+                ax.set_xlabel('Time (seconds)', fontsize=14)
             
             # Remove top and right spines for cleaner look
             ax.spines['top'].set_visible(False)
@@ -320,7 +324,7 @@ def plot_temperature_individual_subplots(file_path, name="temp"):
             # Add horizontal line at critical temperature (e.g., 85°C)
             ax.axhline(y=85, color='red', linestyle='--', alpha=0.5, linewidth=1)
             ax.text(0.98, 85, '85°C Critical', transform=ax.get_yaxis_transform(),
-                   fontsize=8, color='red', va='bottom', ha='left')
+                   fontsize=12, color='red', va='bottom', ha='left')
     
     # Adjust layout to make subplots thin and remove gaps
     plt.subplots_adjust(hspace=0.15)  # Minimal space between subplots
@@ -329,17 +333,17 @@ def plot_temperature_individual_subplots(file_path, name="temp"):
 
 # Temperature plot
 
-#plot_temperature_individual_subplots('experiment_results/on-device-benchmarks/mars32-opt4-temp-usage.json', name="MARS OPT4 ($r$ = 32)")
+#plot_temperature_individual_subplots('experiment_results/on-device-benchmarks/mars32-opt4-temp-usage.json', name="MARS Q-OPT1 ($r$ = 32)")
 
 # CPU usage plot
-#plot_cpu_usage_individual_subplots('experiment_results/on-device-benchmarks/mars32-opt4-cpu-usage.json', metric='cpu_usage_percent', name="MARS OPT4 ($r$ = 32)")
+#plot_cpu_usage_individual_subplots('experiment_results/on-device-benchmarks/mars32-opt4-cpu-usage.json', metric='cpu_usage_percent', name="MARS Q-OPT1 ($r$ = 32)")
 
 # RAM usage plots
 #plot_ram_usage_filled(['experiment_results/on-device-benchmarks/lora32-mem-usage.json', 'experiment_results/on-device-benchmarks/mars32-opt3-mem-usage.json', 'experiment_results/on-device-benchmarks/mars32-opt4-mem-usage.json'],
-#                      custom_names=['LoRA ($r$ = 32)', 'MARS OPT3 ($r$ = 32)', 'MARS OPT4 ($r$ = 32)'])
+#                      custom_names=['LoRA ($r$ = 32)', 'MARS Q-OPT0 ($r$ = 32)', 'MARS Q-OPT1 ($r$ = 32)'])
 
 #plot_ram_usage_filled(['experiment_results/on-device-benchmarks/lora8-mem-usage.json', 'experiment_results/on-device-benchmarks/mars8-opt3-mem-usage.json', 'experiment_results/on-device-benchmarks/mars8-opt4-mem-usage.json'],
-#                      custom_names=['LoRA ($r$ = 8)', 'MARS OPT3 ($r$ = 8)', 'MARS OPT4 ($r$ = 8)'])
+#                      custom_names=['LoRA ($r$ = 8)', 'MARS Q-OPT0 ($r$ = 8)', 'MARS Q-OPT1 ($r$ = 8)'])
 
-#plot_ram_usage_filled(['experiment_results/on-device-benchmarks/lora2-mem-usage.json', 'experiment_results/on-device-benchmarks/mars2-opt3-mem-usage.json', 'experiment_results/on-device-benchmarks/mars2-opt4-mem-usage.json'],
-#                      custom_names=['LoRA ($r$ = 2)', 'MARS OPT3 ($r$ = 2)', 'MARS OPT4 ($r$ = 2)'])
+plot_ram_usage_filled(['experiment_results/on-device-benchmarks/lora2-mem-usage.json', 'experiment_results/on-device-benchmarks/mars2-opt3-mem-usage.json', 'experiment_results/on-device-benchmarks/mars2-opt4-mem-usage.json'],
+                      custom_names=['LoRA ($r$ = 2)', 'MARS Q-OPT0 ($r$ = 2)', 'MARS O-OPT1 ($r$ = 2)'])

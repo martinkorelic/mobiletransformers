@@ -488,15 +488,15 @@ def ablation_table():
         'experiment_results/TinyLlama_v1.1-abl_B',
         'experiment_results/TinyLlama_v1.1-abl_C',
         'experiment_results/TinyLlama_v1.1-abl_D',
-        'experiment_results/TinyLlama_v1.1-loraq4',
         'experiment_results/TinyLlama_v1.1-abl_G-loraq8',
+        'experiment_results/TinyLlama_v1.1-loraq4'
     ], [
-        'Variant A',
-        'Variant B',
-        'Variant C',
-        'Variant D',
-        'LoRA (fp4)',
-        'LoRA (int8)',
+        'Variant A - Intermediate layer adaptation',
+    'Variant B - Adapter vector with frozen A matrix',
+    'Variant C - Frozen A matrix with intermediate layer',
+    'Variant D - Shared and frozen A matrix',
+    'Variant E - LoRA (int8)',
+    'Variant F - LoRA (fp4)'
     ], 'peft_ablation_table.tex')
 
 
@@ -577,10 +577,10 @@ QUANT_PEFT_NAMES = [
         'LoRA (int8)',
         'QLoRA',
         'QMARS',
-        'MARS OPT3 (fp4)',
-        'MARS OPT3 (int8)',
-        'MARS OPT4 (fp4)',
-        'MARS OPT4 (int8)'
+        'MARS Q-OPT0 (fp4)',
+        'MARS Q-OPT0 (int8)',
+        'MARS Q-OPT1 (fp4)',
+        'MARS Q-OPT1 (int8)',
     ]
 
 NON_QUANT_PEFT_DIRS = [
@@ -606,24 +606,25 @@ ABLATION_PEFT_DIRS = [
     'experiment_results/TinyLlama_v1.1-abl_B',
     'experiment_results/TinyLlama_v1.1-abl_C',
     'experiment_results/TinyLlama_v1.1-abl_D',
-    'experiment_results/TinyLlama_v1.1-loraq4',
-    'experiment_results/TinyLlama_v1.1-abl_G-loraq8'
+    'experiment_results/TinyLlama_v1.1-abl_G-loraq8',
+    'experiment_results/TinyLlama_v1.1-loraq4'
+    
 ]
 
 ABLATION_PEFT_NAMES = [
-    'Variant A',
-    'Variant B',
-    'Variant C',
-    'Variant D',
-    'LoRA (fp4)',
-    'LoRA (int8)'
+    'Variant A - Intermediate layer adaptation',
+    'Variant B - Adapter vector with frozen A matrix',
+    'Variant C - Frozen A matrix with intermediate layer',
+    'Variant D - Shared and frozen A matrix',
+    'Variant E - LoRA (int8)',
+    'Variant F - LoRA (fp4)'
 ]
 
-#quant_table()
+quant_table()
 #non_quant_table()
 #ablation_table()
 #mars_table()
 
 runtime_table(QUANT_PEFT_DIRS, QUANT_PEFT_NAMES, 'quant_time_table.tex')
-runtime_table(NON_QUANT_PEFT_DIRS, NON_QUANT_PEFT_NAMES, 'non_quant_time_table.tex')
-runtime_table(ABLATION_PEFT_DIRS, ABLATION_PEFT_NAMES, 'ablation_time_table.tex')
+#runtime_table(NON_QUANT_PEFT_DIRS, NON_QUANT_PEFT_NAMES, 'non_quant_time_table.tex')
+#runtime_table(ABLATION_PEFT_DIRS, ABLATION_PEFT_NAMES, 'ablation_time_table.tex')

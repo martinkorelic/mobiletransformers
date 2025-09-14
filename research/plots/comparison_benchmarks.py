@@ -98,9 +98,9 @@ def plot_peft_training_efficiency(peft_directories, peft_names, task_name, ranks
                             print(f"Error reading {logs_file}: {e}")
     
     # Create the scatter plot with extra space for legends
-    fig, ax = plt.subplots(figsize=(12, 8))  # Made wider to accommodate larger legends
+    fig, ax = plt.subplots(figsize=(13, 10))  # Made wider to accommodate larger legends
     plt.subplots_adjust(right=0.30)  # Leave more space for legends
-    
+    ax.tick_params(axis='both', which='major', labelsize=20)
     # Plot connecting lines first (underneath dots)
     for i, peft_name in enumerate(peft_names):
         if peft_name in results:
@@ -143,18 +143,18 @@ def plot_peft_training_efficiency(peft_directories, peft_names, task_name, ranks
                                    label=peft_name, zorder=2)
     
     # Customize the plot
-    ax.set_xlabel('Training Runtime (minutes)', fontsize=16, fontweight='bold')
-    ax.set_ylabel('GPU Memory Usage (GB)', fontsize=16, fontweight='bold')
+    ax.set_xlabel('Training Runtime (minutes)', fontsize=20, fontweight='bold')
+    ax.set_ylabel('GPU Memory Usage (GB)', fontsize=20, fontweight='bold')
     ax.set_title(f'{name}', 
-                fontsize=16, fontweight='bold')
+                fontsize=20, fontweight='bold')
     
     # Add grid
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.set_axisbelow(True)
     
     # Add legend for methods on the right with more spacing
-    legend1 = ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=14, 
-                       framealpha=0.9, title='PEFT Methods', title_fontsize=16,
+    legend1 = ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=20, 
+                       framealpha=0.9, title='PEFT Methods', title_fontsize=20,
                        labelspacing=1.5)  # Increased spacing and font sizes
     
     # Create a second legend for rank sizes on the right with more spacing (moved down and larger)
@@ -331,7 +331,11 @@ def plot_peft_3d_comparison(peft_directories, peft_names, title='PEFT Methods 3D
     # Create 3D scatter plot
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
-    
+    ax.tick_params(axis='both', which='major', labelsize=12)
+
+    ax.set_xlim(30, 80) 
+    ax.set_ylim(0, 5)
+    ax.set_zlim(0.3, 0.6) 
             
     # After plotting each scatter point, add a vertical line
     for i, peft_name in enumerate(peft_names):
@@ -349,9 +353,10 @@ def plot_peft_3d_comparison(peft_directories, peft_names, title='PEFT Methods 3D
             # Add vertical line from point down to bottom
             ax.plot([data['runtime'], data['runtime']], 
                     [data['gpu_mem'], data['gpu_mem']], 
-                    [0, data['accuracy']], 
+                   [0.3, data['accuracy']], 
                     color=color, linestyle='-', alpha=0.6, linewidth=2)
-    
+
+
     # Customize the plot
     ax.set_xlabel('Training Runtime (minutes)', fontsize=16, fontweight='bold')
     ax.set_ylabel('GPU Memory Usage (GB)', fontsize=16, fontweight='bold')
@@ -485,10 +490,10 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
                 print(f"  Rank {rank}: Accuracy={avg_accuracy:.3f}, Params={params_millions:.2f}M, Efficiency={efficiency:.2f}")
     
     # Create horizontal bar plots in vertical layout (3 rows, 1 column)
-    fig, axes = plt.subplots(3, 1, figsize=(12, 18))
+    fig, axes = plt.subplots(3, 1, figsize=(12, 14))
     fig.suptitle(title, fontsize=16, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.98])
-    plt.subplots_adjust(hspace=0.2)  # Add even more vertical spacing between subplots
+    plt.subplots_adjust(hspace=0.4)  # Add even more vertical spacing between subplots
     
     # Colors for different PEFT methods
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
@@ -539,7 +544,7 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
             ax.ticklabel_format(style='scientific', axis='x', scilimits=(0,0))
             
             # Increase tick label font sizes
-            ax.tick_params(axis='x', labelsize=14)
+            ax.tick_params(axis='x', labelsize=18)
             ax.tick_params(axis='y', labelsize=14)
             
             # Set rank title (omit LoRA-XS references)
@@ -707,6 +712,7 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
     for rank_idx, rank in enumerate(ranks):
         ax = axes[rank_idx]
         
+        
         # Collect data for this rank
         methods = []
         efficiencies = []
@@ -745,8 +751,8 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
             ax.ticklabel_format(style='scientific', axis='x', scilimits=(0,0))
             
             # Increase tick label font sizes
-            ax.tick_params(axis='x', labelsize=12)
-            ax.tick_params(axis='y', labelsize=12)
+            ax.tick_params(axis='x', labelsize=18)
+            ax.tick_params(axis='y', labelsize=14)
             
             # Set rank title (omit LoRA-XS references)
             if rank_idx == 0:
@@ -822,10 +828,10 @@ def quant_hellaswag_plot():
     ], [
         'LoRA (fp4)',
         'LoRA (int8)',
-        'MARS OPT3 (fp4)',
-        'MARS OPT3 (int8)',
-        'MARS OPT4 (fp4)',
-        'MARS OPT4 (int8)',
+        'MARS Q-OPT0 (fp4)',
+        'MARS Q-OPT0 (int8)',
+        'MARS Q-OPT1 (fp4)',
+        'MARS Q-OPT1 (int8)',
         'QLoRA',
         'QMARS'
     ], 'hellaswag', [2, 8, 32], x_axis_start=130, x_axis_end=140, y_axis_start=1, name="Quantized PEFT Training - HellaSwag", output_filename="quant_peft_efficiency.pdf")
@@ -837,15 +843,15 @@ def non_quant_hellaswag_plot():
         'experiment_results/TinyLlama_v1.1-mars-opt1',
         'experiment_results/TinyLlama_v1.1-lora_xs',
         'experiment_results/TinyLlama_v1.1-vb_lora',
-        'experiment_results/TinyLlama_v1.1-loha'
+        #'experiment_results/TinyLlama_v1.1-loha'
     ], [
         'LoRA',
         'MARS OPT0',
         'MARS OPT1',
         'LoRA-XS',
         'VB LoRA',
-        'LoHA'
-    ], 'hellaswag', [2, 8, 32], x_axis_start=10, y_axis_start=4.2, y_axis_end=6.2, name="Full-precision PEFT Training - HellaSwag", output_filename="non_quant_peft_efficiency.pdf")
+        #'LoHA'
+    ], 'hellaswag', [2, 8, 32], x_axis_start=130, x_axis_end=160, y_axis_start=4.2, y_axis_end=5.5, name="Full-precision PEFT Training - HellaSwag", output_filename="non_quant_peft_efficiency.pdf")
 
 def plot_3d_comparison():
     plot_peft_3d_comparison([
@@ -854,7 +860,7 @@ def plot_3d_comparison():
             'experiment_results/TinyLlama_v1.1-mars-opt1',
             'experiment_results/TinyLlama_v1.1-lora_xs',
             'experiment_results/TinyLlama_v1.1-vb_lora',
-            'experiment_results/TinyLlama_v1.1-loha',
+            #'experiment_results/TinyLlama_v1.1-loha',
             'experiment_results/TinyLlama_v1.1-loraq4',
             'experiment_results/TinyLlama_v1.1-abl_G-loraq8',
             'experiment_results/TinyLlama_v1.1-mars-opt3-q4',
@@ -869,13 +875,13 @@ def plot_3d_comparison():
             'MARS OPT1',
             'LoRA-XS',
             'VB LoRA',
-            'LoHA',
+            #'LoHA',
             'LoRA (fp4)',
             'LoRA (int8)',
-            'MARS OPT3 (fp4)',
-            'MARS OPT3 (int8)',
-            'MARS OPT4 (fp4)',
-            'MARS OPT4 (int8)',
+            'MARS Q-OPT0 (fp4)',
+            'MARS Q-OPT0 (int8)',
+            'MARS Q-OPT1 (fp4)',
+            'MARS Q-OPT1 (int8)',
             'QLoRA',
             'QMARS'
         ], title="PEFT Method Performance Comparison")
@@ -907,10 +913,10 @@ def parameter_efficiency_plot():
                 'LoHA',
                 'LoRA (fp4)',
                 'LoRA (int8)',
-                'MARS OPT3 (fp4)',
-                'MARS OPT3 (int8)',
-                'MARS OPT4 (fp4)',
-                'MARS OPT4 (int8)',
+                'MARS Q-OPT0 (fp4)',
+                'MARS Q-OPT0 (int8)',
+                'MARS Q-OPT1 (fp4)',
+                'MARS Q-OPT1 (int8)',
                 'QLoRA',
                 'QMARS'
             ], title="Accuracy per Trainable Parameter")
@@ -940,17 +946,17 @@ def memory_efficiency_plot():
                 'LoHA',
                 'LoRA (fp4)',
                 'LoRA (int8)',
-                'MARS OPT3 (fp4)',
-                'MARS OPT3 (int8)',
-                'MARS OPT4 (fp4)',
-                'MARS OPT4 (int8)',
+                'MARS Q-OPT0 (fp4)',
+                'MARS Q-OPT0 (int8)',
+                'MARS Q-OPT1 (fp4)',
+                'MARS Q-OPT1 (int8)',
                 'QLoRA',
                 'QMARS'
             ], title="Accuracy per Memory size")
 
 # Quant / Non quant PEFT plots
-#quant_hellaswag_plot()
-#non_quant_hellaswag_plot()
-#memory_efficiency_plot()
+quant_hellaswag_plot()
+non_quant_hellaswag_plot()
+memory_efficiency_plot()
 parameter_efficiency_plot()
-#plot_3d_comparison()
+plot_3d_comparison()

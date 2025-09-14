@@ -174,7 +174,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-def plot_cumulative_grad_norm_heatmaps(analysis_data, save_dir="plots", figsize=(14, 8)):
+def plot_cumulative_grad_norm_heatmaps(analysis_data, save_dir="plots", figsize=(14, 9)):
     """
     Create heatmaps showing absolute cumulative change in gradient norm mean across decoder layers and projection types.
     
@@ -298,23 +298,26 @@ def plot_cumulative_grad_norm_heatmaps(analysis_data, save_dir="plots", figsize=
         ax.set_xticks(np.arange(-0.5, n_projections, 1), minor=True)
         ax.set_yticks(np.arange(-0.5, n_layers, 1), minor=True)
         ax.grid(which='minor', color='black', linestyle='-', linewidth=0.5)
+
+        ax.tick_params(axis='both', which='major', labelsize=20)
         
         # Customize the plot
         adapter_title = adapter.replace('_ablation', '').replace('_', ' ').title()
         ax.set_title(f'{adapter_title}', fontsize=16, fontweight='bold')
-        ax.set_ylabel('Decoder Layer', fontsize=14, fontweight='bold')
-        ax.set_xlabel('Projection Type', fontsize=14, fontweight='bold')
+        ax.set_ylabel('Decoder Layer', fontsize=20, fontweight='bold')
+        ax.set_xlabel('Projection Type', fontsize=20, fontweight='bold')
         
         # Set ticks and labels
         ax.set_yticks(range(n_layers))
-        ax.set_yticklabels([str(i + min_layer) for i in range(n_layers)], fontsize=10)
+        ax.set_yticklabels([str(i + min_layer) for i in range(n_layers)], fontsize=20)
         
         ax.set_xticks(range(n_projections))
-        ax.set_xticklabels(projection_types, rotation=45, ha='right', fontsize=10)
+        ax.set_xticklabels(projection_types, rotation=45, ha='right', fontsize=20)
         
         # Add colorbar
         cbar = plt.colorbar(im, ax=ax, shrink=0.8)
-        cbar.set_label('Absolute Cumulative Change', rotation=270, labelpad=20, fontsize=14)
+        #cbar.set_label('Absolute Cumulative Change', rotation=270, labelpad=20, fontsize=20)
+        cbar.ax.tick_params(labelsize=20)
         
         # Add text annotations for values
         #for i in range(n_layers):
