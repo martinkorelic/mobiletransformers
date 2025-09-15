@@ -468,6 +468,10 @@ def generate_peft_runtime_table(peft_directories, peft_names, output_filename='p
     
     print(f"LaTeX runtime table saved as: {output_filename}")
 
+    # Generate simple summary table as side product
+    simple_filename = output_filename.replace('.tex', '_simple.tex')
+    generate_simple_summary_table(peft_names, method_averages, simple_filename)
+
     compile_and_crop_latex(output_filename)
     
     # Also print summary statistics
@@ -481,6 +485,56 @@ def generate_peft_runtime_table(peft_directories, peft_names, output_filename='p
         overall_avg = sum(method_averages) / len(method_averages)
         print(f"Overall Average: {overall_avg:.1f} minutes")
 
+def generate_simple_summary_table(peft_names, method_averages, output_filename):
+    """
+    Generate a simple LaTeX table with just PEFT methods and their overall average training times.
+    
+    Args:
+        peft_names (list): List of PEFT method names
+        method_averages (list): List of average times corresponding to each method
+        output_filename (str): Name of the output LaTeX file
+    """
+    # Generate simple LaTeX table
+    latex_content = []
+    
+    # Document header
+    latex_content.append(r"\documentclass{article}")
+    latex_content.append(r"\usepackage{booktabs}")
+    latex_content.append(r"\usepackage{array}")
+    latex_content.append(r"\usepackage[margin=1cm]{geometry}")
+    latex_content.append(r"\pagestyle{empty}")
+    latex_content.append(r"\begin{document}")
+    latex_content.append("")
+    
+    # Table
+    latex_content.append(r"\begin{table}[h!]")
+    latex_content.append(r"\centering")
+    latex_content.append(r"\begin{tabular}{|l|c|}")
+    latex_content.append(r"\hline")
+    latex_content.append(r"\textbf{PEFT Method} & \textbf{Average Training Time (min)} \\")
+    latex_content.append(r"\hline")
+    
+    # Data rows
+    for i, peft_name in enumerate(peft_names):
+        if i < len(method_averages):
+            avg_time = method_averages[i]
+            if avg_time > 0:
+                time_str = f"{avg_time:.1f}"
+            else:
+                time_str = "-"
+            latex_content.append(f"{peft_name} & {time_str} \\\\")
+    
+    latex_content.append(r"\hline")
+    latex_content.append(r"\end{tabular}")
+    latex_content.append(r"\end{table}")
+    latex_content.append("")
+    latex_content.append(r"\end{document}")
+    
+    # Write to file
+    with open(output_filename, 'w') as f:
+        f.write('\n'.join(latex_content))
+    
+    print(f"Simple summary table saved as: {output_filename}")
 
 def ablation_table():
     generate_peft_latex_table([
@@ -511,10 +565,10 @@ def mars_table():
     ], [
         'MARS OPT0',
         'MARS OPT1',
-        'MARS OPT3 (fp4)',
-        'MARS OPT3 (int8)',
-        'MARS OPT4 (fp4)',
-        'MARS OPT4 (int8)',
+        'MARS Q-OPT0 (fp4)',
+        'MARS Q-OPT0 (int8)',
+        'MARS Q-OPT1 (fp4)',
+        'MARS Q-OPT1 (int8)',
     ], 'mars_table.tex')
 
 
@@ -620,11 +674,11 @@ ABLATION_PEFT_NAMES = [
     'Variant F - LoRA (fp4)'
 ]
 
-quant_table()
+#quant_table()
 #non_quant_table()
 #ablation_table()
-#mars_table()
+mars_table()
 
-runtime_table(QUANT_PEFT_DIRS, QUANT_PEFT_NAMES, 'quant_time_table.tex')
+#runtime_table(QUANT_PEFT_DIRS, QUANT_PEFT_NAMES, 'quant_time_table.tex')
 #runtime_table(NON_QUANT_PEFT_DIRS, NON_QUANT_PEFT_NAMES, 'non_quant_time_table.tex')
 #runtime_table(ABLATION_PEFT_DIRS, ABLATION_PEFT_NAMES, 'ablation_time_table.tex')

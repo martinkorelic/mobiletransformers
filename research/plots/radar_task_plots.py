@@ -492,10 +492,10 @@ def multiplot_mars():
     peft_methods = [
         ('experiment_results/TinyLlama_v1.1-mars-opt0', 'MARS OPT0'),
         ('experiment_results/TinyLlama_v1.1-mars-opt1', 'MARS OPT1'),
-        ('experiment_results/TinyLlama_v1.1-mars-opt3-q4', 'MARS OPT3 (fp4)'),
-        ('experiment_results/TinyLlama_v1.1-mars-opt3-q8', 'MARS OPT3 (int8)'),
-        ('experiment_results/TinyLlama_v1.1-mars-opt4-q4', 'MARS OPT4 (fp4)'),
-        ('experiment_results/TinyLlama_v1.1-mars-opt4-q8', 'MARS OPT4 (int8)')
+        ('experiment_results/TinyLlama_v1.1-mars-opt3-q4', 'MARS Q-OPT0 (fp4)'),
+        ('experiment_results/TinyLlama_v1.1-mars-opt3-q8', 'MARS Q-OPT0 (int8)'),
+        ('experiment_results/TinyLlama_v1.1-mars-opt4-q4', 'MARS Q-OPT1 (fp4)'),
+        ('experiment_results/TinyLlama_v1.1-mars-opt4-q8', 'MARS Q-OPT1 (int8)')
     ]
     plot_peft_radar_multiplots(peft_methods, ranks=[2, 8, 32], title='MARS Methods Comparison', output_filename='mars_radar.pdf')
 
@@ -508,8 +508,8 @@ def multiplot_mars_lora():
     plot_peft_radar_multiplots(peft_methods, ranks=[2, 8, 32], title='MARS vs LoRA', output_filename='lora_mars_radar.pdf')
 
 #multiplot_qmars_qlora()
-#multiplot_mars()
-multiplot_mars_lora()
+multiplot_mars()
+#multiplot_mars_lora()
 # Plots
 #ablation_plots()
 #mars_plots()

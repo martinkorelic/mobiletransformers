@@ -170,10 +170,6 @@ def analyze_weight_norms(npz_path, layer_name, save_dir="plots"):
     
     print(f"Weight norm plots saved as PDFs in {save_dir}/")
 
-import numpy as np
-import matplotlib.pyplot as plt
-from pathlib import Path
-
 def plot_cumulative_grad_norm_heatmaps(analysis_data, save_dir="plots", figsize=(14, 9)):
     """
     Create heatmaps showing absolute cumulative change in gradient norm mean across decoder layers and projection types.
@@ -288,7 +284,11 @@ def plot_cumulative_grad_norm_heatmaps(analysis_data, save_dir="plots", figsize=
     
     # Plot for each adapter type
     for idx, adapter in enumerate(adapter_types):
-        ax = axes[idx]
+        # switch plots
+        if idx == 0:
+            ax = axes[1]
+        else:
+            ax = axes[0]
         
         # Create heatmap with consistent color scaling and same colormap
         im = ax.imshow(heatmap_data[adapter], cmap='viridis', aspect='auto', 
@@ -304,7 +304,9 @@ def plot_cumulative_grad_norm_heatmaps(analysis_data, save_dir="plots", figsize=
         # Customize the plot
         adapter_title = adapter.replace('_ablation', '').replace('_', ' ').title()
         ax.set_title(f'{adapter_title}', fontsize=16, fontweight='bold')
-        ax.set_ylabel('Decoder Layer', fontsize=20, fontweight='bold')
+
+        if idx == 1:
+            ax.set_ylabel('Decoder Layer', fontsize=20, fontweight='bold')
         ax.set_xlabel('Projection Type', fontsize=20, fontweight='bold')
         
         # Set ticks and labels
@@ -315,9 +317,10 @@ def plot_cumulative_grad_norm_heatmaps(analysis_data, save_dir="plots", figsize=
         ax.set_xticklabels(projection_types, rotation=45, ha='right', fontsize=20)
         
         # Add colorbar
-        cbar = plt.colorbar(im, ax=ax, shrink=0.8)
-        #cbar.set_label('Absolute Cumulative Change', rotation=270, labelpad=20, fontsize=20)
-        cbar.ax.tick_params(labelsize=20)
+        #if idx == 0:
+        #    cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+            #cbar.set_label('Absolute Cumulative Change', rotation=270, labelpad=20, fontsize=20)
+        #    cbar.ax.tick_params(labelsize=20)
         
         # Add text annotations for values
         #for i in range(n_layers):
@@ -331,6 +334,8 @@ def plot_cumulative_grad_norm_heatmaps(analysis_data, save_dir="plots", figsize=
                     #       color=text_color, fontsize=8, fontweight='bold')
     
     plt.tight_layout()
+    cbar = plt.colorbar(im, ax=axes, shrink=0.8, pad=0.02)
+    cbar.ax.tick_params(labelsize=20)
     
     # Save the plot
     filename = "absolute_cumulative_grad_norm_change_heatmaps.pdf"

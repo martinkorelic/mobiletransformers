@@ -396,10 +396,10 @@ def plot_peft_3d_comparison(peft_directories, peft_names, title='PEFT Methods 3D
     
     return method_results
 
-def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Parameter Efficiency',
-                                 output_filename='peft_param_efficiency.pdf'):
+def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Parameter Efficiency (Accuracy Gain vs Baseline)',
+                                              output_filename='peft_param_efficiency.pdf'):
     """
-    Create horizontal bar plots showing accuracy per million parameters for different PEFT methods and ranks.
+    Create horizontal bar plots showing accuracy gain (vs baseline) per million parameters for different PEFT methods and ranks.
     
     Args:
         peft_directories (list): List of directories containing PEFT results
@@ -413,12 +413,21 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
     if len(peft_directories) != len(peft_names):
         raise ValueError("Number of directories must match number of names")
     
-    # Define benchmark datasets and ranks
-    benchmarks = ['arc_e', 'arc_c', 'winogrande', 'boolq', 'logiqa', 'hellaswag']
+    # Define benchmark datasets and their baselines (random guessing accuracy)
+    benchmark_baselines = {
+        'arc_e': 0.25,      # 4 choices: 1/4 = 25%
+        'arc_c': 0.25,      # 4 choices: 1/4 = 25%
+        'winogrande': 0.50, # 2 choices: 1/2 = 50%
+        'boolq': 0.50,      # 2 choices (True/False): 1/2 = 50%
+        'logiqa': 0.25,     # 4 choices: 1/4 = 25%
+        'hellaswag': 0.25   # 4 choices: 1/4 = 25%
+    }
+    
+    benchmarks = list(benchmark_baselines.keys())
     ranks = [2, 8, 32]
     
     # Store results for each method and rank
-    results = {}  # {peft_name: {rank: {'accuracy': avg, 'params': count, 'efficiency': score}}}
+    results = {}  # {peft_name: {rank: {'accuracy': avg, 'baseline_gain': gain, 'params': count, 'efficiency': score}}}
     
     for peft_dir, peft_name in zip(peft_directories, peft_names):
         results[peft_name] = {}
@@ -432,6 +441,7 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
         
         for rank in search_ranks:
             accuracies = []
+            benchmark_names = []
             trainable_params = None
             
             # Search for subdirectories with the pattern for this rank
@@ -458,6 +468,7 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
                                     eval_data = json.load(f)
                                     accuracy = eval_data.get('results', 0.0)
                                     accuracies.append(accuracy)
+                                    benchmark_names.append(benchmark_found)
                             except Exception as e:
                                 print(f"Error reading {eval_file}: {e}")
                         
@@ -473,27 +484,37 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
                                 except Exception as e:
                                     print(f"Error reading {config_file}: {e}")
             
-            # Calculate average accuracy for this rank
-            if accuracies and trainable_params:
+            # Calculate average accuracy gain for this rank
+            if accuracies and trainable_params and len(accuracies) == len(benchmark_names):
+                # Calculate baseline-corrected accuracy gains
+                baseline_gains = []
+                for accuracy, benchmark in zip(accuracies, benchmark_names):
+                    baseline = benchmark_baselines[benchmark]
+                    gain = accuracy - baseline
+                    baseline_gains.append(gain)
+                
                 avg_accuracy = sum(accuracies) / len(accuracies)
+                avg_baseline_gain = sum(baseline_gains) / len(baseline_gains)
                 params_millions = trainable_params / 1_000_000
                 
-                # Calculate efficiency: accuracy per million parameters
-                efficiency = avg_accuracy / params_millions if params_millions > 0 else 0
+                # Calculate efficiency: accuracy gain (vs baseline) per million parameters
+                efficiency = avg_baseline_gain / params_millions if params_millions > 0 else 0
                 
                 results[peft_name][rank] = {
                     'accuracy': avg_accuracy,
+                    'baseline_gain': avg_baseline_gain,
                     'params_millions': params_millions,
                     'efficiency': efficiency
                 }
                 
-                print(f"  Rank {rank}: Accuracy={avg_accuracy:.3f}, Params={params_millions:.2f}M, Efficiency={efficiency:.2f}")
+                print(f"  Rank {rank}: Accuracy={avg_accuracy:.3f}, Baseline Gain={avg_baseline_gain:.3f}, "
+                      f"Params={params_millions:.2f}M, Efficiency={efficiency:.2f}")
     
     # Create horizontal bar plots in vertical layout (3 rows, 1 column)
     fig, axes = plt.subplots(3, 1, figsize=(12, 14))
     fig.suptitle(title, fontsize=16, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.98])
-    plt.subplots_adjust(hspace=0.4)  # Add even more vertical spacing between subplots
+    plt.subplots_adjust(hspace=0.4)
     
     # Colors for different PEFT methods
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
@@ -537,8 +558,7 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
                           hatch=method_hatches)
             
             # Customize subplot
-            #ax.set_ylabel('PEFT Methods', fontsize=14, fontweight='bold')
-            ax.set_xlabel('Accuracy per Million Parameters', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Accuracy Gain per Million Parameters', fontsize=14, fontweight='bold')
             
             # Use scientific notation for x-axis
             ax.ticklabel_format(style='scientific', axis='x', scilimits=(0,0))
@@ -547,27 +567,31 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
             ax.tick_params(axis='x', labelsize=18)
             ax.tick_params(axis='y', labelsize=14)
             
-            # Set rank title (omit LoRA-XS references)
-            ax.set_title(f'Rank {rank}', fontsize=14, fontweight='bold')
+            # Set rank title
+            if rank_idx < len(ranks):
+                ax.set_title(f'Rank {ranks[rank_idx]}', fontsize=14, fontweight='bold')
             
             ax.set_yticks(range(len(methods)))
             ax.set_yticklabels(methods)
             ax.grid(True, alpha=0.3, axis='x')
             
-            # Add value labels at the end of bars (match x-axis scale manually)
+            # Add value labels at the end of bars
             for bar, efficiency in zip(bars, efficiencies):
                 width = bar.get_width()
                 
-                # Scale labels to match x-axis: 1e-1, 1e-1, 1e-2
-                if rank_idx == 0:  # First plot: 1e-1 scale
-                    label = f'{efficiency/10:.2f}'
-                elif rank_idx == 1:  # Second plot: 1e-1 scale  
-                    label = f'{efficiency*10:.1f}'
-                else:  # Third plot: 1e-2 scale
-                    label = f'{efficiency*100:.1f}'
+                # Format label based on magnitude
+                #if abs(efficiency) >= 100:
+                #    label = f'{efficiency:.0f}'
+                #elif abs(efficiency) >= 10:
+                #    label = f'{efficiency:.1f}'
+                #else:
+                label = f'{efficiency:.3f}'
                 
-                ax.text(width + width*0.01, bar.get_y() + bar.get_height()/2.,
+                ax.text(width + abs(width)*0.01, bar.get_y() + bar.get_height()/2.,
                        label, ha='left', va='center', fontsize=14, fontweight='bold')
+        current_xlim = ax.get_xlim()
+        x_range = current_xlim[1] - current_xlim[0]
+        ax.set_xlim(current_xlim[0], current_xlim[1] + 0.1 * x_range)  # Extend by 10%
     
     # Save the plot
     plt.savefig(output_filename, format='pdf', bbox_inches='tight', 
@@ -575,10 +599,10 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
     plt.show()
     
     # Print summary table
-    print(f"\nParameter Efficiency Summary:")
-    print("=" * 80)
-    print(f"{'Method':<15} {'Rank':<8} {'Accuracy':<10} {'Params (M)':<12} {'Efficiency':<12}")
-    print("-" * 80)
+    print(f"\nParameter Efficiency Summary (Baseline-Corrected):")
+    print("=" * 95)
+    print(f"{'Method':<15} {'Rank':<8} {'Accuracy':<10} {'Baseline Gain':<14} {'Params (M)':<12} {'Efficiency':<12}")
+    print("-" * 95)
     
     for peft_name in peft_names:
         if peft_name in results:
@@ -592,17 +616,24 @@ def plot_peft_parameter_efficiency(peft_directories, peft_names, title='Paramete
                 if rank in results[peft_name]:
                     data = results[peft_name][rank]
                     print(f"{peft_name:<15} {rank:<8} {data['accuracy']:<10.3f} "
-                          f"{data['params_millions']:<12.2f} {data['efficiency']:<12.2f}")
+                          f"{data['baseline_gain']:<14.3f} {data['params_millions']:<12.2f} "
+                          f"{data['efficiency']:<12.2f}")
     
-    print(f"\nParameter efficiency plot saved as: {output_filename}")
+    print(f"\nBaseline-corrected parameter efficiency plot saved as: {output_filename}")
+    
+    # Print baseline information for reference
+    print(f"\nDataset Baselines (Random Guessing):")
+    print("-" * 40)
+    for dataset, baseline in benchmark_baselines.items():
+        print(f"{dataset:<15}: {baseline:>6.1f}%")
     
     return results
 
 
-def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory Efficiency Comparison',
-                               output_filename='peft_memory_efficiency.pdf'):
+def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory Efficiency: Accuracy Gain vs Baseline per MB GPU Memory',
+                                             output_filename='peft_memory_efficiency.pdf'):
     """
-    Create horizontal bar plots showing accuracy per MB GPU memory for different PEFT methods and ranks.
+    Create horizontal bar plots showing accuracy gain (vs baseline) per MB GPU memory for different PEFT methods and ranks.
     
     Args:
         peft_directories (list): List of directories containing PEFT results
@@ -616,12 +647,21 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
     if len(peft_directories) != len(peft_names):
         raise ValueError("Number of directories must match number of names")
     
-    # Define benchmark datasets and ranks
-    benchmarks = ['arc_e', 'arc_c', 'winogrande', 'boolq', 'logiqa', 'hellaswag']
+    # Define benchmark datasets and their baselines (random guessing accuracy in decimal form)
+    benchmark_baselines = {
+        'arc_e': 0.25,      # 4 choices: 1/4 = 0.25
+        'arc_c': 0.25,      # 4 choices: 1/4 = 0.25
+        'winogrande': 0.5,  # 2 choices: 1/2 = 0.5
+        'boolq': 0.5,       # 2 choices (True/False): 1/2 = 0.5
+        'logiqa': 0.25,     # 4 choices: 1/4 = 0.25
+        'hellaswag': 0.25   # 4 choices: 1/4 = 0.25
+    }
+    
+    benchmarks = list(benchmark_baselines.keys())
     ranks = [2, 8, 32]
     
     # Store results for each method and rank
-    results = {}  # {peft_name: {rank: {'accuracy': avg, 'gpu_mem_mb': avg, 'efficiency': score}}}
+    results = {}  # {peft_name: {rank: {'accuracy': avg, 'baseline_gain': gain, 'gpu_mem_mb': avg, 'efficiency': score}}}
     
     for peft_dir, peft_name in zip(peft_directories, peft_names):
         results[peft_name] = {}
@@ -635,6 +675,7 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
         
         for rank in search_ranks:
             accuracies = []
+            benchmark_names = []
             gpu_memories = []
             
             # Search for subdirectories with the pattern for this rank
@@ -661,6 +702,7 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
                                     eval_data = json.load(f)
                                     accuracy = eval_data.get('results', 0.0)
                                     accuracies.append(accuracy)
+                                    benchmark_names.append(benchmark_found)
                             except Exception as e:
                                 print(f"Error reading {eval_file}: {e}")
                         
@@ -680,22 +722,34 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
                                 print(f"Error reading {logs_file}: {e}")
             
             # Calculate averages for this rank
-            if accuracies and gpu_memories and len(accuracies) == len(gpu_memories):
+            if (accuracies and gpu_memories and benchmark_names and 
+                len(accuracies) == len(gpu_memories) == len(benchmark_names)):
+                
+                # Calculate baseline-corrected accuracy gains
+                baseline_gains = []
+                for accuracy, benchmark in zip(accuracies, benchmark_names):
+                    baseline = benchmark_baselines[benchmark]
+                    gain = accuracy - baseline
+                    baseline_gains.append(gain)
+                
                 avg_accuracy = sum(accuracies) / len(accuracies)
+                avg_baseline_gain = sum(baseline_gains) / len(baseline_gains)
                 avg_gpu_mem_gb = sum(gpu_memories) / len(gpu_memories)
                 
-                # Convert GB to MB and calculate memory efficiency: accuracy per MB of GPU memory
+                # Convert GB to MB and calculate memory efficiency: accuracy gain (vs baseline) per MB of GPU memory
                 avg_gpu_mem_mb = avg_gpu_mem_gb * 1024  # Convert GB to MB
-                efficiency = avg_accuracy / avg_gpu_mem_mb if avg_gpu_mem_mb > 0 else 0
+                efficiency = avg_baseline_gain / avg_gpu_mem_mb if avg_gpu_mem_mb > 0 else 0
                 
                 results[peft_name][rank] = {
                     'accuracy': avg_accuracy,
+                    'baseline_gain': avg_baseline_gain,
                     'gpu_mem_gb': avg_gpu_mem_gb,
                     'gpu_mem_mb': avg_gpu_mem_mb,
                     'efficiency': efficiency
                 }
                 
-                print(f"  Rank {rank}: Accuracy={avg_accuracy:.3f}, GPU Memory={avg_gpu_mem_gb:.2f}GB ({avg_gpu_mem_mb:.0f}MB), Efficiency={efficiency:.6f}")
+                print(f"  Rank {rank}: Accuracy={avg_accuracy:.3f}, Baseline Gain={avg_baseline_gain:.3f}, "
+                      f"GPU Memory={avg_gpu_mem_gb:.2f}GB ({avg_gpu_mem_mb:.0f}MB), Efficiency={efficiency:.6f}")
     
     # Create horizontal bar plots in vertical layout (3 rows, 1 column)
     fig, axes = plt.subplots(3, 1, figsize=(12, 14))
@@ -711,7 +765,6 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
     # Plot for each rank
     for rank_idx, rank in enumerate(ranks):
         ax = axes[rank_idx]
-        
         
         # Collect data for this rank
         methods = []
@@ -744,8 +797,7 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
                           hatch=method_hatches)
             
             # Customize subplot
-            #ax.set_ylabel('PEFT Methods', fontsize=14, fontweight='bold')
-            ax.set_xlabel('Accuracy per MB GPU Memory', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Accuracy Gain per MB GPU Memory', fontsize=14, fontweight='bold')
             
             # Use scientific notation for x-axis
             ax.ticklabel_format(style='scientific', axis='x', scilimits=(0,0))
@@ -754,37 +806,36 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
             ax.tick_params(axis='x', labelsize=18)
             ax.tick_params(axis='y', labelsize=14)
             
-            # Set rank title (omit LoRA-XS references)
-            if rank_idx == 0:
-                ax.set_title(f'Rank {ranks[0]}', fontsize=14, fontweight='bold')
-            elif rank_idx == 1:
-                ax.set_title(f'Rank {ranks[1]}', fontsize=14, fontweight='bold')
-            else:
-                ax.set_title(f'Rank {ranks[2]}', fontsize=14, fontweight='bold')
+            # Set rank title
+            if rank_idx < len(ranks):
+                ax.set_title(f'Rank {ranks[rank_idx]}', fontsize=14, fontweight='bold')
             
             ax.set_yticks(range(len(methods)))
             ax.set_yticklabels(methods)
             ax.grid(True, alpha=0.3, axis='x')
-
-            ax.set_xlim(right=0.0006)
             
-            # Add value labels at the end of bars (match x-axis scale manually)
+            # Add value labels at the end of bars
             for bar, efficiency in zip(bars, efficiencies):
                 width = bar.get_width()
                 
-                # Scale labels to match x-axis
-                if rank_idx == 0:
-                    label = f'{efficiency*10000:.1f}'
-                elif rank_idx == 1:
-                    label = f'{efficiency*10000:.2f}'
-                else: 
-                    label = f'{efficiency*10000:.2f}'
+                # Format label based on magnitude (scientific notation scaling)
+                if abs(efficiency) >= 1e-4:
+                    label = f'{efficiency*1000:.3f}'
+                elif abs(efficiency) >= 1e-5:
+                    label = f'{efficiency*1000:.3f}'
+                else:
+                    label = f'{efficiency*1000:.3f}'
                 
-                ax.text(width + width*0.01, bar.get_y() + bar.get_height()/2.,
+                ax.text(width + abs(width)*0.01, bar.get_y() + bar.get_height()/2.,
                        label, ha='left', va='center', fontsize=14, fontweight='bold')
+                
+        current_xlim = ax.get_xlim()
+        x_range = current_xlim[1] - current_xlim[0]
+        ax.set_xlim(current_xlim[0], current_xlim[1] + 0.1 * x_range)  # Extend by 10%
     
     # Adjust layout
     plt.tight_layout(rect=[0, 0, 1, 0.98])
+    plt.subplots_adjust(hspace=0.4)
     
     # Save the plot
     plt.savefig(output_filename, format='pdf', bbox_inches='tight', 
@@ -792,10 +843,10 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
     plt.show()
     
     # Print summary table
-    print(f"\nMemory Efficiency Summary:")
-    print("=" * 90)
-    print(f"{'Method':<15} {'Rank':<8} {'Accuracy':<10} {'GPU Mem (GB)':<12} {'GPU Mem (MB)':<12} {'Efficiency':<12}")
-    print("-" * 90)
+    print(f"\nMemory Efficiency Summary (Baseline-Corrected):")
+    print("=" * 110)
+    print(f"{'Method':<15} {'Rank':<8} {'Accuracy':<10} {'Baseline Gain':<14} {'GPU Mem (GB)':<12} {'GPU Mem (MB)':<12} {'Efficiency':<12}")
+    print("-" * 110)
     
     for peft_name in peft_names:
         if peft_name in results:
@@ -809,9 +860,16 @@ def plot_peft_memory_efficiency(peft_directories, peft_names, title='PEFT Memory
                 if rank in results[peft_name]:
                     data = results[peft_name][rank]
                     print(f"{peft_name:<15} {rank:<8} {data['accuracy']:<10.3f} "
-                          f"{data['gpu_mem_gb']:<12.2f} {data['gpu_mem_mb']:<12.0f} {data['efficiency']:<12.6f}")
+                          f"{data['baseline_gain']:<14.3f} {data['gpu_mem_gb']:<12.2f} "
+                          f"{data['gpu_mem_mb']:<12.0f} {data['efficiency']:<12.6f}")
     
-    print(f"\nMemory efficiency plot saved as: {output_filename}")
+    print(f"\nBaseline-corrected memory efficiency plot saved as: {output_filename}")
+    
+    # Print baseline information for reference
+    print(f"\nDataset Baselines (Random Guessing):")
+    print("-" * 40)
+    for dataset, baseline in benchmark_baselines.items():
+        print(f"{dataset:<15}: {baseline:>6.2f}")
     
     return results
 
@@ -955,8 +1013,8 @@ def memory_efficiency_plot():
             ], title="Accuracy per Memory size")
 
 # Quant / Non quant PEFT plots
-quant_hellaswag_plot()
-non_quant_hellaswag_plot()
-memory_efficiency_plot()
+#quant_hellaswag_plot()
+#non_quant_hellaswag_plot()
+#memory_efficiency_plot()
 parameter_efficiency_plot()
-plot_3d_comparison()
+#plot_3d_comparison()
