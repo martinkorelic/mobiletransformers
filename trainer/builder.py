@@ -12,7 +12,7 @@ import onnx
 import numpy as np
 from onnx import helper, TensorProto, numpy_helper
 from optimum.exporters.onnx import OnnxConfigWithLoss, export
-from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfig, Phi3OnnxConfig, BertOnnxConfig, Qwen2OnnxConfig
+from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfig, Phi3OnnxConfig, BertOnnxConfig, Qwen2OnnxConfig, OPTOnnxConfig
 
 from transformers import AutoModelForCausalLM, AutoConfig, AutoModel
 from peft import PeftModel, LoraConfig, get_peft_model
@@ -293,6 +293,8 @@ def optimum_hf_export(model_id,
         ocl = Phi3OnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
     elif config.architectures[0] == "Qwen2ForCausalLM":
         ocl = Qwen2OnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
+    elif config.architectures[0] == "OPTForCausalLM":
+        ocl = OPTOnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
     elif config.architectures[0] == "BertModel":
         ocl = BertOnnxConfig(config, task=task_type)
 

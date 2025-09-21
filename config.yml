@@ -19,7 +19,7 @@ TRAIN_BUILDER:
   # Qwen/Qwen3-Embedding-0.6B
   # intfloat/multilingual-e5-small
   
-  model_id: Qwen/Qwen2-0.5B
+  model_id: facebook/opt-350m
   output: "./build/train_models"
 
   # If building generation model -> text-generation
@@ -40,14 +40,14 @@ TRAIN_BUILDER:
   lora_target:
     - q_proj
     - k_proj
-    - v_proj
-    - o_proj
-    - gate_proj
-    - down_proj
-    - up_proj
+    #- v_proj
+    #- o_proj
+    #- gate_proj
+    #- down_proj
+    #- up_proj
 
-  lora_rank: 32
-  lora_alpha: 16
+  lora_rank: 64
+  lora_alpha: 64
   quantize: true
   # Weight types for quantizing (dynamic quantization can only use UInt8, so this field does not change anything for dynamic quantization)
   weight_type: "QInt8"
@@ -144,7 +144,7 @@ ARTIFACT_BUILDER:
   build_path: "./build"
 
   # This will join path with the TRAIN_BUILDER.output/train_models
-  training_model: "quant_model.onnx"
+  training_model: "model.onnx"
 
   # This will join path with the INFERENCE_BUILDER.output/inference_models
   inference_model: "model.onnx"
@@ -163,12 +163,12 @@ ARTIFACT_BUILDER:
 
   ### EXPORTING OPTIONS ###
 
-  export_inference_config: true
-  export_tokenizer: false
+  export_inference_config: false
+  export_tokenizer: true
   export_merger: false
 
   # Exports the dataset inside the train directory
-  export_dataset: true
+  export_dataset: false
 
   test_training: false
   test_eval: false
@@ -191,8 +191,8 @@ ARTIFACT_BUILDER:
   inference_config:
     # Currently only native works for the application
     # Name of local model repository (custom)
-    repoName: tinyllama
-    onnxName: quant_model
+    repoName: smollm2-big
+    onnxName: model
     type: "native" # "native", "genai"
     maxSequenceLength: 128
     trackMetrics: true
@@ -222,11 +222,11 @@ ARTIFACT_BUILDER:
   
   train_config:
     # Name of local model repository (custom)
-    repoName: qwen2 
+    repoName: smollm2-big 
     onnxName: quant_model
     
-    taskName: mini_personalqa
-    batchSize: 4
+    taskName: cola
+    batchSize: 16
     numTrainEpochs: 1
     maxSteps: 5
     saveSteps: 20
@@ -242,7 +242,7 @@ ARTIFACT_BUILDER:
     profileMetrics: false
 
     datasetOptions:
-      trainFile: MiniPersonalQA_train
+      trainFile: cola_train
       datasetBatchSize: null
       maxSequenceLength: null
       maxDatasetLength: null

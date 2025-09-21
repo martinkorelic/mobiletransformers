@@ -87,6 +87,7 @@ def plot_accuracy_comparison(file_paths, custom_names, output_filename='accuracy
     # Set category labels
     ax.set_yticks(y_pos)
     ax.set_yticklabels(categories, fontsize=14)
+    ax.tick_params(axis='both', which='major', labelsize=20)
     
     # Set x-axis limits with some padding
     max_val = max(max(dataset1_values), max(dataset2_values))
@@ -210,7 +211,7 @@ plot_accuracy_comparison(['experiment_results/train-qwen2-personalqa-mobile/base
                          ['Base model', 'On-device fine-tuned model'])
 
 # Mini PersonalQA training metrics
-plot_training_metrics('experiment_results/train-qwen2-personalqa-mobile/training_logs.json', name="Mini PersonalQA", output_filename="on_device_training_metrics_personalqa.pdf")
+#plot_training_metrics('experiment_results/train-qwen2-personalqa-mobile/training_logs.json', name="Mini PersonalQA", output_filename="on_device_training_metrics_personalqa.pdf")
 
 # Mini Recommendation training metrics   
-plot_training_metrics('experiment_results/train-qwen2-recommendation-mobile/training_logs.json', name="Mini Recommendation", output_filename="on_device_training_metrics_recommendation.pdf")
+#plot_training_metrics('experiment_results/train-qwen2-recommendation-mobile/training_logs.json', name="Mini Recommendation", output_filename="on_device_training_metrics_recommendation.pdf")
