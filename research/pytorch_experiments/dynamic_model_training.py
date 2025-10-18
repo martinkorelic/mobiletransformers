@@ -10,7 +10,7 @@ from peft import PeftModel, LoraConfig, get_peft_model
 from safetensors.torch import load_file, save_file
 from transformers import Trainer, TrainerState
 
-from research.visualization_trainer import PEFTUsageCallback
+from research.trainer_callbacks import PEFTUsageCallback
 
 def compute_max_steps(train_dataloader, grad_accum_steps=1, epochs=1):
     len_dataloader = len(train_dataloader)

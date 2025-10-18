@@ -1,4 +1,7 @@
-# Initialize once
+"""
+Script to evaluate Small Language Models (SLMs) against Large Language Models (LLMs) on medical questions using OpenEHR data.
+"""
+
 import datetime
 import gc
 import json

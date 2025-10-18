@@ -1,3 +1,7 @@
+"""
+Script for evaluating language models on mobile-specific tasks such as MiniPersonalQA and MiniRecommendation.
+"""
+
 import json
 import os
 import re

@@ -136,5 +136,3 @@ If you are using this framework for your own work, please cite:
 This work was supported by the Slovenian Research Agency grant no. N2-0393 approXimation for adaptable diStributed artificial intelligence and grant no. J2-3047 Context-Aware On-Device Approximate Computing.
 
 ---
-
-*Empowering researchers and developers with a powerful, mobile-first transformer framework — welcome to ORTransformersMobile!*

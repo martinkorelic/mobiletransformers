@@ -1,3 +1,7 @@
+"""
+DEEPEVAL Adapter for loading PEFT ONNX models and performing inference for evaluation.
+"""
+
 from transformers import AutoTokenizer
 from deepeval.models import DeepEvalBaseLLM
 from inference.validator import ORTransformerGenerator

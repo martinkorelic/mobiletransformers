@@ -536,7 +536,7 @@ def parse_arguments():
 
     return args
 
-
+# Example usage
 if __name__ == "__main__":
 
     trainer = ORTTrainer("build/train", load_from_state=True)
@@ -545,4 +545,4 @@ if __name__ == "__main__":
 
     validator = create_peft_merge_validator(trainer, "")
 
-    validator.compute_base_layers_from_adapters(save_directory=os.path.join(args.training_artifact_dir, 'temp_weights/'))
+    validator.compute_base_layers_from_adapters(save_directory=os.path.join('training_artifact_dir', 'temp_weights/'))

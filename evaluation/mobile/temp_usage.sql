@@ -1,3 +1,5 @@
+-- This query retrieves the average CPU temperature readings from different thermal zones (BIG, MID, LITTLE)
+
 WITH process_activity AS (
  SELECT DISTINCT CAST(ts/1e9 AS INT) as timestamp_sec
  FROM sched_slice

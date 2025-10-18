@@ -1,3 +1,5 @@
+-- This query retrieves the RAM usage over time for the specified mobile application.
+
 SELECT 
   CAST(c.ts/1e9 AS INT) as timestamp_sec,
   c.value/1024/1024 as ram_usage_mb

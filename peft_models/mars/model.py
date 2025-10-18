@@ -10,6 +10,11 @@ from .layer import Linear, MarsLayer, SharedAttentionAdapter, SharedMLPAdapter
 from .utils import TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING
 
 class MarsModel(BaseTuner):
+    """
+    PEFT model implementing the MARS (Multi-Adapter Rank Sharing) adapter technique on base models.
+    """
+
+
     prefix: str = "mars"
 
     def __init__(self, model, peft_config: PeftConfig | dict[str, PeftConfig], adapter_name: str = "mars", low_cpu_mem_usage: bool = False) -> None:

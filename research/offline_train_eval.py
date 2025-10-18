@@ -1,3 +1,7 @@
+"""
+Main script for training and evaluating PEFT models on various benchmarks.
+"""
+
 import gc
 import os
 import json
@@ -28,7 +32,7 @@ from peft_models.ablation.model import AblationModel
 from peft_models.mars.config import MarsConfig
 from peft_models.mars.model import MarsModel
 from datasets import Dataset
-from research.visualization_trainer import PEFTUsageCallback
+from research.trainer_callbacks import PEFTUsageCallback
 from tools.utils import preload_dataset
 
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING

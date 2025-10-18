@@ -507,8 +507,10 @@ def multiplot_mars_lora():
     ]
     plot_peft_radar_multiplots(peft_methods, ranks=[2, 8, 32], title='MARS vs LoRA', output_filename='lora_mars_radar.pdf')
 
+# Plotting calls
+
 #multiplot_qmars_qlora()
-multiplot_mars()
+#multiplot_mars()
 #multiplot_mars_lora()
 # Plots
 #ablation_plots()

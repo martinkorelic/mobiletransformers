@@ -20,7 +20,7 @@ def analyze_training_metrics(save_path="peft_metrics.npz"):
     
     return analysis_data
 
-
+# Example usage
 if __name__ == "__main__":
 
     analyze_training_metrics("experiment_results/TinyLlama_v1.1-abl_A-boolq-r32-a2/analysis_metrics.npz")

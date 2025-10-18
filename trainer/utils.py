@@ -34,12 +34,6 @@ class DataCollatorForSupervisedDataset:
         # Construct attention mask dynamically: 1 for non-pad tokens, 0 for pad tokens
         attention_mask = input_ids.ne(pad_token_id).long()
 
-        print(input_ids)
-        print(labels)
-        print(attention_mask)
-
-        raise ValueError("STOP")
-
         # Convert to requested tensor format
         if return_tensors == "np":
             return {

@@ -1241,14 +1241,9 @@ def parse_arguments():
 
 
 if __name__ == "__main__":
-    #args = parse_arguments()
-
-    #print(f"{ARTIFACT_VALIDATOR_CONFIG} arguments:")
-    #for arg, value in vars(args).items():
-    #    print(f"{arg}: {value}")
     
-    trainer = ORTTrainer("build/train-qwen2-recommendation-mobile", load_from_state=False)
+    trainer = ORTTrainer("build/train-tinyllama-lora-r8", load_from_state=False)
 
-    #trainer.train()
+    trainer.train()
 
-    trainer.export_model_for_inference(merged_weight_quantized=False)
+    #trainer.export_model_for_inference(merged_weight_quantized=False)

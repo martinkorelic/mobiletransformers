@@ -677,7 +677,7 @@ ABLATION_PEFT_NAMES = [
 #quant_table()
 #non_quant_table()
 #ablation_table()
-mars_table()
+#mars_table()
 
 #runtime_table(QUANT_PEFT_DIRS, QUANT_PEFT_NAMES, 'quant_time_table.tex')
 #runtime_table(NON_QUANT_PEFT_DIRS, NON_QUANT_PEFT_NAMES, 'non_quant_time_table.tex')

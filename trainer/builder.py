@@ -215,33 +215,6 @@ def apply_metadata(model_path, model_id):
     model.graph.metadata_props.append(graph_metadata_entry)
 
     return model
-    
-    # Get paths for potential files to delete
-    data_path = model_path.with_suffix(model_path.suffix + ".data")
-    
-    # Delete original files
-    if model_path.exists():
-        model_path.unlink()
-        print(f"✓ Deleted original {model_path.name}")
-    
-    if data_path.exists():
-        data_path.unlink()
-        print(f"✓ Deleted original {data_path.name}")
-    
-    # Save the updated model
-    onnx.save(model, str(model_path))
-    
-    # Verify metadata persisted after save
-    reloaded_model = onnx.load(str(model_path))
-    print("✓ All metadata in saved model:")
-    print("  Model-level:")
-    for prop in reloaded_model.metadata_props:
-        print(f"    - {prop.key}: {prop.value}")
-    print("  Graph-level:")
-    for prop in reloaded_model.graph.metadata_props:
-        print(f"    - {prop.key}: {prop.value}")
-    
-    return model_path
 
 def preprocess_model(model : torch.nn.Module, epsilon_high=1e-8, epsilon_low=1e-10):
     """
@@ -287,7 +260,7 @@ def optimum_hf_export(model_id,
     # TODO: Add support for other architectures
     if config.architectures[0] == "LlamaForCausalLM":
         ocl = LlamaOnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
-    elif config.architectures[0] == "GemmaForCausalLM" or config.architectures[0] == "Gemma2ForCausalLM":
+    elif config.architectures[0] == "GemmaForCausalLM" or config.architectures[0] == "Gemma2ForCausalLM" or config.architectures[0] == "Gemma3ForCausalLM":
         ocl = GemmaOnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
     elif config.architectures[0] == "Phi3ForCausalLM":
         ocl = Phi3OnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)

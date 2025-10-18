@@ -1,3 +1,7 @@
+"""
+Script for generating scatter plots comparing faithfulness and clinical quality from OpenEHR evaluation JSON files.
+"""
+
 import json
 import matplotlib.pyplot as plt
 import matplotlib

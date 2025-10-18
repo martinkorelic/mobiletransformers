@@ -1,3 +1,5 @@
+-- This query retrieves the CPU usage over time for the specified mobile application.
+
 SELECT 
   CAST(ts/1e9 AS INT) as timestamp_sec,
   cpu,
