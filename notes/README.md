@@ -45,15 +45,15 @@ The Android app is split into two main parts:
 
 - ⚙️ **Backend: ORTransformersMobile**  
   The core engine of the entire framework, implemented in **Kotlin and C++**. Can be easily implemented in re-used in another application, pick and choose which features you need.
-
-🔧 Key features include:  
+  🔧 Key features include:  
   - **Modular Android Project**: Clean separation of concerns with isolated modules for **training**, **inference**, **RAG / CAG** and **weight management** 
   - **Hardware-Accelerated Loops**: **On-device training / fine-tuning** and generation loops leveraging NNAPI, XNNPACK, and Qualcomm QNN for optimal mobile performance
   - **Dynamic Configuration**: Real-time customization of training parameters and inference settings tailored to your Android device's capabilities
   - **ONNX Runtime Integration**: Optimized model execution specifically tuned for mobile and edge hardware 
   - **Weight Management**: **On-device weight merging** with automatic export to **Android filesystem**, enabling model personalization without cloud dependency
   - **Seamless Model Loading**: Direct import of merged weights into inference graphs for immediate pocket deployment
-  - **RAG support**: Support for **Retrieval-Augmented Generation (RAG)** using **ObjectBox** as a fast **on-device vector database**
+  - **RAG support**: Support for **Retrieval-Augmented Generation (RAG)** using **ObjectBox C++** as a lightning-fast **on-device vector database**
+  - **CAG support**: Support for **Cached-Augmented Generation (CAG)** utilizing KV cache and embedding tensors during generation  
 
 
 ---
@@ -70,6 +70,7 @@ The Android app is split into two main parts:
 | ✅ On-device **weight merging**                    | Merge base and PEFT weights on-device, with optional quantization for optimized size and speed |
 | ✅ Direct inference from **merged weights**       | Load merged weights into the inference graph for seamless on-device model execution |
 | ✅ **Retrieval-Augmented Generation** (RAG)       | Fully on-device vector database integration with ObjectBox for augmented generation |
+| ✅ **Cached-Augmented Generation** (CAG)          | Leverage KV cache and embedding reuse during generation to accelerate inference |
 
 ---
 
@@ -80,7 +81,7 @@ The Android app is split into two main parts:
   - NNAPI  
   - Qualcomm QNN  
 - [**Huggingface Transformers**](https://huggingface.co/) ecosystem compatibility for model export  
-- [**ObjectBox**](https://objectbox.io/) for lightweight on-device vector databases in RAG workflows  
+- [**ObjectBox C++**](https://objectbox.io/) for lightweight on-device vector databases in RAG workflows  
 
 ---
 
@@ -103,11 +104,11 @@ ORTransformersMobile is designed as a flexible platform, allowing easy extension
 - **Federated learning** leveraging exported merged weights  
 - Integration with additional hardware acceleration backends  
 - Support for more PEFT methods and quantization techniques  
-- Expansion to other mobile platforms and edge systems
+- Expansion to other mobile platforms and edge systems  
 
 ---
 
-## 📥 Documentation
+## 📥 Getting Started
 
 *Coming soon:*  
 Detailed installation instructions, export guides, training and inference examples, and API documentation.
@@ -123,7 +124,8 @@ If you are using this framework for your own work, please cite:
   author       = {Koreli\v{c}, Martin and Pejovi{\'c}, Veljko},
   title        = {ORTransformersMobile: An On-Device LLM Framework for Fine-Tuning and Inference},
   year         = {2025},
-  howpublished = {\url{https://gitlab.fri.uni-lj.si/lrk/ortransformersmobile}}
+  howpublished = {\url{https://gitlab.fri.uni-lj.si/lrk/ortransformersmobile}},
+  note         = {ORTransformersMobile is a lightweight, modular framework for running and adapting large language models (LLMs) directly on mobile and edge devices. It supports on-device fine-tuning (PEFT), efficient inference using ONNX Runtime, on-device weight merging and quantization, and direct inference from merged weights. Advanced generation techniques include Retrieval-Augmented Generation (RAG) with vector databases and Cached-Augmented Generation (CAG) leveraging KV-cache and embedding reuse. Accessed: 2025-08-05}
 }
 ```
 
@@ -132,3 +134,5 @@ If you are using this framework for your own work, please cite:
 ## Acknowledgements
 
 This work was supported by the Slovenian Research Agency grant no. N2-0393 approXimation for adaptable diStributed artificial intelligence and grant no. J2-3047 Context-Aware On-Device Approximate Computing.
+
+---
