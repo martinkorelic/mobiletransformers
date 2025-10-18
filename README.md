@@ -1,4 +1,4 @@
-# 📱 ORTransformersMobile: An On-Device LLM Framework for Fine-Tuning and Inference
+# 📱 ORTransformersMobile: An On-Device LLM PEFT Framework for Fine-Tuning and Inference
 
 **ORTransformersMobile** is a modular framework designed for fully **on-device execution** of large and small language models (LLM / SLM) on mobile and edge devices.  
 Built on top of **ONNX Runtime**, it leverages hardware-accelerated execution providers such as **XNNPACK**, **NNAPI**, and **QNN** for efficient inference and training on Android and similar platforms.
