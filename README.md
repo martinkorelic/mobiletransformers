@@ -83,6 +83,18 @@ The Android app is split into two main parts:
 
 ---
 
+## 🔧 On-device example
+
+Example of a model being adapted to a personalized smartphone automation dataset where users express intents and the model recommends appropriate automatic actions to perform on the device. This task-oriented dataset is specifically designed for on-device intelligence scenarios.
+
+|🧩 Base Model	|⚙️ On-device Fine-tuned model|
+|----|----|
+|![Base on-device model](docs/base-model.gif)|![On-device trained LLM model](docs/on-device-trained.gif)|
+
+> This example shows how a base model can be fine-tuned and personalized entirely on-device, meaning no data ever leaves the device. During the process, adapters are trained locally, then merged and integrated into the base model on the mobile phone to produce the final fine-tuned version.
+
+---
+
 ## 🛠️ Built On
 
 - [**ONNX Runtime**](https://onnxruntime.ai/) for training/inference and support for mobile-optimized execution providers:  
