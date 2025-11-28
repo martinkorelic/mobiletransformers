@@ -1,11 +1,21 @@
-# 📱 ORTransformersMobile: An On-Device LLM Framework for Fine-Tuning and Inference
+# 📱 ORTransformersMobile: An On-Device LLM PEFT Framework for Fine-Tuning and Inference
 
 **ORTransformersMobile** is a modular framework designed for fully **on-device execution** of large and small language models (LLM / SLM) on mobile and edge devices.  
 Built on top of **ONNX Runtime**, it leverages hardware-accelerated execution providers such as **XNNPACK**, **NNAPI**, and **QNN** for efficient inference and training on Android and similar platforms.
 
 - **OR**: ONNX Runtime  
 - **Transformers**: Core architecture of large language models  
-- **Mobile**: Fully on-device mobile execution  
+- **Mobile**: Fully on-device mobile execution 
+
+![Example of ORTransformersMobile application](docs/ortransformer-feature.gif)
+> Example of ORTransformersMobile Android application running on Google Pixel 6 (2021) with support for on-device LLM training and inference with retrieval-augmented generation.
+
+
+## 📥 Documentation
+
+Installation instructions, training and inference examples, and API documentation.
+
+- [ORTransformersMobile Documentation](https://martinkorelic.github.io/ortransformersmobile-docs/)
 
 ---
 
@@ -107,13 +117,6 @@ ORTransformersMobile is designed as a flexible platform, allowing easy extension
 
 ---
 
-## 📥 Documentation
-
-*Coming soon:*  
-Detailed installation instructions, export guides, training and inference examples, and API documentation.
-
----
-
 ## Citation
 
 If you are using this framework for your own work, please cite:
@@ -121,7 +124,7 @@ If you are using this framework for your own work, please cite:
 ```
 @misc{ortransformersmobile2025,
   author       = {Koreli\v{c}, Martin and Pejovi{\'c}, Veljko},
-  title        = {ORTransformersMobile: An On-Device LLM Framework for Fine-Tuning and Inference},
+  title        = {ORTransformersMobile: An On-Device LLM PEFT Framework for Fine-Tuning and Inference},
   year         = {2025},
   howpublished = {\url{https://gitlab.fri.uni-lj.si/lrk/ortransformersmobile}}
 }
