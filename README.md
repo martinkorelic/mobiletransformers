@@ -7,6 +7,10 @@ Built on top of **ONNX Runtime**, it leverages hardware-accelerated execution pr
 - **Transformers**: Core architecture of large language models  
 - **Mobile**: Fully on-device mobile execution 
 
+![Example of ORTransformersMobile application](docs/ortransformer-feature.gif)
+> Example of ORTransformersMobile Android application running on Google Pixel 6 (2021) with support for on-device LLM training and inference with retrieval-augmented generation.
+
+
 ![Example of MobileTransformers application](docs/ortransformer-feature.gif)
 > Example of MobileTransformers Android application running on Google Pixel 6 (2021) with support for on-device LLM training and inference with retrieval-augmented generation.
 
