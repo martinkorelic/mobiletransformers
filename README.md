@@ -1,28 +1,36 @@
-# 📱 ORTransformersMobile: An On-Device LLM PEFT Framework for Fine-Tuning and Inference
+# 📱 MobileTransformers: An On-Device LLM PEFT Framework for Fine-Tuning and Inference
 
-**ORTransformersMobile** is a modular framework designed for fully **on-device execution** of large and small language models (LLM / SLM) on mobile and edge devices.  
+**MobileTransformers** (or **ORTransformersMobile**) is a modular framework designed for fully **on-device execution** of large and small language models (LLM / SLM) on mobile and edge devices.  
 Built on top of **ONNX Runtime**, it leverages hardware-accelerated execution providers such as **XNNPACK**, **NNAPI**, and **QNN** for efficient inference and training on Android and similar platforms.
 
 - **OR**: ONNX Runtime  
 - **Transformers**: Core architecture of large language models  
 - **Mobile**: Fully on-device mobile execution 
 
-![Example of ORTransformersMobile application](docs/ortransformer-feature.gif)
-> Example of ORTransformersMobile Android application running on Google Pixel 6 (2021) with support for on-device LLM training and inference with retrieval-augmented generation.
+![Example of MobileTransformers application](docs/ortransformer-feature.gif)
+> Example of MobileTransformers Android application running on Google Pixel 6 (2021) with support for on-device LLM training and inference with retrieval-augmented generation.
 
 
-## 📥 Documentation
+## 📥 Main links
+
+### Documentation
 
 Installation instructions, training and inference examples, and API documentation.
 
-- [ORTransformersMobile Documentation](https://martinkorelic.github.io/ortransformersmobile-docs/)
+[MobileTransformers Documentation](https://martinkorelic.github.io/mobiletransformers-docs/)
+
+### Research
+
+For a comprehensive understanding of the research behind MobileTransformers, including detailed explanations of Multi-Adapter Rank Sharing (MARS), on-device training methodologies, and experimental results:
+
+[Master's Thesis - Parameter-Efficient Tuning of Large Language Models on Mobile Devices](https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=175561)
 
 ---
 
-## 🚀 What is ORTransformersMobile?
+## 🚀 What is MobileTransformers?
 
 A comprehensive, privacy-first framework that empowers researchers and developers to export, fine-tune, merge, and deploy transformer-based language models directly on your Android device. Eliminate dependency on cloud services while maintaining full control over your AI models in your pocket.
-Perfect for privacy-preserving NLP applications, offline AI assistants, personalized chatbots, and edge computing scenarios where data sovereignty and real-time responsiveness are crucial. Whether you're building the next generation of pocket AI or developing enterprise edge solutions, **ORTransformersMobile** provides the foundation for truly autonomous mobile intelligence.
+Perfect for privacy-preserving NLP applications, offline AI assistants, personalized chatbots, and edge computing scenarios where data sovereignty and real-time responsiveness are crucial. Whether you're building the next generation of pocket AI or developing enterprise edge solutions, **MobileTransformers** provides the foundation for truly autonomous mobile intelligence.
 
 **Key Benefits**:
 
@@ -46,18 +54,18 @@ This comprehensive repository provides everything needed for on-device LLM deplo
 
 ---
 
-## 📱 Android Application: ORTransformer-android
+## 📱 Android Application: ORTransformer
 
 The Android app is split into two main parts:
 
 - 📲 **Kotlin UI Layer**  
   A lightweight interface acting as a communication bridge, calling APIs from the backend on the mobile device
 
-- ⚙️ **Backend: ORTransformersMobile**  
+- ⚙️ **Backend: MobileTransformers**  
   The core engine of the entire framework, implemented in **Kotlin and C++**. Can be easily implemented in re-used in another application, pick and choose which features you need.
 
 🔧 Key features include:  
-  - **Modular Android Project**: Clean separation of concerns with isolated modules for **training**, **inference**, **RAG / CAG** and **weight management** 
+  - **Modular Android Project**: Clean separation of concerns with isolated modules for **training**, **inference**, **RAG** and **weight management** 
   - **Hardware-Accelerated Loops**: **On-device training / fine-tuning** and generation loops leveraging NNAPI, XNNPACK, and Qualcomm QNN for optimal mobile performance
   - **Dynamic Configuration**: Real-time customization of training parameters and inference settings tailored to your Android device's capabilities
   - **ONNX Runtime Integration**: Optimized model execution specifically tuned for mobile and edge hardware 
@@ -106,7 +114,7 @@ Example of a model being adapted to a personalized smartphone automation dataset
 
 ---
 
-## 🎯 Why ORTransformersMobile?
+## 🎯 Why MobileTransformers?
 
 - Fully **on-device** - no cloud dependency, maximizing privacy and minimizing latency 
 - Enables **parameter-efficient fine-tuning (PEFT)** on mobile hardware  
@@ -118,7 +126,7 @@ Example of a model being adapted to a personalized smartphone automation dataset
 
 ## 🔧 Extensibility and Future Work
 
-ORTransformersMobile is designed as a flexible platform, allowing easy extension for advanced on-device ML workflows, such as:
+MobileTransformers is designed as a flexible platform, allowing easy extension for advanced on-device ML workflows, such as:
 
 - Beyond text generation - classification, sentiment analysis, named entity recognition, question answering, summarization, and custom NLP tasks tailored for mobile use cases
 - On-device **reinforcement learning**  
@@ -134,11 +142,11 @@ ORTransformersMobile is designed as a flexible platform, allowing easy extension
 If you are using this framework for your own work, please cite:
 
 ```
-@misc{ortransformersmobile2025,
+@misc{mobiletransformers2025,
   author       = {Koreli\v{c}, Martin and Pejovi{\'c}, Veljko},
-  title        = {ORTransformersMobile: An On-Device LLM PEFT Framework for Fine-Tuning and Inference},
+  title        = {MobileTransformers: An On-Device LLM PEFT Framework for Fine-Tuning and Inference},
   year         = {2025},
-  howpublished = {\url{https://gitlab.fri.uni-lj.si/lrk/ortransformersmobile}}
+  howpublished = {\url{https://gitlab.fri.uni-lj.si/lrk/mobiletransformers}}
 }
 ```
 
