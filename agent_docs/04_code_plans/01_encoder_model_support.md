@@ -1,6 +1,6 @@
 # Encoder-Model Support
 
-**Priority #32 | Prerequisites: #12 (`00_code_plans/06_manifest_first_package_and_cache_bridge.md`), #6 (`01_code_plans/05_optimum_onnx_export_and_tasksmanager.md`), #8 (`01_code_plans/01_unified_merger_and_external_data_export.md`) | Blocks: #34 (`04_code_plans/03`, optional head federation)**
+**Priority #33 | Prerequisites: #13 (`00_code_plans/06_manifest_first_package_and_cache_bridge.md`), #7 (`01_code_plans/05_optimum_onnx_export_and_tasksmanager.md`), #9 (`01_code_plans/01_unified_merger_and_external_data_export.md`) | Blocks: #35 (`04_code_plans/03`, optional head federation)**
 
 > Tier-3, best value/effort. Spike-gated; must not block v1.0. Avoids the autoregressive KV-cache path entirely.
 >
@@ -20,7 +20,7 @@ Python:
 - `config.yml` — `task_type: feature-extraction` already documented (`:26-28`) with candidate encoders (`:18-21`).
 
 Manifest:
-- `mobiletransformers_manifest.json` (#12) — add `EncoderTaskConfig` / classification-head contract fields (task, num_labels, pooling, label map).
+- `mobiletransformers_manifest.json` (#13) — add `EncoderTaskConfig` / classification-head contract fields (task, num_labels, pooling, label map).
 
 C++/Kotlin:
 - `inference.cpp` — `generateEmbedding` (`:185-245`) is the encoder inference path; no KV-cache. Add a classification post-process (argmax/softmax) if a head is present.
@@ -42,6 +42,8 @@ C++/Kotlin:
 
 `embeddingDimension` must be one of the eight supported by the vector store if used for RAG (`03_code_plans/03`).
 
+The `taskType` closed set is **data-driven, not `if/elif`**: add a `TASK_REGISTRY` (F3) alongside the PEFT/architecture/merger registries, with one row per task (`feature-extraction`, `text-classification`, `similarity`, and decoder `text-generation`) carrying its `onnx_config_class` selection, default head, and pooling. Adding an encoder task = a `TASK_REGISTRY` row + a task enum member joined to the relevant `ArchitectureSpec` (`onnx_config_class=BertOnnxConfig`, encoder `target_modules`) — **no business-logic edit** to `trainer/builder.py:254-272` and **no KV-cache** (the encoder path runs `generateEmbedding`, never the autoregressive loop).
+
 ### MARS-transfer verification (spike gate output)
 
 `create_mars_adapter_mapping` must produce, for an encoder, a `peft_mapping` whose base-layer names join cleanly with the inference-graph initializer names (the `TrainableTensorCodec` invariant, `00_code_plans/07`). If the decoder-specific `self_attn`/`q_proj` naming doesn't match encoder modules, add encoder rules — do not silently emit a mismatched map.
@@ -50,22 +52,70 @@ C++/Kotlin:
 
 1. **Spike (gate):** export one small encoder (`sentence-transformers/all-MiniLM-L6-v2` for embedding, or a small BERT/MiniLM classifier). Prove: ONNX export, training-artifact generation (`generate_artifacts`, #3), one desktop train step, one Android/device train step, and a simple metric.
 2. Confirm MARS/LoRA mapping validity (above); add encoder target defaults.
-3. Add `EncoderTaskConfig` + classification-head contract to the manifest (#12) and the handoff map (#8) for trainable encoder linears.
+3. Add `EncoderTaskConfig` + classification-head contract to the manifest (#13) and the handoff map (#9) for trainable encoder linears.
 4. Wire classification post-process into the native embedding path (no KV-cache).
 5. Add one worked example task (intent classification or embedding similarity).
 
 ## Interactions
 
-- **#8 / #12**: encoder trainable tensors flow through the same codec/manifest; reuse, don't fork.
-- **#6 (optimum-onnx export)**: `BertOnnxConfig` export goes through the same TasksManager front door.
+- **#9 / #13**: encoder trainable tensors flow through the same codec/manifest; reuse, don't fork.
+- **#7 (optimum-onnx export)**: `BertOnnxConfig` export goes through the same TasksManager front door.
 - **`03_code_plans/03` (vector store)**: encoder embeddings feed RAG when dimension ∈ the eight.
-- **#34 (federated)**: optional head/encoder tensors can be federated after this passes.
+- **#35 (federated)**: optional head/encoder tensors can be federated after this passes.
 
-## Tests & smokes
+## Worked example
 
-- Encoder export smoke (MiniLM/BERT fixture) — ONNX + training artifacts generate.
-- One desktop train step runs; loss is finite.
-- MARS-mapping validity test: `peft_mapping` joins with inference initializers (no `HandoffMapError`).
-- Embedding/classification inference: output shape + metric correct.
-- Android one-step training smoke (or a documented blocker).
-- No KV-cache code is reachable on the encoder path.
+A Bert/encoder entry is **registry data**, not new branches. Sketch of the `TASK_REGISTRY` + `ArchitectureSpec` rows (09) and the encoder export/inference calls they drive:
+
+```python
+# config/registries.py — closed sets, no if/elif
+TASK_REGISTRY["feature-extraction"] = TaskSpec(
+    onnx_config_class=BertOnnxConfig,          # optimum-onnx front door (#7)
+    auto_model_class=AutoModel,                 # not AutoModelForCausalLM
+    default_head=None,                          # pooling only
+    pooling="mean",
+)
+TASK_REGISTRY["text-classification"] = TaskSpec(
+    onnx_config_class=BertOnnxConfig,
+    auto_model_class=AutoModelForSequenceClassification,
+    default_head="classification",              # -> classification_head.py
+    pooling="cls",
+)
+
+ARCHITECTURE_REGISTRY["bert"] = ArchitectureSpec(
+    onnx_config_class=BertOnnxConfig,
+    target_modules=["query", "key", "value", "dense"],   # encoder linears, not q_proj/self_attn
+    attention_module_name="attention.self",
+    inference_model_class=None,                  # encoder uses generateEmbedding, no KV-cache class
+)
+```
+
+Export wires the pooling head and runs the non-autoregressive path:
+
+```python
+# trainer/embedding_builder.py — feature-extraction branch already exists (:375, :410)
+add_pooling_to_onnx_model(onnx_model, pooling="mean")    # reuse :6-64 / add_mean_pooling :403-511
+```
+
+```kotlin
+// Android: encoder inference is the embedding path — no token loop
+val embedding: FloatArray = model.generateEmbedding(text)   // ORTRetriever.performEmbeddingStep :192-200
+// if a classification head is present, argmax/softmax post-process in inference.cpp:185-245
+```
+
+## Tests & acceptance
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- `pytest tests/encoder/test_mapping.py` — MARS/LoRA mapping validity: the unified builder (09) yields a `peft_mapping` whose encoder base-layer names join cleanly with the inference-graph initializer names (no `HandoffMapError`); assert encoder `target_modules` come from the registry, not a `self_attn`/`q_proj` decoder default.
+- `pytest tests/encoder/test_no_kv_cache.py` — regression/grep: no KV-cache symbol is reachable on the encoder (`feature-extraction`/`text-classification`) path.
+- `pytest tests/encoder/test_task_registry.py` — `TASK_REGISTRY` carries `feature-extraction`/`text-classification`/`similarity` rows; selecting one returns `AutoModel`/`BertOnnxConfig` (no `elif` in `trainer/builder.py`).
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- `pytest tests/encoder/test_embedding_infer.py` — load a tiny pre-exported encoder fixture, run embedding/classification inference, assert output shape (== `embeddingDimension`) and a deterministic metric on a 2-example fixture.
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- Encoder export smoke (`sentence-transformers/all-MiniLM-L6-v2` or a small BERT/MiniLM classifier): ONNX + training artifacts (`generate_artifacts`, #3) generate.
+- One desktop train step runs; loss is finite (requires the source-built ORT-training wheel).
+- Android one-step training smoke on a device (or a documented blocker).
+
+**Definition of done** — encoder support ships as a `TASK_REGISTRY` row + an `ArchitectureSpec` entry (no new `elif` in `trainer/builder.py:254-272` or `inference/builder.py:3234`); the spike exports a small encoder, generates training artifacts, runs one desktop train step (and one device step or a documented blocker), and the unified mapping joins cleanly with inference initializers; embedding/classification inference returns the correct shape + metric through `generateEmbedding`; no KV-cache code is reachable on the encoder path.

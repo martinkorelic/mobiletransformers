@@ -1,11 +1,11 @@
 # Android Gradle / Module / App Rename Migration
-**Priority (global #):** 15  |  **Prerequisites:** none  |  **Blocks:** #16 (`05_android_facade_foundation.md`)
+**Priority (global #):** 16  |  **Prerequisites:** none  |  **Blocks:** #17 (`05_android_facade_foundation.md`)
 
 ## Purpose
 
 Perform the `ORTTransformer` → `MobileTransformers` Gradle workspace rename as **one isolated, build-verified change** before any facade work begins. This plan renames the Gradle root, both modules, their directories, the Kotlin package namespaces, the app `applicationId`, and the inter-module project dependency — and nothing else. No new public API, no engine changes, no JNI symbol renames.
 
-Hard rule from `00_repository_restructure_plan.md` ("What To Keep Internal For Now" and "Migration Notes" line 559): *do not rename Android internals opportunistically.* The native shared-library name and JNI C++ symbols stay on the old `ortmobile` spelling in this pass. The facade and any deeper package moves come in #16.
+Hard rule from `00_repository_restructure_plan.md` ("What To Keep Internal For Now" and "Migration Notes" line 559): *do not rename Android internals opportunistically.* The native shared-library name and JNI C++ symbols stay on the old `ortmobile` spelling in this pass. The facade and any deeper package moves come in #17.
 
 Success criterion: `./gradlew :MobileTransformers:assembleDebug :MobileTransformersApp:assembleDebug` builds green, and the sample app launches, on a clean checkout — with zero behavioral change other than the (accepted) sample-app reinstall caused by the new `applicationId`.
 
@@ -79,16 +79,28 @@ Scope: only types that were realistically referenced from outside the module (th
 
 - **JNI / `System.loadLibrary("ortmobile")` — DO NOT rename here.** The C++ exports are mangled by package path: e.g. `Java_com_martinkorelic_ortmobile_ORTGeneratorNative_createInferenceSession` and `Java_com_martinkorelic_ortmobile_ORTTrainerNative_performTraining` in `…/src/main/cpp/native-lib.cpp`, plus `Java_com_martinkorelic_ortmobile_ORTGenAINative_*` in `onnx-genai.cpp`. The Kotlin classes declaring these `external fun`s (`ORTGeneratorNative`, `ORTTrainerNative`, `ORTTokenizerNative`, `ORTGenAINative`) move to package `com.martinkorelic.mobiletransformers`, which **changes the JVM-expected symbol name** to `Java_com_martinkorelic_mobiletransformers_*`. Two options — pick (A) for this isolated pass:
   - **(A) Keep `*Native` classes in the legacy package.** Leave `ORTGeneratorNative.kt`, `ORTTrainerNative.kt`, `ORTTokenizerNative.kt`, `ORTGenAINative.kt` under `package com.martinkorelic.ortmobile` so the existing C++ symbols keep resolving. Repositories (now in `…mobiletransformers.repository`) import them from the old package. No C++ edit, no symbol churn. This preserves `loadLibrary("ortmobile")` and `project("ortmobile")` in CMake verbatim. **Recommended.**
-  - (B) Move the `*Native` classes too and rename every `Java_com_martinkorelic_ortmobile_*` symbol in `native-lib.cpp`/`onnx-genai.cpp` to `…_mobiletransformers_*`. Higher risk; defer to #16 or later with JNI smoke tests in place.
-- **`MainActivity` JNI mismatch (pre-existing).** `MainActivity.kt` lives in the app package and calls `System.loadLibrary("ortmobile")` with `external fun stringFromJNI()`, but the C++ symbol is `Java_com_martinkorelic_ortmobile_MainActivity_stringFromJNI` (note `ortmobile`, not `orttransformer`). This `stringFromJNI` binding is already mismatched/unused for resolution from the app package today. Do not "fix" it in this pass — just preserve current behavior. Moving `MainActivity` to `…mobiletransformers.app` does not make it match either; leave the demo call as-is or guard it. Flag for #16.
+  - (B) Move the `*Native` classes too and rename every `Java_com_martinkorelic_ortmobile_*` symbol in `native-lib.cpp`/`onnx-genai.cpp` to `…_mobiletransformers_*`. Higher risk; defer to #17 or later with JNI smoke tests in place.
+- **`MainActivity` JNI mismatch (pre-existing).** `MainActivity.kt` lives in the app package and calls `System.loadLibrary("ortmobile")` with `external fun stringFromJNI()`, but the C++ symbol is `Java_com_martinkorelic_ortmobile_MainActivity_stringFromJNI` (note `ortmobile`, not `orttransformer`). This `stringFromJNI` binding is already mismatched/unused for resolution from the app package today. Do not "fix" it in this pass — just preserve current behavior. Moving `MainActivity` to `…mobiletransformers.app` does not make it match either; leave the demo call as-is or guard it. Flag for #17.
 - **CMake `jniLibs` paths.** `CMakeLists.txt` uses `${PROJECT_SOURCE_DIR}/../jniLibs/${CMAKE_ANDROID_ARCH_ABI}` and `${CMAKE_SOURCE_DIR}/onnxruntime`, all **relative to the module's `src/main/cpp`**. Since the whole module dir is moved as a unit, these relative paths stay valid. `project("ortmobile")` and `add_library(${CMAKE_PROJECT_NAME} SHARED …)` produce `libortmobile.so` — keep that name (matches `loadLibrary("ortmobile")`). No CMake edits required under option (A).
 - **ObjectBox generated classes.** `ORTVectorDatabase.kt` imports `com.martinkorelic.ortmobile.entity.MyObjectBox` and `VectorEntity{64..1536}_`. These are generated from the `@Entity` classes in `entity/VectorEntity.kt`. After moving the entity package to `…mobiletransformers.entity`, the generated `MyObjectBox`/`*_` classes regenerate under the new package; update the imports in `ORTVectorDatabase.kt` accordingly. The ObjectBox plugin/version (`io.objectbox` 4.3.0 via `libs.versions.toml`) and the `objectbox-models/default.json` model id mapping are unaffected by package rename, but force a clean build to avoid stale generated sources.
 
-## Tests & smokes
+## Tests & acceptance
 
-1. **Build gate (primary):** `cd android/MobileTransformers && ./gradlew :MobileTransformers:assembleDebug :MobileTransformersApp:assembleDebug` must pass clean.
-2. **Native packaging check:** confirm `libortmobile.so` is packaged for `arm64-v8a` and `x86_64` in the AAR/APK (`unzip -l` the outputs); confirms CMake + `loadLibrary` name survived.
-3. **Existing instrumented/unit stubs:** `./gradlew :MobileTransformers:testDebugUnitTest` and the moved `ExampleInstrumentedTest` should still compile/run.
-4. **Manual launch smoke:** install `MobileTransformersApp` debug APK; verify it launches and the existing train/inference/RAG screens still drive the (legacy-package) `*Native` classes without `UnsatisfiedLinkError`.
-5. **Compat-alias compile check:** a throwaway source importing `com.martinkorelic.ortmobile.repository.LLMRepository` should still compile (with deprecation warning), proving the alias layer.
-6. **Diff discipline:** `git diff --stat` should show only renames + identifier edits + `Aliases.kt`; no logic changes. Reviewer rejects any behavioral diff.
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- **Build gate (primary):** `cd android/MobileTransformers && ./gradlew :MobileTransformers:assembleDebug :MobileTransformersApp:assembleDebug` must pass clean.
+- **JVM unit stubs:** `./gradlew :MobileTransformers:testDebugUnitTest` (the moved `ExampleUnitTest`) still compiles/runs.
+- **Compat-alias compile check:** a throwaway source importing `com.martinkorelic.ortmobile.repository.LLMRepository` should still compile (with deprecation warning), proving the alias layer.
+- **Diff discipline:** `git diff --stat` should show only renames + identifier edits + `Aliases.kt`; no logic changes. Reviewer rejects any behavioral diff.
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- **Native packaging check:** confirm `libortmobile.so` is packaged for `arm64-v8a` and `x86_64` in the AAR/APK (`unzip -l` the outputs); confirms CMake + `loadLibrary` name survived.
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- **Instrumented stub:** the moved `ExampleInstrumentedTest` runs on a device/emulator.
+- **Launch smoke:** install `MobileTransformersApp` debug APK; verify it launches and the existing train/inference/RAG screens still drive the (legacy-package) `*Native` classes without `UnsatisfiedLinkError`.
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- `./gradlew :MobileTransformers:assembleDebug :MobileTransformersApp:assembleDebug` builds green on a clean checkout under the new `android/MobileTransformers/` root.
+- Root/modules/packages renamed to `MobileTransformers`/`com.martinkorelic.mobiletransformers`; app `applicationId` is `com.martinkorelic.mobiletransformers.app`; inter-module dep is `:MobileTransformers`.
+- `libortmobile.so` still packages (JNI/CMake/`loadLibrary("ortmobile")` untouched, option A); `*Native` classes remain in the legacy package.
+- `Aliases.kt` deprecated typealiases compile; the diff is renames + identifier edits only, no behavioral change.

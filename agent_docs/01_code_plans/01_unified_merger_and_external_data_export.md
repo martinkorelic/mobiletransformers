@@ -1,6 +1,6 @@
 # Unified Merger And External-Data Export
 
-**Priority #8 | Prerequisites: #5 (`00_code_plans/09_typed_models_enums_and_registries.md`, merger registry + `build_merger_model`), #6 (`01_code_plans/05_optimum_onnx_export_and_tasksmanager.md`), #7 (`00_code_plans/07_weight_handoff_map_and_tensor_codec.md`) | Blocks: #9 (`02_genai_external_data_swap_spike.md`), #10 (`03_inference_engine_abstraction_native_and_genai.md`), #12 (`00_code_plans/06_manifest_first_package_and_cache_bridge.md`)**
+**Priority #9 | Prerequisites: #6 (`00_code_plans/09_typed_models_enums_and_registries.md`, merger registry + `build_merger_model`), #7 (`01_code_plans/05_optimum_onnx_export_and_tasksmanager.md`), #8 (`00_code_plans/07_weight_handoff_map_and_tensor_codec.md`) | Blocks: #10 (`02_genai_external_data_swap_spike.md`), #11 (`03_inference_engine_abstraction_native_and_genai.md`), #13 (`00_code_plans/06_manifest_first_package_and_cache_bridge.md`)**
 
 > **Consumes `00_code_plans/09` (merger registry + full unification).** This plan no longer leaves the merger-construction math untouched. The four near-duplicate factories — `create_lora_merger_model` (`artifact/merger.py:240`), `create_lora_merger_model_2` (`:351`), `create_mars_merger_model_2` (`:599`), `create_mars_merger_model` (`:824`) — are collapsed by 09 into a single parameterized `build_merger_model(MergerSpec)`. The "merger 1/2" naming and the `_2` suffixes are **removed**; output filenames are descriptive and recorded in the handoff map. This plan owns the **on-disk handoff-filename contract and the device merge path**; 09 owns the **registry/spec/builder**. The hard-coded merger dispatch (`onnx_builder.py:628-641` `if peft_method == "lora" … elif "mars"`) and the C++ literal branches (`weight_merger.cpp:476-499, 526-712`) are replaced by registry/handoff-map lookups (see Touched files + step 6.5).
 
@@ -77,7 +77,7 @@ Each entry maps one logical trainable weight across the train -> merge -> infer 
 }
 ```
 
-Note the quantized triple comes straight from the current code: `WeightMerger::save_merged_parameters` writes `weight_quantized.tensor`, `weight_zero_point.tensor`, `weight_scale.tensor`; `artifact/merger.py` outputs `merged_weight_quantized` / `merged_scale` / `merged_zero_point`; `force_dequantize_external_and_save` keys on `MatMul.weight`, `MatMul.weight_zero_point`, `MatMul.weight_scale`. **The map reconciles all three vocabularies into the single `inference_initializer_name` + `external_file`.** This is also where Tier-0 finding #9 (the `safe_name` vs `base_layer_name + ".weight_scale"` inconsistency) is resolved: the scale filename becomes data in the map, with a regression test.
+Note the quantized triple comes straight from the current code: `WeightMerger::save_merged_parameters` writes `weight_quantized.tensor`, `weight_zero_point.tensor`, `weight_scale.tensor`; `artifact/merger.py` outputs `merged_weight_quantized` / `merged_scale` / `merged_zero_point`; `force_dequantize_external_and_save` keys on `MatMul.weight`, `MatMul.weight_zero_point`, `MatMul.weight_scale`. **The map reconciles all three vocabularies into the single `inference_initializer_name` + `external_file`.** This is also where Tier-0 finding #10 (the `safe_name` vs `base_layer_name + ".weight_scale"` inconsistency) is resolved: the scale filename becomes data in the map, with a regression test.
 
 ### `genai_config.json` additions
 
@@ -98,6 +98,8 @@ This is a real documented ORT key. On a file-path load (`OgaCreateModel(<inferen
 | `adapter` | LoRA deltas as `.onnx_adapter` | GenAI adapter API | GenAI only | later (stub) |
 
 `model_input` is the *port* of `gen_genai`'s `weight_input=True` path. It **disables ORT MatMul prepacking/constant-folding** on those tensors (verified: GenAI `ExtraInputs::Add` only feeds declared graph inputs), so it is strictly a fallback, never the default.
+
+**HandoffMode (F7).** `handoff_mode` is backed by a `HandoffMode` enum that **enumerates all three** values (`external_initializer`, `model_input`, `adapter`), but **only `external_initializer` is supported in v1**. `model_input` and `adapter` are **registry stubs that fail closed**: selecting either raises a clear `NotImplementedError` ("handoff mode 'adapter' not supported in v1") rather than silently degrading. Keeping them as enumerated stubs (rather than deleting them) means a future plan adds the implementation behind the existing key — no new enum member, no caller changes — while v1 readers reject them deterministically.
 
 ## Implementation steps
 
@@ -125,18 +127,32 @@ This is a real documented ORT key. On a file-path load (`OgaCreateModel(<inferen
 
 - **`00_code_plans/09`** owns the merger registry + `build_merger_model`; this plan consumes them and owns the on-disk/device merge filename contract. The merger ONNX construction lives in 09; never reintroduce `create_*_merger_model{,_2}`.
 - **`00_code_plans/07`** owns the `weight_handoff_map.json` schema + tensor codec; this plan *writes* the file and *reads* the codec. If field names here differ from 07, 07 wins — align.
-- **File #9 (GenAI spike)** consumes the exact package this builder produces (per-tensor externals + genai_config). The spike's pass/fail depends on step 2 (file split) and step 5 (config entry).
-- **File #10 (engine abstraction)** reads `genai_config.json`'s engine candidate and the handoff map; both engines point at the same `inference/` dir.
-- **`ORTGeneratorNative` `loadMergedWeights`**: currently checks `<cacheDir>/<repoName>/inference/merged` (ORTGeneratorNative.kt:41-48). Under the new layout merged tensors live directly in `inference/` as the canonical `.bin` files, so this check must move to "handoff map present and all `external_file`s exist with matching checksums" rather than a `merged/` dir probe. Coordinate this rename in File #10 / `00_code_plans/06`.
+- **File #10 (GenAI spike)** consumes the exact package this builder produces (per-tensor externals + genai_config). The spike's pass/fail depends on step 2 (file split) and step 5 (config entry).
+- **File #11 (engine abstraction)** reads `genai_config.json`'s engine candidate and the handoff map; both engines point at the same `inference/` dir.
+- **`ORTGeneratorNative` `loadMergedWeights`**: currently checks `<cacheDir>/<repoName>/inference/merged` (ORTGeneratorNative.kt:41-48). Under the new layout merged tensors live directly in `inference/` as the canonical `.bin` files, so this check must move to "handoff map present and all `external_file`s exist with matching checksums" rather than a `merged/` dir probe. Coordinate this rename in File #11 / `00_code_plans/06`.
 - **`session_cache.h`**: `AddExternalInitializers` (line ~702) and `session.use_ort_model_bytes_for_initializers=0` (line ~717) stay the native injection path; they now read the handoff map's `external_file` names instead of the old `<layer>/<tensor>.tensor` convention. Native still works even if GenAI never loads.
-- **Optimum export (#6)** feeds the raw inference graph into `export_inference_package.py`.
+- **Optimum export (#7)** feeds the raw inference graph into `export_inference_package.py`.
 
-## Tests & smokes
+## Tests & acceptance
 
-- **Handoff-map validation smoke**: every `requires_grad`/PEFT base layer maps to exactly one `inference_initializer_name` + `external_file`, dtype/shape/transpose/quant fields match the actual ONNX initializer. Fail closed otherwise.
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- `pytest tests/inference/test_handoff_map.py` — `handoff_map.py` builder/loader/validator round-trips one entry and `check_compat()` accepts a matching `inference_initializer_name`/`external_file`/dtype/shape.
+- **Quantized naming regression** (`pytest tests/inference/test_quant_names.py`): assert merged `weight_quantized` / `weight_zero_point` / `weight_scale` filenames in the map equal what the inference graph references; specifically pin the scale filename to close the `safe_name` vs `.weight_scale` inconsistency.
+- **HandoffMode fail-closed unit**: selecting `model_input` or `adapter` raises the explicit `NotImplementedError` (F7 stub), while `external_initializer` resolves.
+- C++ change site **compiles**: `./gradlew :MobileTransformers:compileDebugKotlin` after the `weight_merger.cpp` handoff-map lookup edits (full link/run is Manual below).
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- **Handoff-map validation smoke**: export a tiny model; every `requires_grad`/PEFT base layer maps to exactly one `inference_initializer_name` + `external_file`, dtype/shape/transpose/quant fields match the actual ONNX initializer. Fail closed otherwise.
 - **Export-mode parity smoke**: export the same tiny model (SmolLM2-360M) in `external_initializer` and `model_input` modes; assert (a) external mode keeps trainable tensors as external initializers and base in one blob, (b) model_input mode removes them and adds matching graph inputs + sets `genai_model_input_name`.
-- **Quantized naming regression**: assert merged `weight_quantized` / `weight_zero_point` / `weight_scale` filenames in the map equal what the inference graph references; specifically pin the scale filename to close the `safe_name` vs `.weight_scale` inconsistency.
-- **Base/trainable separation smoke**: assert no merger ever writes into `base/base_weights.onnx.data`; assert each trainable `.bin` has a sibling `.sha256` after merge.
-- **Atomic-overwrite smoke** (both Python and C++): kill the process mid-write; assert either the old valid file or the new valid file is present (never a truncated `.bin`), verified by checksum.
+- **Base/trainable separation smoke**: assert no merger ever writes into `base/base_weights.onnx.data`; assert each trainable `.bin` has a sibling `.sha256` after the offline merge.
+- **Atomic-overwrite smoke (Python)**: kill the offline `artifact/merger.py` driver mid-write; assert either the old valid file or the new valid file is present (never a truncated `.bin`), verified by checksum.
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- **Atomic-overwrite smoke (C++/device)**: kill the on-device merge mid-write; assert the same never-truncated invariant on device via `rename(2)` + checksum.
 - **Offline-vs-device merge parity**: run `artifact/merger.py` offline and `WeightMerger` on device on the same checkpoint; assert byte-identical `.bin` outputs (or within documented quant tolerance) and identical filenames.
-- **Native load smoke**: `ORTGeneratorNative` loads the unified `inference/` package with `loadMergedWeights` and generates one token (this is the guaranteed-path regression guard before File #9 introduces GenAI).
+- **Native load smoke (device)**: `ORTGeneratorNative` loads the unified `inference/` package with `loadMergedWeights` and generates one token (the guaranteed-path regression guard before File #10 introduces GenAI).
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- A single `export_inference_package.py` entry produces `<cacheDir>/<model>/inference/` with `model.onnx` (external refs only), `genai_config.json`, `weight_handoff_map.json`, one immutable `base/base_weights.onnx.data`, and per-tensor `<name>.bin` (+ `.sha256`).
+- Offline (`artifact/merger.py`) and device (`WeightMerger`) both write merged tensors to the **exact** filenames in the handoff map (no `_2`/string-rewrite names); both fail closed on any missing/mismatched entry.
+- The hard-coded merger dispatch (`onnx_builder.py:628-641`) and C++ literal branches (`weight_merger.cpp:476-499, 526-712`) are gone, replaced by registry/handoff-map lookups; `gen_genai` is a deprecated shim or removed.

@@ -1,15 +1,15 @@
 # Hub Model Package Format
 
-**Priority #13 | Prerequisites: #12 (`00_code_plans/06_manifest_first_package_and_cache_bridge.md`) | Blocks: #14 (one-command export CLI), #20 (hub pull + cache flow), #21 (adapter push-back)**
+**Priority #14 | Prerequisites: #13 (`00_code_plans/06_manifest_first_package_and_cache_bridge.md`) | Blocks: #15 (one-command export CLI), #21 (hub pull + cache flow), #22 (adapter push-back)**
 
 ## Purpose
 
 Define the on-Hub layout of a "MobileTransformers-ready" HuggingFace model repository, and the exact schema of `mobiletransformers_manifest.json` that drives it. The package is **manifest-first**: any consumer (Python CLI, Android downloader, sample app) fetches one small JSON before touching large ONNX blobs, then resolves exactly which files to pull from a `downloadPlan` keyed by feature.
 
 This plan owns the *Hub repo shape* and the *manifest field list*. It does **not** own:
-- the manifest validator / fixture or the cache-bridge mapping — those live in #12 (`00_code_plans/06_manifest_first_package_and_cache_bridge.md`);
-- the `weight_handoff_map.json` schema — owned by #7 (`00_code_plans/07_weight_handoff_map_and_tensor_codec.md`);
-- the per-tensor external-initializer merge contract — owned by #8 (`01_code_plans/01_unified_merger_and_external_data_export.md`).
+- the manifest validator / fixture or the cache-bridge mapping — those live in #13 (`00_code_plans/06_manifest_first_package_and_cache_bridge.md`);
+- the `weight_handoff_map.json` schema — owned by #8 (`00_code_plans/07_weight_handoff_map_and_tensor_codec.md`);
+- the per-tensor external-initializer merge contract — owned by #9 (`01_code_plans/01_unified_merger_and_external_data_export.md`).
 
 This plan **references** those contracts and pins them into the repo layout.
 
@@ -21,10 +21,10 @@ This plan **references** those contracts and pins them into the repo layout.
 
 ## Touched / new files
 
-New (authored by this plan; emitted by the export CLI in #14, validated by #12):
+New (authored by this plan; emitted by the export CLI in #15, validated by #13):
 
 - `docs/HUB_PACKAGE_FORMAT.md` — human-facing spec mirror of this plan (added in Tier 1 step 14).
-- `agent_docs/fixtures/tiny_package/` — tiny on-disk fixture repo used by #12 validator and #20 pull smoke. Contains a manifest, stub configs, and zero-byte/placeholder ONNX files sized to match `fileSizes`.
+- `agent_docs/fixtures/tiny_package/` — tiny on-disk fixture repo used by #13 validator and #21 pull smoke. Contains a manifest, stub configs, and zero-byte/placeholder ONNX files sized to match `fileSizes`.
 - `mobiletransformers/hub/package_format.py` (Python pkg root scaffolded by #1) — module of constants: `SCHEMA_VERSION`, `REQUIRED_TOP_LEVEL_FILES`, `FEATURE_GROUPS = ("core","inference","train","rag","genai","checksums")`, `VARIANT_SUBDIRS = ("train","inference","embedding")`, `sanitize_repo_id(repo_id)` (e.g. `mobiletransformers/Qwen2-0.5B-mobile` → `mobiletransformers__Qwen2-0.5B-mobile`; must match the Kotlin `sanitizedRepoId` used by `LLMRepository.cacheDir/<sanitizedRepoId>`).
 
 Existing files that define the contract this format must stay compatible with:
@@ -67,7 +67,7 @@ mobiletransformers/Qwen2-0.5B-mobile/
         checkpoint/                # ORT CheckpointState dir
         training_config.json       # requires_grad, peft_mapping, rank, alpha, peft_target, trainable_parameter_count, peftMethod, modelId
         trainable_parameters.json  # list of per-tensor trainable initializer names (one-file-per-tensor manifest)
-        weight_handoff_map.json    # train→infer tensor contract (schema owned by #7/07)
+        weight_handoff_map.json    # train→infer tensor contract (schema owned by #8/07)
         mars_merger_model.onnx     # MARS/LoRA on-device merger graphs (from artifact/merger.py)
         mars_qmerger_model.onnx
         lora_merger_model.onnx
@@ -101,7 +101,8 @@ Notes:
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": "1.0",                    // "MAJOR.MINOR"; additive minor bumps are non-breaking
+  "minReaderVersion": "1.0",                 // oldest SDK/CLI that can safely read this manifest
   "baseModelId": "Qwen/Qwen2-0.5B",         // upstream HF id the package was exported from
   "exportedAt": "2026-06-24T10:00:00Z",
   "mobiletransformersVersion": "0.1.0",
@@ -185,39 +186,46 @@ Notes:
 ```
 
 Field semantics that matter for consumers:
+- `schemaVersion` / `minReaderVersion` (**F1 schema versioning**): `schemaVersion` is `"MAJOR.MINOR"`; readers preserve unknown fields, so additive minor bumps (a new manifest key, a new variant attribute) are non-breaking. A reader fails closed with a "needs newer SDK" message only when the manifest's `major` exceeds what it supports or its own version is below `minReaderVersion`. One `check_compat()` helper is mirrored Python↔Kotlin so the CLI, Python pull, and Android downloader all gate identically.
 - `downloadPlan[variant][group]` is the **only** thing a downloader needs to convert "I want inference + rag" into an `allow_patterns` list — no path knowledge baked into clients.
 - `requiredFiles` is the minimal set whose absence fails validation regardless of requested features (manifest + tokenizer + base inference graph).
 - `sha256` / `fileSizes` are the integrity source of truth; `checksums.json` per variant is a redundant copy so a variant subtree is self-validating after extraction.
 - `weightHandoff` (top-level) always points at the **default variant's** map; per-variant `weightHandoff` is authoritative when a non-default variant is selected.
 
-### `weight_handoff_map.json` (referenced, schema owned by #7/07)
+### `weight_handoff_map.json` (referenced, schema owned by #8/07)
 
-Lives at `variants/<id>/train/weight_handoff_map.json`. It is the contract that replaces hard-coded name rewrites (e.g. `weight_merger.cpp:904`). For `handoffMode = "external_initializer"` (the canonical dual-engine mode), each entry maps a training checkpoint tensor name → the per-tensor external initializer file under `inference/merged/`. Android consults it during merge instead of string-replacing names. This plan only pins its **location** and requires that every name it references resolves to a real file in `inference/merged/` (validated by #12).
+Lives at `variants/<id>/train/weight_handoff_map.json`. It is the contract that replaces hard-coded name rewrites (e.g. `weight_merger.cpp:904`). For `handoffMode = "external_initializer"` (the canonical dual-engine mode), each entry maps a training checkpoint tensor name → the per-tensor external initializer file under `inference/merged/`. Android consults it during merge instead of string-replacing names. This plan only pins its **location** and requires that every name it references resolves to a real file in `inference/merged/` (validated by #13).
 
 ## Implementation steps
 
-1. Add `mobiletransformers/hub/package_format.py` with the constants, `FEATURE_GROUPS`, `VARIANT_SUBDIRS`, and `sanitize_repo_id()`. Keep `sanitize_repo_id` byte-identical to the Kotlin sanitizer used in #20/cache bridge (single source: document the algorithm here and in #12).
-2. Write a `build_manifest(package_dir, variants, base_model_id, export_report) -> dict` helper that walks the package tree, computes `fileSizes` + `sha256` (stream-hash, 1 MiB chunks), and assembles `downloadPlan` from `FEATURE_GROUPS` × variant subtrees. The export CLI (#14) calls this as its final emit step.
+1. Add `mobiletransformers/hub/package_format.py` with the constants, `FEATURE_GROUPS`, `VARIANT_SUBDIRS`, and `sanitize_repo_id()`. Keep `sanitize_repo_id` byte-identical to the Kotlin sanitizer used in #21/cache bridge (single source: document the algorithm here and in #13).
+2. Write a `build_manifest(package_dir, variants, base_model_id, export_report) -> dict` helper that walks the package tree, computes `fileSizes` + `sha256` (stream-hash, 1 MiB chunks), and assembles `downloadPlan` from `FEATURE_GROUPS` × variant subtrees. The export CLI (#15) calls this as its final emit step.
 3. Define the mapping from `convert_pipeline()`/`create_model()` outputs into the variant tree: `build/train/*` → `variants/<id>/train/`, `build/inference/model.onnx(.data)` → `inference/base/`, per-tensor merged initializers → `inference/merged/`, `build/tokenizer` → `shared/tokenizer`, `build/embedding` → `variants/<id>/embedding`. Pull `chat_template.jinja` out of the tokenizer (use `tokenizer.chat_template`).
 4. Emit `optimum/export_report.json`, `optimum/supported_tasks.json`, `optimum/optimum_config.json` from the export run's metadata (TasksManager output + the resolved `inference_export_config`).
 5. Emit per-variant `checksums.json` (subset of manifest `sha256` scoped to that variant subtree) so a downloaded variant is independently verifiable.
-6. Build the fixture `agent_docs/fixtures/tiny_package/`: a `cpu-int4` variant with placeholder ONNX files whose byte sizes match `fileSizes`, a real tiny tokenizer, and a real (tiny) `weight_handoff_map.json`. This is the shared fixture for #12 validator tests and #20 pull/downloader smokes.
+6. Build the fixture `agent_docs/fixtures/tiny_package/`: a `cpu-int4` variant with placeholder ONNX files whose byte sizes match `fileSizes`, a real tiny tokenizer, and a real (tiny) `weight_handoff_map.json`. This is the shared fixture for #13 validator tests and #21 pull/downloader smokes.
 7. Document `default/` aliasing policy in `package_format.py` docstring and `HUB_PACKAGE_FORMAT.md`.
 
 ## Interactions
 
-- **#12 (manifest-first package + cache bridge):** owns the validator that asserts this schema; owns the path mapping that materializes `variants/<id>/{train,inference,embedding}` → `<cacheDir>/<sanitizedRepoId>/{train,inference,embedding}` plus copied `mobiletransformers_manifest.json` and `checksums.json`. The Android `LLMRepository` then sees its expected `train/training_config.json`, `inference/generation_config.json`, `embedding/rag_config.json` unchanged.
-- **#14 (export CLI):** produces a package in exactly this shape and calls `build_manifest()`; emits `optimum/export_report.json`.
-- **#20 (hub pull + cache flow):** Python pull derives `allow_patterns` from `downloadPlan`; Android downloader fetches manifest first, selects a variant by `abi`/`quantization`/`supportedEngines`/`features`/`recommendedDeviceMemoryMb`, then downloads the variant's grouped files.
-- **#21 (adapter push-back):** an exported adapter is published into a `variants/<id>/train/` subtree (or a dedicated adapter repo) and references the same `weight_handoff_map.json` contract.
-- **#7/07:** owns `weight_handoff_map.json` schema; this plan pins its location and the resolvability invariant.
-- **#8/01:** owns the `inference/base` (frozen) + `inference/merged` (per-tensor) split; this plan pins where those land in the repo.
+- **#13 (manifest-first package + cache bridge):** owns the validator that asserts this schema; owns the path mapping that materializes `variants/<id>/{train,inference,embedding}` → `<cacheDir>/<sanitizedRepoId>/{train,inference,embedding}` plus copied `mobiletransformers_manifest.json` and `checksums.json`. The Android `LLMRepository` then sees its expected `train/training_config.json`, `inference/generation_config.json`, `embedding/rag_config.json` unchanged.
+- **#15 (export CLI):** produces a package in exactly this shape and calls `build_manifest()`; emits `optimum/export_report.json`.
+- **#21 (hub pull + cache flow):** Python pull derives `allow_patterns` from `downloadPlan`; Android downloader fetches manifest first, selects a variant by `abi`/`quantization`/`supportedEngines`/`features`/`recommendedDeviceMemoryMb`, then downloads the variant's grouped files.
+- **#22 (adapter push-back):** an exported adapter is published into a `variants/<id>/train/` subtree (or a dedicated adapter repo) and references the same `weight_handoff_map.json` contract.
+- **#8/07:** owns `weight_handoff_map.json` schema; this plan pins its location and the resolvability invariant.
+- **#9/01:** owns the `inference/base` (frozen) + `inference/merged` (per-tensor) split; this plan pins where those land in the repo.
 
-## Tests & smokes
+## Tests & acceptance
 
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- `sanitize_repo_id()` parity test (`pytest tests/hub/test_package_format.py`): a table of repo ids (`mobiletransformers/Qwen2-0.5B-mobile`, `SmolLM2-360M-mobile`, `TinyLlama-1.1B-mobile`, `all-MiniLM-L6-v2-embedding-mobile`) → expected sanitized dir names; must match the Kotlin sanitizer (assert against a checked-in `sanitize_repo_id_cases.json` shared with #21).
+- Variant-selection invariants (pure-Python helper shared with #21): given device constraints, the chosen variant's `features` cover the requested feature set and `abi` is compatible.
+- Schema-version test (**F1**): a manifest with `schemaVersion="1.0"` + an unknown extra field reads cleanly (unknown field preserved); `check_compat()` fails closed with a "needs newer SDK" message when `major` exceeds support or `minReaderVersion` is unmet.
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
 - `build_manifest()` round-trip: build over the tiny fixture → assert `requiredFiles` present, every `sha256`/`fileSizes` key exists on disk, `downloadPlan` groups reference only existing paths.
-- `sanitize_repo_id()` parity test: a table of repo ids (`mobiletransformers/Qwen2-0.5B-mobile`, `SmolLM2-360M-mobile`, `TinyLlama-1.1B-mobile`, `all-MiniLM-L6-v2-embedding-mobile`) → expected sanitized dir names; must match the Kotlin sanitizer (assert against a checked-in `sanitize_repo_id_cases.json` shared with #20).
-- Variant-selection invariants (unit, pure-Python helper shared with #20): given device constraints, the chosen variant's `features` cover the requested feature set and `abi` is compatible.
-- Handoff resolvability: every name in `weight_handoff_map.json` `inferenceInitializerNames` resolves to a file under `variants/<id>/inference/merged/` (this assertion is owned by #12 but the fixture supports it here).
+- Handoff resolvability: every name in `weight_handoff_map.json` `inferenceInitializerNames` resolves to a file under `variants/<id>/inference/merged/` (this assertion is owned by #13 but the fixture supports it here).
 - Dual-engine sanity: a variant advertising `supportedEngines: ["native","genai"]` has both `inference/generation_config.json` (`type: native`) and `inference/genai_config.json`; a `["native"]`-only variant omits `genai_config.json` and its `downloadPlan.genai` group is empty.
-- Fixture lint: `agent_docs/fixtures/tiny_package/` validates clean against the #12 validator in CI.
+- Fixture lint: `agent_docs/fixtures/tiny_package/` validates clean against the #13 validator in CI.
+
+**Definition of done** — the Hub repo shape and the full `mobiletransformers_manifest.json` field list are specified and mirrored in `docs/HUB_PACKAGE_FORMAT.md`; `package_format.py` exposes the constants + a `sanitize_repo_id` byte-identical to the Kotlin sanitizer; `build_manifest()` over the tiny fixture emits a manifest whose `requiredFiles`/`sha256`/`fileSizes`/`downloadPlan` all reference real on-disk paths and carries `schemaVersion`/`minReaderVersion`; and `agent_docs/fixtures/tiny_package/` validates clean against the #13 validator.

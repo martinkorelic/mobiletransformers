@@ -134,11 +134,23 @@ The migration map (doc 00 "Migration Map") is the source of truth for old→new 
 - **Plan 03 (dependency profiles + ORT wheel)** fills in exact pins inside the extras/groups defined here, builds the wheel that `[tool.uv.sources]` points at, authors `third_party/onnxruntime/manifest.json`, and generates the `requirements/*.lock.txt` files via `uv export`.
 - **Plan 05 (optimum-onnx export)** and **plan 13 (one-command export CLI)** flesh out the CLI stubs and add the first real root→`src` shims following the Migration Map.
 
-## Tests & smokes
+## Tests & acceptance
 
-- `uv sync --group dev` resolves with no extras (core stays small/platform-neutral).
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- `pytest tests/unit/test_import_compat.py` — both `mobiletransformers` and legacy `tools.parser_config` import.
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- `uv sync --group dev` resolves with no extras (core stays small/platform-neutral); the `mobiletransformers` script installs.
 - `mobiletransformers --help` exits 0; lists `export`, `validate`, `package-model`.
 - `python -m mobiletransformers.cli.main --help` exits 0 (module-form parity).
-- `pytest tests/unit/test_import_compat.py` — both `mobiletransformers` and legacy `tools.parser_config` import.
-- `python -m build` (or `uv build`) produces a wheel containing only `src/mobiletransformers` (hatchling target check).
 - `mobiletransformers export --dry-run` exits 0 without importing the heavy export stack.
+- `python -m build` (or `uv build`) produces a wheel containing only `src/mobiletransformers` (hatchling target check).
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- None for this plan (no source-built wheel or real export touched here; the ORT-training wheel arrives in plan 03).
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- `src/mobiletransformers/` subpackage tree (+ `__init__.py`) exists per doc 00 Target Hierarchy; `__version__ == "0.1.0"`.
+- A standards-compliant `pyproject.toml` (hatchling backend, extras, dependency groups, `[tool.uv.sources]` for the local wheel, `mobiletransformers` console script) resolves under `uv sync --group dev` with no extras.
+- Both `mobiletransformers --help` and `python -m mobiletransformers.cli.main --help` exit 0; legacy root imports (`from tools.parser_config import TRAIN_CONFIG`) still resolve.
+- `uv build` emits a wheel containing only `src/mobiletransformers`.

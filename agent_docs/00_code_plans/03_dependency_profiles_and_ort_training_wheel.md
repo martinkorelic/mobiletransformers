@@ -159,11 +159,27 @@ uv export --format cyclonedx1.5 -o requirements/sbom-cyclonedx.json
 - The Android side of `build_ort_training_android.sh` feeds the Gradle rename plan (`00_code_plans/04`) which links the local `onnxruntime-genai.aar` / training `.so`.
 - **Plan 09 (typed models / enums / registries)** requires `pydantic>=2` in core (above); it is the first consumer to need it, ahead of the export/builder plans.
 
-## Tests & smokes
+## References
 
-- `uv sync --frozen --group ort-training-local` then `python -c "import onnxruntime; from onnxruntime.training import artifacts; from onnxruntime.training.api import CheckpointState, Module, Optimizer; import torch"` — train+export profile alive (mirrors `artifact/onnx_builder.py:20-21`).
-- `uv sync --frozen --extra export` then `python -c "import onnxruntime; from optimum.exporters.onnx import export"` — export-only profile alive.
-- `uv sync --extra export --group ort-training-local` **must fail** (declared conflict) — proves isolation is enforced.
-- `sha256sum third_party/wheels/onnxruntime_training-1.23.0+cpu-local.whl` matches `manifest.json.wheel.sha256`.
-- `uv export ...` regenerates every `requirements/*.lock.txt` deterministically (no diff on re-run).
+- `https://docs.astral.sh/uv/` — uv dependency groups/extras, conflicts, and lockfile (`uv sync`/`uv export`) behavior underpinning the isolated profiles here.
+
+## Tests & acceptance
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
 - CI asserts `manifest.json.torch_version` is non-empty (the one unknown is resolved, not left TODO).
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- `uv sync --frozen --extra export` then `python -c "import onnxruntime; from optimum.exporters.onnx import export"` — export-only profile alive (public `onnxruntime`, no source-built wheel).
+- `uv sync --extra export --group ort-training-local` **must fail** (declared conflict) — proves isolation is enforced.
+- `uv export ...` regenerates every `requirements/*.lock.txt` deterministically (no diff on re-run).
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- `uv sync --frozen --group ort-training-local` then `python -c "import onnxruntime; from onnxruntime.training import artifacts; from onnxruntime.training.api import CheckpointState, Module, Optimizer; import torch"` — train+export profile alive (mirrors `artifact/onnx_builder.py:20-21`); **requires the source-built `onnxruntime-training==1.23.0+cpu` wheel**.
+- `sha256sum third_party/wheels/onnxruntime_training-1.23.0+cpu-local.whl` matches `manifest.json.wheel.sha256` (after the user builds the wheel).
+- Build the Android AAR/`.so` via `scripts/build_ort_training_android.sh` at the matching ORT commit (multi-minute native build).
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- `pyproject.toml` carries exact pins in every extra/group, the `genai-smoke`/`export-rocm` groups, and `[tool.uv] conflicts` declaring the mutually-exclusive onnxruntime providers.
+- Each profile syncs alone and imports its onnxruntime provider; every declared conflict pair errors on co-sync.
+- The one unknown is resolved: `torch` is pinned in `ort-training-local` and `manifest.torch_version` is non-empty.
+- The source-built wheel exists at the `[tool.uv.sources]` path with a matching `sha256` in `manifest.json`; `requirements/*.lock.txt` + `sbom-cyclonedx.json` are generated (not hand-edited) and re-run deterministically.

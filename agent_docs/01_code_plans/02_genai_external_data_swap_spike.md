@@ -1,12 +1,12 @@
 # GenAI External-Data-Swap Spike
 
-**Priority #9 | Prerequisites: #8 (`01_code_plans/01_unified_merger_and_external_data_export.md`) | Blocks: #10 (`03_inference_engine_abstraction_native_and_genai.md`); feeds Gate 0.1**
+**Priority #10 | Prerequisites: #9 (`01_code_plans/01_unified_merger_and_external_data_export.md`) | Blocks: #11 (`03_inference_engine_abstraction_native_and_genai.md`); feeds Gate 0.1**
 
 ## Purpose
 
 Validate finding **F2**: that ONNX Runtime GenAI can consume **on-device-trained, merged weights without any graph rewrite or genai fork**, simply by reading the *same* per-tensor external-data folder the Native engine reads — after the merge has overwritten the `.bin` files in place.
 
-This is the decisive experiment for **Gate 0.1**. If it passes, GenAI becomes a selectable engine over the unified package (File #10). If it fails, we keep the manual loop and GenAI is dropped for v1.
+This is the decisive experiment for **Gate 0.1**. If it passes, GenAI becomes a selectable engine over the unified package (File #11). If it fails, we keep the manual loop and GenAI is dropped for v1.
 
 The spike deliberately **avoids** `OgaCreateModelWithInitializers` (verified fork-only: it exists only in the vendored `ort_genai_c.h:130`, takes C++ types `std::unordered_map<std::string, OrtValue>` in a C header, and is NOT in upstream onnxruntime-genai). It also avoids `model_input`/`SetModelInput` for the primary test (that path disables prepacking/constant-folding and only feeds declared graph inputs). The primary mechanism is **stable `OgaCreateModel(<config_dir>)` + external-data file resolution from the package directory.**
 
@@ -15,32 +15,32 @@ Core hypothesis to prove: *overwriting the per-tensor external `.bin` files chan
 ## Touched / new files
 
 Desktop (Python, run first):
-- NEW `spikes/genai_external_swap/desktop_spike.py` — export tiny model with per-tensor externals (reuse File #8's `export_inference_package.py`), do one train->merge (or simulate the merge by perturbing one `.bin`), run `onnxruntime_genai.Model(<dir>)`, generate one token, assert output differs from base.
+- NEW `spikes/genai_external_swap/desktop_spike.py` — export tiny model with per-tensor externals (reuse File #9's `export_inference_package.py`), do one train->merge (or simulate the merge by perturbing one `.bin`), run `onnxruntime_genai.Model(<dir>)`, generate one token, assert output differs from base.
 - NEW `spikes/genai_external_swap/measure_rss.py` — RSS sampler (read `/proc/self/status` `VmRSS` on Linux / `psutil` cross-platform) snapshotting before load, after `OgaCreateModel`, after first token; compare mmap vs copy.
 - Reuse `inference/generator_genai.py` only as a reference for the GenAI Python API shape (its `params.set_model_input` prototype at lines ~40-76 is the *fallback* path, NOT what we test here).
 
 Android (JNI, run second):
-- NEW `android/.../cpp/genai_spike.cpp` — minimal JNI: `OgaCreateModel(<inference dir>)`, tokenize, `GenerateNextToken` once, return token. This is the seed of the File #10 GenAI wrapper that replaces the commented-out `onnx-genai.cpp`.
+- NEW `android/.../cpp/genai_spike.cpp` — minimal JNI: `OgaCreateModel(<inference dir>)`, tokenize, `GenerateNextToken` once, return token. This is the seed of the File #11 GenAI wrapper that replaces the commented-out `onnx-genai.cpp`.
 - NEW `android/.../GenAISpikeTest.kt` — instrumented test driving the JNI spike on a packaged tiny model.
 - Symbol-check script `spikes/genai_external_swap/check_symbols.sh` — `nm`/`readelf` over the linked GenAI `.so`.
 
-Inputs (produced by File #8):
+Inputs (produced by File #9):
 - A packaged `inference/` dir with `model.onnx` (external refs), `genai_config.json`, `weight_handoff_map.json`, `base/base_weights.onnx.data`, and per-tensor `<name>.bin`.
 
 ## Data contracts / interfaces
 
-- Package = the exact File #8 layout. GenAI reads it via `OgaCreateModel("<...>/inference")`; the relative external-data locations recorded in `model.onnx` resolve against that dir.
+- Package = the exact File #9 layout. GenAI reads it via `OgaCreateModel("<...>/inference")`; the relative external-data locations recorded in `model.onnx` resolve against that dir.
 - `genai_config.json` carries `model.decoder.session_options.config_entries` including `["session.model_external_initializers_file_folder_path", "<inference dir>"]` (belt-and-suspenders) and harmless probe entries (`use_env_allocators`, a custom `log_id`) to confirm pass-through.
 - "Output differs" contract: capture the **logits of the first generated token** (or the greedy token id with fixed seed/temperature=0) for base vs swapped; assert they differ. Logits comparison is stronger than the token id (avoids ties).
 - Memory threshold: define `ACCEPTED_RSS_DELTA` (e.g. GenAI peak RSS <= Native peak RSS + 15%, number to be ratified at Gate 0.1). Record absolute numbers regardless.
 
 ## Implementation steps
 
-1. **Export tiny package** (SmolLM2-360M or smaller) via File #8 in `external_initializer` mode. Confirm `model.onnx` has zero inline trainable initializer data — all external — and base lives in the single base blob.
+1. **Export tiny package** (SmolLM2-360M or smaller) via File #9 in `external_initializer` mode. Confirm `model.onnx` has zero inline trainable initializer data — all external — and base lives in the single base blob.
 
 2. **Baseline generation (desktop)**: `Model(dir)` -> `GeneratorParams` -> fixed prompt, greedy (temp 0), generate **one token**; record logits vector `L_base` and token id. Snapshot RSS at: pre-load, post-`Model()`, post-first-token.
 
-3. **One train -> merge**: run the real device-shaped merge offline (`artifact/merger.py` driver from File #8) on a checkpoint with a non-trivial delta, OR for the minimal spike, deterministically perturb exactly one trainable `.bin` (e.g. add a constant) using the handoff map's `external_file`, refresh its `.sha256`. Do NOT touch `base/`.
+3. **One train -> merge**: run the real device-shaped merge offline (`artifact/merger.py` driver from File #9) on a checkpoint with a non-trivial delta, OR for the minimal spike, deterministically perturb exactly one trainable `.bin` (e.g. add a constant) using the handoff map's `external_file`, refresh its `.sha256`. Do NOT touch `base/`.
 
 4. **Swapped generation (desktop)**: construct a **fresh** `Model(dir)` (GenAI caches at construction; reuse is not valid), regenerate one token; record `L_swap`. **Assert `L_swap != L_base`** beyond float tolerance. This proves the external swap is observed.
 
@@ -52,7 +52,7 @@ Inputs (produced by File #8):
 
 8. **Symbol check**: run `nm -D --defined-only <libonnxruntime-genai.so> | grep -i CreateModelWithInitializers` and `readelf -Ws` equivalent on the **actual linked Android `.so`** (from the bundled `onnxruntime-genai.aar`, see `build.gradle.kts` `aarLibs/onnxruntime-genai.aar`, linked in `CMakeLists.txt:62`). **Assert the symbol is absent** — documents that `OgaCreateModelWithInitializers` is fork-only and we do not depend on it. Also confirm `OgaCreateModel`, `OgaGeneratorParamsSetModelInput` are present.
 
-9. **Android port**: build `genai_spike.cpp` (`OgaCreateModel(<package dir in app storage>)` -> tokenize -> one token). Push the File #8 package into app-internal storage. Run baseline + swap on device exactly as steps 2-4. **Confirm GenAI Android resolves relative external data inside the package dir** (this is the key Android-specific unknown).
+9. **Android port**: build `genai_spike.cpp` (`OgaCreateModel(<package dir in app storage>)` -> tokenize -> one token). Push the File #9 package into app-internal storage. Run baseline + swap on device exactly as steps 2-4. **Confirm GenAI Android resolves relative external data inside the package dir** (this is the key Android-specific unknown).
 
 10. **Cross-engine equivalence (the Gate 0.1 core)**: take the **same** packaged folder; run Native (`ORTGeneratorNative`) and GenAI over it; assert both produce the correct token for the swapped weights, and GenAI peak RSS is within `ACCEPTED_RSS_DELTA` of Native.
 
@@ -60,7 +60,7 @@ Inputs (produced by File #8):
 
 ## Example snippets (illustrative — NOT full implementations)
 
-These show the *shape* of the spike code; real code reuses File #8's exporter and the handoff map.
+These show the *shape* of the spike code; real code reuses File #9's exporter and the handoff map.
 
 **Desktop: overwrite one per-tensor `.bin`, then `og.Model(dir)` + generate** (`desktop_spike.py`)
 
@@ -68,7 +68,7 @@ These show the *shape* of the spike code; real code reuses File #8's exporter an
 # example — illustrative only
 import json, os, numpy as np, onnxruntime_genai as og
 
-INF_DIR = "build/spike/inference"          # File #8 package (per-tensor externals)
+INF_DIR = "build/spike/inference"          # File #9 package (per-tensor externals)
 hmap = json.load(open(f"{INF_DIR}/weight_handoff_map.json"))
 
 def first_logits(prompt: str) -> np.ndarray:
@@ -149,27 +149,39 @@ readelf -Ws "$SO" | grep -i 'OgaCreateModel\b'                     # EXPECT: pre
 
 ## Interactions
 
-- **File #8** produces the package; if step 5 finds folding, File #8's export must be fixed (keep trainable initializers live) before this spike can pass.
-- **File #10** turns the passing spike's `genai_spike.cpp` into the production GenAI engine wrapper and consumes the Gate 0.1 decision (engine candidate in `genai_config.json` + manifest).
+- **File #9** produces the package; if step 5 finds folding, File #9's export must be fixed (keep trainable initializers live) before this spike can pass.
+- **File #11** turns the passing spike's `genai_spike.cpp` into the production GenAI engine wrapper and consumes the Gate 0.1 decision (engine candidate in `genai_config.json` + manifest).
 - **`onnx-genai.cpp`** (currently fully commented out) is the historical attempt; `genai_spike.cpp` supersedes it with the external-data-swap approach instead of the abandoned weight-cache approach.
-- **`ORTGenAINative.kt`** (deprecated, all methods `throw NotImplementedError`) is NOT revived; File #10 introduces a clean wrapper.
+- **`ORTGenAINative.kt`** (deprecated, all methods `throw NotImplementedError`) is NOT revived; File #11 introduces a clean wrapper.
 - Memory experiments in `01_code_plans/04_memory_mapping_experiments.md` extend step 7 (mmap vs copy) but are non-blocking for this gate.
 
-## Tests & smokes
+## Tests & acceptance
 
-- **Desktop swap smoke**: base vs swapped logits differ after one merge; fresh `Model()` per generation.
-- **Constant-folding guard**: assert every handoff `inference_initializer_name` survives export as a live external initializer (parse `model.onnx`).
+Because this is a spike, the **measurement harness itself is the test suite**: the desktop Unit/Integration checks below are the fast, automated half of the experiment; the long, device-specific RSS and cross-engine runs are **Manual** because they need a real Android device and produce the numbers ratified at Gate 0.1.
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- **Symbol smoke** (`check_symbols.sh`): `nm`/`readelf` on the linked Android GenAI `.so` confirms `OgaCreateModelWithInitializers` ABSENT and `OgaCreateModel` PRESENT — a fast deterministic check over the bundled binary.
+- **Handoff-map read unit**: `desktop_spike.py`'s helper resolves `tensors[i].external_file` against the package dir and computes its `.sha256` (no model load).
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- **Desktop swap smoke**: base vs swapped logits differ after one merge; fresh `Model()` per generation. (`assert not np.allclose(L_base, L_swap)`.)
+- **Constant-folding guard**: assert every handoff `inference_initializer_name` survives export as a live external initializer (parse `model.onnx`). Hard-fail condition — if folded, the swap silently no-ops.
 - **Config pass-through smoke**: custom `log_id` + `model_external_initializers_file_folder_path` appear in ORT logs / are not rejected.
-- **Symbol smoke**: `nm`/`readelf` on the linked Android GenAI `.so` confirms `OgaCreateModelWithInitializers` ABSENT, `OgaCreateModel` PRESENT.
-- **Android external-data resolution smoke**: GenAI `OgaCreateModel` on an app-storage package generates a valid token (relative externals resolve).
-- **Android swap smoke**: train->merge overwrites `.bin`s; fresh `OgaCreateModel` reflects the change.
-- **Gate 0.1 equivalence smoke**: SAME folder under Native and GenAI -> both correct for swapped weights; GenAI RSS within `ACCEPTED_RSS_DELTA` of Native.
-- **Memory report** (informational): RSS pre-load / post-load / post-first-token for Native and GenAI, mmap vs copy annotation.
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- **Android external-data resolution smoke** (device): GenAI `OgaCreateModel` on an app-storage package generates a valid token (relative externals resolve) — the key Android-specific unknown.
+- **Android swap smoke** (device): train->merge overwrites `.bin`s; fresh `OgaCreateModel` reflects the change.
+- **Gate 0.1 equivalence smoke** (device): SAME folder under Native and GenAI -> both correct for swapped weights; GenAI peak RSS within `ACCEPTED_RSS_DELTA` of Native.
+- **Memory report** (device, informational): RSS pre-load / post-load / post-first-token for Native and GenAI, mmap vs copy annotation. Long device RSS sampling is run by the user.
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- The Gate 0.1 result is written (adopt GenAI as a selectable engine **or** keep manual-only), backed by the measured logits-diff, constant-folding, symbol, and RSS findings per the Gate 0.1 pass/fail list below.
+- `desktop_spike.py` + `measure_rss.py` + `genai_spike.cpp` + `check_symbols.sh` exist and run; the desktop Integration checks pass and the device Manual runs have recorded numbers.
 
 ## Gate 0.1 pass/fail
 
 **PASS** (adopt GenAI as a selectable engine) requires ALL:
-1. The same File #8 package produces **correct output under BOTH Native and GenAI** reading the same folder.
+1. The same File #9 package produces **correct output under BOTH Native and GenAI** reading the same folder.
 2. Overwriting per-tensor external `.bin` files changes GenAI output on a fresh `OgaCreateModel` (no graph rewrite, no fork).
 3. Trainable externals are NOT constant-folded (swap is observable).
 4. GenAI peak RSS within the accepted threshold of Native.

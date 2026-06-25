@@ -1,6 +1,6 @@
 # FunctionGemma Architecture Gate & Android Intent Binding
 
-**Priority #36 | Prerequisites: #10 (`01_code_plans/03`, inference engine decision), #6 (`01_code_plans/05`, export), #8 (`01_code_plans/01`, merge) | Blocks: —**
+**Priority #37 | Prerequisites: #11 (`01_code_plans/03`, inference engine decision), #7 (`01_code_plans/05`, export), #9 (`01_code_plans/01`, merge) | Blocks: —**
 
 > Tier-3, highest visibility / highest risk. **Gate hard.** If the architecture gate fails, defer to future work — do not let it sink the release. Must not block v1.0.
 
@@ -64,15 +64,63 @@ Kotlin:
 
 ## Interactions
 
-- **#10 / Gate 0.1**: grammar-constrained generation availability decides the validator strategy.
-- **#6 / #8 / #12**: Gemma-3 must flow through the same export/merge/manifest contracts once the inference branch exists.
+- **#11 / Gate 0.1**: grammar-constrained generation availability decides the validator strategy.
+- **#7 / #9 / #13**: Gemma-3 must flow through the same export/merge/manifest contracts once the inference branch exists.
 - **`02_code_plans/02`**: record the Gemma-3 gate result in the support matrix.
 
-## Tests & smokes
+## References
 
-- **Architecture export smoke (gate 1, first):** Gemma-3 inference graph exports; fail with a documented blocker otherwise.
-- Training one-step smoke for FunctionGemma.
-- Structured-output validation tests (valid calls pass).
-- Invalid-action rejection tests (off-allowlist calls rejected).
-- Android intent dry-run test (intended action returned, not executed).
-- End-to-end demo gated behind architecture + differentiation passes.
+- ONNX Runtime GenAI docs (constrained decoding is preview/source-build-only → ship post-hoc JSON validation in v1): https://onnxruntime.ai/docs/genai/
+- onnxruntime-genai (constrained-decoding status): https://github.com/microsoft/onnxruntime-genai
+
+## Worked example
+
+A per-user action schema, an allowlist validator, and a dry-run intent binder that never executes:
+
+```json
+{
+  "actionName": "set_alarm",
+  "parameters": {"time": "HH:mm", "label": "string"},
+  "allowedIntent": "android.intent.action.SET_ALARM",
+  "validationRules": {"time": "HH:mm"},
+  "privacyClass": "harmless-demo"
+}
+```
+
+```kotlin
+// FunctionCallValidator.kt — post-hoc JSON validation (GenAI constrained decoding is preview-only)
+fun validate(raw: String): ValidatedCall {
+    val call = Json.decodeFromString<ToolCall>(raw)            // parse model output
+    val spec = allowlist[call.actionName]                      // allowlist check
+        ?: throw RejectedCallException("action not allowlisted: ${call.actionName}")
+    require(spec.validate(call.parameters)) { "parameters fail validationRules" }
+    return ValidatedCall(spec.allowedIntent, call.parameters)
+}
+```
+
+```kotlin
+// IntentBinder.kt — dry-run is the default; returns intended action, does NOT startActivity
+fun dryRun(call: ValidatedCall): IntendedAction =
+    IntendedAction(intent = Intent(call.allowedIntent).apply { putExtras(call.parameters) },
+                   willExecute = false)        // execution is opt-in + allowlisted, never here
+```
+
+## Tests & acceptance
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- `pytest tests/inference/test_gemma3_registry.py` — the Gemma-3 `ArchitectureSpec` entry gains a non-`None` `inference_model_class = Gemma3Model` (the gate-1 pass condition, expressed as registry data — no new `elif` at `inference/builder.py:3234-3236`).
+- Structured-output validation (`FunctionCallValidatorTest.kt`): valid tool-call JSON parses and passes; off-allowlist `actionName` and parameters violating `validationRules` are rejected (`RejectedCallException`).
+- Intent dry-run (`IntentBinderTest.kt`, JVM/Robolectric): a validated call returns the intended `allowedIntent` action with `willExecute=false`; assert `startActivity` is never called.
+- Plus the module **compiles** (`./gradlew :MobileTransformers:compileDebugKotlin`).
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- `pytest tests/functiongemma/test_actions_dataset.py` — the synthetic per-user mobile-actions generator (`tools/functiongemma/mobile_actions.py`) emits well-formed action-schema records (each with `actionName`/`allowedIntent`/`validationRules`/`privacyClass`).
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- **Architecture export smoke (gate 1, first):** the Gemma-3 inference graph exports end-to-end via the new `Gemma3Model` class; fail with a documented blocker otherwise (record pass/fail in `02_code_plans/02`).
+- Training one-step smoke for FunctionGemma on-device (requires the source-built ORT Training wheel; or document a blocker).
+- Tool-grammar gate: if GenAI won Gate 0.1, exercise grammar-constrained generation; else confirm post-hoc JSON validation and document the limitation.
+
+**Workflow (end-to-end)** — *(CHECKPOINT #37, device/manual — gated behind architecture gate 1 + differentiation gate 2)* train on the per-user action set → the model emits a structured tool call → `FunctionCallValidator` accepts it against the allowlist → `IntentBinder` dry-runs the allowlisted intent and returns the intended action **without executing** it (`willExecute=false`, no `startActivity`).
+
+**Definition of done** — gate 1 passes as a registry entry (the Gemma-3 `ArchitectureSpec` has `inference_model_class = Gemma3Model`; the pre-built inference graph exports), validated end-to-end with the existing export/merge/manifest contracts and recorded in the support matrix; FunctionGemma fine-tunes on-device on a synthetic per-user action set (or a documented blocker); `FunctionCallValidator` accepts allowlisted calls and rejects off-allowlist/invalid ones; `IntentBinder` returns the intended allowlisted action in dry-run without executing; and the end-to-end demo runs only after gates 1 + 2 pass. No arbitrary model output is ever executed.

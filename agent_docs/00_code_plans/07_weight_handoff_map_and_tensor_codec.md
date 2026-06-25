@@ -1,8 +1,8 @@
 # Weight Handoff Map & Trainable Tensor Codec
 
-**Priority (global #):** 7  |  **Prerequisites:** `00_code_plans/02_config_layering_settings_constants.md` (#4), `00_code_plans/09_typed_models_enums_and_registries.md` (#5)  |  **Blocks:** `01_code_plans/01_unified_merger_and_external_data_export.md` (#8), `00_code_plans/06_manifest_first_package_and_cache_bridge.md` (#12)
+**Priority (global #):** 8  |  **Prerequisites:** `00_code_plans/02_config_layering_settings_constants.md` (#4), `00_code_plans/09_typed_models_enums_and_registries.md` (#6)  |  **Blocks:** `01_code_plans/01_unified_merger_and_external_data_export.md` (#9), `00_code_plans/06_manifest_first_package_and_cache_bridge.md` (#13)
 
-> This plan **OWNS** the `weight_handoff_map.json` schema and the `TrainableTensorCodec`. Every other plan (#8, #12, #16, #17, #18, #21) references the contract defined here and must not redefine it.
+> This plan **OWNS** the `weight_handoff_map.json` schema and the `TrainableTensorCodec`. Every other plan (#9, #13, #17, #18, #19, #22) references the contract defined here and must not redefine it.
 >
 > **Consumes `00_code_plans/09`.** The codec's tensor naming is no longer hand-rolled here: the adapter **component schema** (which roles exist per PEFT method and how to find them) comes from 09's `PEFTMethodSpec.component_schema`, and the per-architecture name-rewrite data (the `self_attn`→`attn` / `base_layer`→`MatMul` rules, attention-module name) comes from 09's architecture registry. This plan defines *how the map is built/validated*; 09 defines *the vocabulary the codec reads*.
 
@@ -26,7 +26,7 @@ This plan replaces the implicit four-way agreement with **one declarative artifa
 
 **Python (export toolkit — new):**
 - `src/mobiletransformers/artifacts/handoff_map.py` — `TrainableTensorCodec`, `HandoffEntry`, `HandoffMap` dataclasses; emit + validate.
-- `src/mobiletransformers/artifacts/manifest.py` — already planned in #12; imports the handoff dataclasses (do not duplicate).
+- `src/mobiletransformers/artifacts/manifest.py` — already planned in #13; imports the handoff dataclasses (do not duplicate).
 - `tests/unit/test_handoff_map.py`, `tests/unit/test_tensor_codec.py`.
 
 **Python (export toolkit — edit):**
@@ -44,11 +44,12 @@ This plan replaces the implicit four-way agreement with **one declarative artifa
 
 ## Data contract — `weight_handoff_map.json` (CANONICAL, schemaVersion 1)
 
-Lives at `<package>/.../train/weight_handoff_map.json` and is installed into `<cacheDir>/<sanitizedRepoId>/inference/weight_handoff_map.json` (co-located with the model it describes; see #12 for install). This is the single source of truth that **replaces `weight_merger.cpp:904`**.
+Lives at `<package>/.../train/weight_handoff_map.json` and is installed into `<cacheDir>/<sanitizedRepoId>/inference/weight_handoff_map.json` (co-located with the model it describes; see #13 for install). This is the single source of truth that **replaces `weight_merger.cpp:904`**.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": "1.0",
+  "minReaderVersion": "1.0",
   "handoffMode": "external_initializer",
   "engines": ["native", "genai"],
   "externalDataLayout": "one_file_per_tensor",
@@ -74,7 +75,8 @@ Field semantics:
 
 | Field | Meaning |
 | --- | --- |
-| `handoffMode` | `external_initializer` (default, both engines) or `model_input` (GenAI graph-input path). Controls which name field must resolve. |
+| `schemaVersion` / `minReaderVersion` | `"MAJOR.MINOR"` strings (F1). Readers preserve unknown fields and fail closed only when `major` exceeds support or their version is below `minReaderVersion`; one `check_compat()` helper, mirrored Python↔Kotlin/C++. |
+| `handoffMode` | `HandoffMode` value (F7): `external_initializer` (the **only** mode supported in v1; both engines), or `model_input` (GenAI graph-input path) / `adapter` — both registry **stubs that fail closed** until implemented. Controls which name field must resolve. |
 | `engines` | Engines this map is valid for. A consumer not listed must refuse to use it. |
 | `externalDataLayout` | `one_file_per_tensor` — matches `WeightSessionCache` per-tensor `.tensor`/`.bin` files. |
 | `frozenBaseBlob` | Filename of the immutable quantized base external blob; never overwritten on-device merge. |
@@ -115,7 +117,7 @@ class TensorSpec:
 `TrainableTensorCodec` responsibilities (pure, no I/O):
 - `from_peft_mapping(peft_mapping, requires_grad, observed_inference_inits, peft_spec, arch_spec) -> list[HandoffEntry]` — joins the three sources by base-layer name and produces one entry per trainable MatMul. The `peft_spec` (09's `PEFTMethodSpec.component_schema`) supplies which adapter roles/components exist instead of hardcoding `shared_A`/`adapter_A`; the `arch_spec` (09's `ArchitectureSpec`) supplies the name-rewrite rules.
 - `canonical_inference_name(base_layer_name, arch_spec) -> str` — the **single** Python implementation of the `weight_merger.cpp:904` rules: strip leading `backbone.`, `self_attn`→`attn` (using `arch_spec.attention_module_name`), `base_layer`→`MatMul`. The rewrite rules are **data from 09's architecture registry**, not literals baked here. Used only to *seed* a lookup against observed names; the observed name wins on conflict (and a conflict raises, so drift is caught at build time, not runtime).
-- `to_dict()` / `from_dict()` — stable key order, sorted entries by `inferenceInitializerNames["weight"]`, so the JSON is byte-deterministic for checksums (#12).
+- `to_dict()` / `from_dict()` — stable key order, sorted entries by `inferenceInitializerNames["weight"]`, so the JSON is byte-deterministic for checksums (#13).
 - `validate()` — enforces the invariants above; raises `HandoffMapError` with the offending entry.
 
 Dtype/shape/order are deterministic: entries sorted by canonical weight name; roles within an entry ordered `weight, weight_quantized, scale, zero_point`.
@@ -128,7 +130,7 @@ Dtype/shape/order are deterministic: entries sorted by canonical weight name; ro
 1. Add `TensorSpec`, `HandoffEntry`, `HandoffMap`, `TrainableTensorCodec`, `HandoffMapError` to `artifacts/handoff_map.py`.
 2. In `inference_export.py` (`inference/builder.py`), accumulate an `observed_inference_inits` list at each `make_external_tensor` call site for trainable MatMuls (`make_matmul_fp16_or_fp32`, `make_matmul_int4`): record `(name, dtype, shape, role, transposed?)`. Surface it from `build`.
 3. In `training_export.py` (`trainer/builder.py`), after `create_lora_mapping`/`create_mars_adapter_mapping` (`trainer/builder.py:344-346`), pass `peft_mapping` + `requires_grad` into `TrainableTensorCodec.from_peft_mapping` together with `observed_inference_inits`.
-4. Emit `weight_handoff_map.json` next to `training_config.json`; record its relative path so the manifest's `weightHandoff` pointer (#12) resolves.
+4. Emit `weight_handoff_map.json` next to `training_config.json`; record its relative path so the manifest's `weightHandoff` pointer (#13) resolves.
 5. Run `HandoffMap.validate()` during export; fail the export on any mismatch.
 
 ### Android C++ (merge/save side)
@@ -146,21 +148,57 @@ Dtype/shape/order are deterministic: entries sorted by canonical weight name; ro
 
 ## Interactions
 
-- **#8 (unified merger / external-data export):** consumes the Python emitter from this plan; the merger's on-device external-data output layout is defined by `externalDataLayout` + `externalDataLocation` here.
-- **#12 (manifest + cache bridge):** `MobileTransformersManifest.weightHandoff` points at this map; `ChecksumVerifier` hashes it; `ModelPackageInstaller` copies it into `inference/`.
-- **#10 (engine abstraction) / GenAI:** the `model_input` mode + `genaiInputNames` define how the GenAI engine receives merged tensors as graph inputs vs initializers.
-- **#17 (training lifecycle):** merge runs at end of training (`ORTTrainerNative.startTraining`, `mergeWeightsAtEnd`, `ORTTrainerNative.kt:369-387`); the lifecycle reports merge progress but the contract is owned here.
+- **#9 (unified merger / external-data export):** consumes the Python emitter from this plan; the merger's on-device external-data output layout is defined by `externalDataLayout` + `externalDataLocation` here.
+- **#13 (manifest + cache bridge):** `MobileTransformersManifest.weightHandoff` points at this map; `ChecksumVerifier` hashes it; `ModelPackageInstaller` copies it into `inference/`.
+- **#11 (engine abstraction) / GenAI:** the `model_input` mode + `genaiInputNames` define how the GenAI engine receives merged tensors as graph inputs vs initializers.
+- **#18 (training lifecycle):** merge runs at end of training (`ORTTrainerNative.startTraining`, `mergeWeightsAtEnd`, `ORTTrainerNative.kt:369-387`); the lifecycle reports merge progress but the contract is owned here.
 
 ---
 
-## Tests & smokes
+## Worked example
 
-- `test_tensor_codec.py`: round-trip `TensorSpec`/`HandoffEntry` through `to_dict`/`from_dict`; assert byte-identical JSON across runs (deterministic order); assert dtype/shape/role/transpose preserved.
-- `test_handoff_map.py`:
+A minimal `weight_handoff_map.json` (illustrative — one non-quantized entry, `external_initializer` mode):
+
+```json
+{
+  "schemaVersion": "1.0",
+  "minReaderVersion": "1.0",
+  "handoffMode": "external_initializer",
+  "entries": [
+    {
+      "trainingBaseLayerName": "backbone.model.layers.0.self_attn.q_proj.base_layer",
+      "mergedTensorNames": {"weight": "model.layers.0.attn.q_proj.MatMul.weight"},
+      "inferenceInitializerNames": {"weight": "model.layers.0.attn.q_proj.MatMul.weight"},
+      "dtype": "float16",
+      "shape": [4096, 4096]
+    }
+  ]
+}
+```
+
+Under `external_initializer`, `mergedTensorNames["weight"] == inferenceInitializerNames["weight"]` (the validated invariant), so the merge writer stamps exactly the name the inference graph consumes.
+
+## Tests & acceptance
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- `pytest tests/unit/test_tensor_codec.py`: round-trip `TensorSpec`/`HandoffEntry` through `to_dict`/`from_dict`; assert byte-identical JSON across runs (deterministic order); assert dtype/shape/role/transpose preserved.
+- `pytest tests/unit/test_handoff_map.py`:
   - `validate()` rejects an entry where `mergedTensorNames != inferenceInitializerNames` under `external_initializer`.
   - `validate()` rejects a quantized entry whose `scaleName` is derived from `base_layer_name` instead of the observed inference initializer (the documented bug fixture).
   - `validate()` rejects duplicate `externalDataLocation` / duplicate inference names.
-  - `model_input` mode requires non-empty `genaiInputNames`.
+  - `model_input`/`adapter` modes fail closed in v1 (F7); `model_input` additionally requires non-empty `genaiInputNames`.
+  - `check_compat()` rejects a `schemaVersion` major beyond support or an unmet `minReaderVersion` (F1).
   - `from_peft_mapping` raises when canonical-derived name disagrees with observed inference init (drift detection).
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
 - **C++ smoke:** generate a tiny 2-layer fixture map; run `save_merged_parameters` map-driven, then `WeightSessionCache::init` map-driven; assert every `inferenceInitializerNames[weight]` loads and the loader does not fall back to filesystem reconstruction.
 - **Cross-language golden:** a checked-in `weight_handoff_map.json` fixture parsed by both the Python `HandoffMap.from_dict` and the C++ loader; assert identical entry count, names, and dtypes.
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- On a device, run an end-to-end merge (`ORTTrainerNative.mergeExportWeights` with the handoff-map path) and load the resulting `inference/` package; confirm generation works with map-driven external-initializer loading (no filesystem-reconstruction fallback). Full lifecycle owned by #18.
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- `weight_handoff_map.json` (schemaVersion `"1.0"`, `external_initializer`) is the single source of truth that replaces `weight_merger.cpp:904`; emitted by the Python builder next to `training_config.json` and validated (`HandoffMap.validate`, fail closed) during export.
+- The quantized-name invariant holds: `weight_quantized`/`scale`/`zero_point` names come from the observed inference-graph initializers, never from `base_layer_name`; the documented scale-naming bug is resolved.
+- C++ save (`save_merged_parameters`) and load (`WeightSessionCache::init`) are map-driven; `inference_name` (`weight_merger.cpp:904`) remains only as a loud-deprecation fallback when no map is present.
+- `HandoffMode` enumerates `external_initializer`/`model_input`/`adapter`, with `model_input`/`adapter` as fail-closed stubs in v1 (F7).

@@ -1,6 +1,6 @@
 # Charging-Cycle Training Scheduler (WorkManager)
 
-**Priority #33 | Prerequisites: #17 (`00_code_plans/08_training_lifecycle_and_checkpoint_contracts.md`), #16 (`00_code_plans/05_android_facade_foundation.md`) | Blocks: #35 (`04_code_plans/04`, federated round scheduling)**
+**Priority #34 | Prerequisites: #18 (`00_code_plans/08_training_lifecycle_and_checkpoint_contracts.md`), #17 (`00_code_plans/05_android_facade_foundation.md`) | Blocks: #36 (`04_code_plans/04`, federated round scheduling)**
 
 > Tier-3 systems capability, not a new ML algorithm. The contribution is robust on-device execution under mobile constraints with measured energy/thermal traces. Must not block v1.0.
 
@@ -55,23 +55,80 @@ Foreground service with a mandatory persistent notification (Android 14+ require
 1. Add `TrainingScheduleConfig` + map `checkpointEverySteps → ORTTrainingConfig.saveSteps`. **Implement `ORTScheduler.stateDict()`/`loadFromState()` (`:156-161`) first** — without persisted LR-scheduler state, cross-chunk resume restarts the schedule. The chunk's `saveTrainingState()` must include the scheduler `stateDict()` and `loadFromState(...)` must restore it.
 2. `TrainingWorker` (foreground `CoroutineWorker`): notification with progress + cancel action; bounded chunk; always checkpoint on exit (success/stop/cancel).
 3. `TrainingScheduler`: build `Constraints` (charging/idle/battery); enqueue unique work; chain next chunk; expose lifecycle callbacks.
-4. Single model/session lock shared with foreground operations (the session lock from #17).
+4. Single model/session lock shared with foreground operations (the session lock from #18).
 5. Separate network from training: model/package download uses network constraints; training runs from local files only.
 6. Decide + declare Android 14+ foreground service type + manifest permissions in the **library**, not by accident in the sample app.
 7. Log thermal/battery/energy per chunk in the `docs/mobile_evaluation.md` style.
 
 ## Interactions
 
-- **#17 (lifecycle/checkpoint contracts)**: `TrainingJob`, progress events, checkpoint metadata, cooperative cancellation, session lock come from there.
+- **#18 (lifecycle/checkpoint contracts)**: `TrainingJob`, progress events, checkpoint metadata, cooperative cancellation, session lock come from there.
 - **`TrainingRepository`/`ORTTrainerNative`**: reused for local work; resume via existing state files.
-- **#35 (federated Android)**: reuses this scheduler for round scheduling.
+- **#36 (federated Android)**: reuses this scheduler for round scheduling.
 
-## Tests & smokes
+## References
 
-- JVM config-mapping test (`checkpointEverySteps → saveSteps`).
-- Android instrumentation: worker creation + foreground notification shown.
+- Long-running foreground workers (`setForeground`): https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/long-running
+- Defining constraints (`Constraints.Builder`): https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work
+- `CoroutineWorker` reference: https://developer.android.com/reference/androidx/work/CoroutineWorker
+- `dataSync` FGS type (API 34+): https://developer.android.com/develop/background-work/services/fgs/service-types
+- FGS 6h/24h time cap (API 35+): https://developer.android.com/develop/background-work/services/fgs/timeout
+- Thermal-status listener API: https://developer.android.com/reference/android/os/PowerManager.OnThermalStatusChangedListener
+
+## Worked example
+
+A charging-constrained, foreground, self-chaining chunk worker that checkpoints and pauses on thermal pressure:
+
+```kotlin
+// TrainingScheduler.kt — constraints (only run when charging + battery OK)
+val constraints = Constraints.Builder()
+    .setRequiresCharging(true)
+    .setRequiresBatteryNotLow(true)
+    .build()
+WorkManager.getInstance(ctx).enqueueUniqueWork(
+    "mt_training", ExistingWorkPolicy.KEEP,
+    OneTimeWorkRequestBuilder<TrainingWorker>().setConstraints(constraints).build(),
+)
+```
+
+```kotlin
+// TrainingWorker.kt — one bounded chunk, foreground dataSync, checkpoint, chain next
+class TrainingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+    override suspend fun doWork(): Result {
+        setForeground(getForegroundInfo())   // FOREGROUND_SERVICE_TYPE_DATA_SYNC (API 34+)
+        val pm = applicationContext.getSystemService(PowerManager::class.java)
+        if (pm.currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE) {
+            return Result.retry()             // pause; WorkManager re-runs when cooler
+        }
+        scheduler.loadFromState("training_state.json")        // resume globalStep + LR schedule
+        repository.performTraining(maxSteps = config.maxStepsPerChunk)   // bounded chunk
+        scheduler.saveTrainingState()                          // always checkpoint before exit
+        return if (stepsRemain()) { enqueueNextChunk(); Result.success() } else Result.success()
+    }
+
+    override suspend fun getForegroundInfo() = ForegroundInfo(
+        NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+    )
+}
+```
+
+## Tests & acceptance
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- JVM config-mapping test (`TrainingScheduleConfigTest.kt`): `checkpointEverySteps → ORTTrainingConfig.saveSteps`; `maxRuntimeMinutes`/`requiresCharging`/`requiresBatteryNotLow` map onto the `Constraints` builder.
+- **Scheduler-state resume test** (`ORTSchedulerTest.kt`): serialize `ORTScheduler.stateDict()` (step, base/last LR, warmup/decay progress), restore via `ORTScheduler.loadFromState`, and assert the next LR equals the uninterrupted-run LR at the same step (no schedule restart). This is the pure-JVM proof that the `:156-161` `TODO` is closed.
+- Session-lock unit test (`SessionLockTest.kt`): the scheduled worker's lock acquisition is mutually exclusive with a foreground train/merge/generate holder.
+- Plus the module **compiles** (`./gradlew :MobileTransformers:compileDebugKotlin`).
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- `globalStep` resume parse test: feed a fixture `training_state.json`, call `loadFromState`, assert the restored `globalStep`/`epoch` equal the fixture values (no device needed).
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- Android instrumentation: worker creation + foreground `dataSync` notification shown.
 - Constraint/Doze behavior: unplugged-idle defers; charging resumes; cancel checkpoints cleanly.
-- Resume test: interrupt after a checkpoint, restart, confirm `globalStep` advances from `training_state.json`.
-- **Scheduler-state resume test**: interrupt mid-schedule, restore via `ORTScheduler.loadFromState`, assert the next LR equals the uninterrupted-run LR at the same step (no schedule restart).
-- Session-lock test: scheduled worker cannot race foreground train/merge/generate.
-- Energy/thermal metrics export for a short scheduled run.
+- Full resume test: interrupt after a checkpoint, restart, confirm `globalStep` advances from `training_state.json` and the LR continues uninterrupted.
+- Energy/thermal metrics export for a short scheduled run (`docs/mobile_evaluation.md` style).
+
+**Workflow (end-to-end)** — *(CHECKPOINT #34, device/manual)* schedule a charging-constrained job that runs multiple bounded chunks, checkpoints, survives Doze, and resumes the LR schedule correctly: enqueue with `setRequiresCharging(true).setRequiresBatteryNotLow(true)`, let WorkManager run chunk 1 as a `dataSync` foreground worker, unplug to force Doze (assert pending chunks defer), re-plug to resume, and assert across the chunk boundary that `globalStep` advanced and the resumed LR matches the uninterrupted-run LR at the same step. Capture thermal + energy traces per chunk.
+
+**Definition of done** — `ORTScheduler.stateDict()`/`loadFromState()` are implemented (the LR schedule survives a chunk boundary); a charging/idle/battery-constrained `WorkManager` job runs bounded chunks as a `dataSync` foreground service with a persistent notification, checkpoints on every exit (success/stop/cancel), chains the next chunk, and pauses on `THERMAL_STATUS_SEVERE`; resume advances `globalStep` from `training_state.json` without restarting the LR schedule; the scheduled worker cannot race foreground operations (shared session lock from #18); and a short scheduled run exports thermal/energy traces.

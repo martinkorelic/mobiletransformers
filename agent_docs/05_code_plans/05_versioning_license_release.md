@@ -1,6 +1,6 @@
 # Versioning, License & v1.0 Release
 
-**Priority #31 | Prerequisites: #28 (`05_code_plans/02`, CI), #29 (`05_code_plans/03`, AAR), #30 (`05_code_plans/04`, docs) | Blocks: — (terminal release gate)**
+**Priority #32 | Prerequisites: #29 (`05_code_plans/02`, CI), #30 (`05_code_plans/03`, AAR), #31 (`05_code_plans/04`, docs) | Blocks: — (terminal release gate)**
 
 ## Purpose
 
@@ -11,8 +11,8 @@ Turn the work into a tagged, citable, adoptable `v1.0.0`: adopt SemVer, resolve 
 - `LICENSE.md` — currently CC-BY-NC-4.0; relicense code to Apache-2.0 (keep model weights/data under upstream licenses).
 - Source headers — add SPDX identifiers (`SPDX-License-Identifier: Apache-2.0`) to code; keep docs/data licensing separate and explicit.
 - `CITATION.cff` — currently `version: 1.0.0`, `date-released: 2025-10-18`; reconcile so the declared version/date match the actual tagged release.
-- NEW `CHANGELOG.md` (skeleton from #30) — fill v1.0.0 notes + limitations.
-- NEW `docs/RELEASE_CHECKLIST.md` (skeleton from #30) — the gate list below.
+- NEW `CHANGELOG.md` (skeleton from #31) — fill v1.0.0 notes + limitations.
+- NEW `docs/RELEASE_CHECKLIST.md` (skeleton from #31) — the gate list below.
 - `.gitignore` — decide whether to **un-ignore `agent_docs/`** so the plan ships with the release (currently ignored).
 - Git — first annotated tag `v1.0.0`.
 
@@ -24,7 +24,7 @@ Turn the work into a tagged, citable, adoptable `v1.0.0`: adopt SemVer, resolve 
 - `1.0.0`: first stable **public API + model-package format + CLI** release (these become the SemVer-governed compatibility surfaces — see the reimplementation-avoidance gates in `05_cross_cutting_release_modernization.md`).
 - Patch: bug/doc fixes. Minor: new model families, PEFT modes, optional engines.
 
-SemVer requires a declared public API before 1.0.0 — `PUBLIC_API.md` (#30), the manifest schema (#12/#8), Maven coordinates (#29), and CLI names (#14/#27) are that declaration.
+SemVer requires a declared public API before 1.0.0. Per **F5**, that declaration is the union of: the Python `mobiletransformers.__all__` importable surface (owned by `00_code_plans/10`), the Kotlin facade (#19), the manifest schema (#13/#9), the Maven coordinates (#30), and the CLI names (#15/#28) — documented together in `PUBLIC_API.md` (#31). A break in any of these is a major bump.
 
 ### Release checklist (`docs/RELEASE_CHECKLIST.md`)
 
@@ -52,14 +52,51 @@ SemVer requires a declared public API before 1.0.0 — `PUBLIC_API.md` (#30), th
 
 ## Interactions
 
-- **#28 / #29 / #30**: their green/complete state are checklist gates.
-- **#12 / #14 / #18 / #29**: define the SemVer-governed public surfaces.
+- **#29 / #30 / #31**: their green/complete state are checklist gates.
+- **#13 / #15 / #19 / #30**: define the SemVer-governed public surfaces.
 - **`IMPLEMENTATION_ORDER.md` canonical decision**: Apache-2.0 is already the stated target license; this plan executes it.
 
-## Tests & smokes
+## Worked example
 
+SPDX header on each source file:
+
+```python
+# SPDX-License-Identifier: Apache-2.0
+```
+
+`CHANGELOG.md` v1.0.0 skeleton:
+
+```markdown
+## [1.0.0] - 2026-06-25
+
+### Added
+- First stable public API, model-package format, and CLI.
+
+### Non-goals
+- GPU/NPU training (on-device CPU/XNNPACK training only).
+- Multimodal training.
+```
+
+`CITATION.cff` reconcile — the declared version/date must equal the annotated tag:
+
+```yaml
+version: 1.0.0          # == git tag v1.0.0
+date-released: 2026-06-25   # == tag date
+```
+
+## Tests & acceptance
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
 - License + SPDX present on a sample of source files; `LICENSE.md` is Apache-2.0.
-- `CITATION.cff` parses; version/date == tag.
-- Release commit has green CI and a published AAR consumable by the example app.
+- `CITATION.cff` parses; `version`/`date-released` == the tag (assert programmatically).
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
 - `git describe --tags` returns `v1.0.0` after tagging.
-- Checklist fully ticked before the tag is pushed.
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- Run the full `docs/RELEASE_CHECKLIST.md` and confirm every item is ticked before the tag is pushed (license/relicense sign-off is a values decision flagged to all rights holders).
+
+**Workflow (end-to-end)** — *checkpoint #32.*
+- The full release gate, end-to-end: CI green (fast + export-smoke + android-build, #29) **+** AAR publishes to mavenLocal (#30) **+** consumer-app smoke passes **+** docs link-check green (#31) **+** annotated `v1.0.0` tag created.
+
+**Definition of done** — `LICENSE.md` is Apache-2.0 with SPDX headers applied, `CITATION.cff` version/date reconcile to the tag, `CHANGELOG.md` carries v1.0.0 notes + the non-goals (GPU/NPU training, multimodal), the release checklist is fully ticked, and the annotated `v1.0.0` tag is pushed on a commit that passes the full release gate.

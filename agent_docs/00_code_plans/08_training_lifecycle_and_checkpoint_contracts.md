@@ -1,12 +1,12 @@
 # Training Lifecycle & Checkpoint Contracts
 
-**Priority (global #):** 17  |  **Prerequisites:** `00_code_plans/05_android_facade_foundation.md` (#16)  |  **Blocks:** `02_code_plans/01_hf_style_kotlin_facade.md` (#18)
+**Priority (global #):** 18  |  **Prerequisites:** `00_code_plans/05_android_facade_foundation.md` (#17)  |  **Blocks:** `02_code_plans/01_hf_style_kotlin_facade.md` (#19)
 
 ---
 
 ## Purpose
 
-`ORTTrainerNative` (`ORTTrainerNative.kt:19`) already implements a full on-device training loop, checkpoint/resume, end-of-training merge, and a rich callback stream. `LLMRepository` wraps it loosely with coroutine `Job`s and an `LLMState` enum (`LLMRepository.kt:30-38`, `runTraining`/`saveTraining` at `:467/:484`). What is missing is a **stable, public, lifecycle-shaped API** the facade (#16/#18) can expose without leaking ORT internals or the native handle, plus an explicit **checkpoint/resume contract** that surfaces the existing `training_state.json` metadata **without changing its native format**, and a structured **metrics/event stream**. This plan adds a `TrainingJob` abstraction and the contracts; it deliberately stops short of WorkManager scheduling (it only lays the foundation).
+`ORTTrainerNative` (`ORTTrainerNative.kt:19`) already implements a full on-device training loop, checkpoint/resume, end-of-training merge, and a rich callback stream. `LLMRepository` wraps it loosely with coroutine `Job`s and an `LLMState` enum (`LLMRepository.kt:30-38`, `runTraining`/`saveTraining` at `:467/:484`). What is missing is a **stable, public, lifecycle-shaped API** the facade (#17/#19) can expose without leaking ORT internals or the native handle, plus an explicit **checkpoint/resume contract** that surfaces the existing `training_state.json` metadata **without changing its native format**, and a structured **metrics/event stream**. This plan adds a `TrainingJob` abstraction and the contracts; it deliberately stops short of WorkManager scheduling (it only lays the foundation).
 
 Existing facts to wrap (do not reimplement):
 - **Loop & callbacks:** `startTraining(callback: TrainingCallback?)` (`ORTTrainerNative.kt:171`) drives epochs/steps and fires `TrainingCallback` (`LLMRepository.kt:49-65`): `onDataLoadEnd(totalSteps, stepsPerEpoch)`, `onStepEnd`, `onOptimizerStep`, `onEpochEnd`, `onMergeStart/End`, `onSaveModelStart/End`, `onCompletion`, `onError`.
@@ -109,25 +109,37 @@ class TrainingJob internal constructor(repo: LLMRepository, repoId: String) {
 3. **Cooperative cancel.** Add an `@Volatile var cancelRequested` in `ORTTrainerNative`, checked at the top of the step `for` loop (`ORTTrainerNative.kt:241`) and the epoch `while` (`:217`). On set, break out cleanly so the existing `saveModel`+`saveTrainingState` path (`:314-317`) can run if `saveCheckpoint`, then `destroySession(saveCheckpoint)`. `TrainingJob.cancel(saveCheckpoint)` sets the flag and joins the `Job`; emits `Cancelled(checkpoint())`.
 4. **Checkpoint projection.** `CheckpointInfo` reads `train/training_state.json` with Gson into the existing `TrainingState` (`ORTTrainerNative.kt:13`) and projects fields — **no new fields, no rename**. `checkpointDirPath` = `ORTTrainerNative.checkpointPath` (`:29`). `canResume` = state file exists AND `trainingConfig.loadFromState` would load it (`:81`).
 5. **Resume.** Resume is already native: set `trainingConfig.loadFromState = true`; `ORTTrainerNative.init` loads state (`:82`), `startTraining` restores scheduler + `globalStep`/`epoch` and skips already-done batches (`:196-209`, mid-epoch skip at `:249-253`). `TrainingJob.start` on a job with `canResume` simply starts with `loadFromState=true`; the lifecycle reports resumed `currentStep` via the first `DataLoaded`/`Step` events.
-6. **Final status & merge.** Merge at end is governed by `trainingConfig.mergeWeightsAtEnd` → `mergeExportSessionWeights()` (`ORTTrainerNative.kt:369-387`), which writes per-tensor external initializers into `inference/` per the handoff map (#7/#8). `TrainingResult.merged` reflects whether this ran.
+6. **Final status & merge.** Merge at end is governed by `trainingConfig.mergeWeightsAtEnd` → `mergeExportSessionWeights()` (`ORTTrainerNative.kt:369-387`), which writes per-tensor external initializers into `inference/` per the handoff map (#8/#9). `TrainingResult.merged` reflects whether this ran.
 7. **Manager + WorkManager seam.** `TrainingJobManager.getOrCreate(repoId)` owns one `TrainingJob` per package. Expose a `TrainingJobSpec` (repoId + `ORTTrainingConfig` snapshot) that a future WorkManager `Worker` can reconstruct — **define the spec, do not add the WorkManager dependency or Worker here.**
 
 ---
 
 ## Interactions
 
-- **#16 facade foundation:** `TrainingJob`/`TrainingStatus`/`TrainingEvent` are the public training surface the SDK facade exposes; the facade hides `LLMRepository`/`ORTTrainerNative`/native handle.
-- **#18 HF-style facade:** `MobileTransformers.train(...)` returns a `TrainingJob`; `merge`/`generate` consume the merged `inference/` output.
-- **#7/#8 handoff + merger:** end-of-training merge produces the inference external initializers; this plan reports merge progress but owns no merge logic.
-- **#12 cache bridge:** training reads/writes within `<cacheDir>/<sanitizedRepoId>/train/`; merge output lands in `inference/` so the same package is immediately inferenceable.
+- **#17 facade foundation:** `TrainingJob`/`TrainingStatus`/`TrainingEvent` are the public training surface the SDK facade exposes; the facade hides `LLMRepository`/`ORTTrainerNative`/native handle.
+- **#19 HF-style facade:** `MobileTransformers.train(...)` returns a `TrainingJob`; `merge`/`generate` consume the merged `inference/` output.
+- **#8/#9 handoff + merger:** end-of-training merge produces the inference external initializers; this plan reports merge progress but owns no merge logic.
+- **#13 cache bridge:** training reads/writes within `<cacheDir>/<sanitizedRepoId>/train/`; merge output lands in `inference/` so the same package is immediately inferenceable.
 
 ---
 
-## Tests & smokes
+## Tests & acceptance
 
-- **Status mapping (unit, fake `TrainingCallback`):** drive the adapter with a scripted callback sequence (dataLoad→steps→optimizer→epoch→merge→save→completion) and assert the `status` transitions and `events` order exactly.
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- **Status mapping (fake `TrainingCallback`):** drive the adapter with a scripted callback sequence (dataLoad→steps→optimizer→epoch→merge→save→completion) and assert the `status` transitions and `events` order exactly.
 - **Cancel:** start a fake long loop, call `cancel(saveCheckpoint=true)`; assert the loop breaks, `saveTrainingState` was invoked, `Cancelled(checkpoint)` emitted, and `checkpoint().currentGlobalStep` reflects the persisted step. Repeat `saveCheckpoint=false` → no state write.
+- Module compiles: `./gradlew :MobileTransformers:compileDebugKotlin`.
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
 - **Checkpoint round-trip:** write a `training_state.json` fixture with known `currentGlobalStep=120, currentEpoch=2, schedulerState.currentStep=120`; assert `CheckpointInfo` projects them and `canResume==true`; assert the on-disk JSON is **unchanged** after reading (format preserved).
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
 - **Resume:** train N steps with `saveSteps` small so a checkpoint lands; restart with `loadFromState=true`; assert first emitted `Step.currentStep` ≥ saved step and no double-counting (mid-epoch skip honored).
 - **Result/summary:** with `profileMetrics=true`, assert `TrainingResult.summary` is populated from `training_logs.json` and `Metric` events carry `memoryUsageMB`.
 - **Instrumentation smoke:** tiny dataset + tiny LoRA package; run `TrainingJob.start` to completion with `mergeWeightsAtEnd=true`; assert `inference/` gains per-tensor `.bin` files and `Completed.merged==true`, then a generation step succeeds via `LLMRepository`.
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- A public, lifecycle-shaped training surface exists (`TrainingJob` + `TrainingStatus` + `TrainingEvent` + `CheckpointInfo`) that the facade can expose without leaking `ORTTrainerNative`/the native handle.
+- The status/event stream maps the existing `TrainingCallback` one-to-one; cooperative `cancel(saveCheckpoint)` breaks the loop cleanly and persists via the existing `saveModel`+`saveTrainingState` path.
+- `CheckpointInfo` is a read-only projection of `training_state.json` with **no format change**; `canResume` reflects state-file presence + `loadFromState`; resume reuses the native restore path with no double-counting.
+- `TrainingJobManager` owns one `TrainingJob` per `sanitizedRepoId` and exposes a `TrainingJobSpec` seam for future WorkManager scheduling (no WorkManager dependency added here).

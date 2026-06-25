@@ -1,6 +1,6 @@
 # Manifest-First Package Model & Cache-Install Bridge
 
-**Priority (global #):** 12  |  **Prerequisites:** `00_code_plans/07_weight_handoff_map_and_tensor_codec.md` (#7), `01_code_plans/01_unified_merger_and_external_data_export.md` (#8)  |  **Blocks:** `02_code_plans/03_hub_model_package_format.md` (#13), `02_code_plans/05_one_command_export_cli.md` (#14), `00_code_plans/05_android_facade_foundation.md` (#16), `02_code_plans/04_hub_pull_and_cache_flow.md` (#20)
+**Priority (global #):** 13  |  **Prerequisites:** `00_code_plans/07_weight_handoff_map_and_tensor_codec.md` (#8), `01_code_plans/01_unified_merger_and_external_data_export.md` (#9)  |  **Blocks:** `02_code_plans/03_hub_model_package_format.md` (#14), `02_code_plans/05_one_command_export_cli.md` (#15), `00_code_plans/05_android_facade_foundation.md` (#17), `02_code_plans/04_hub_pull_and_cache_flow.md` (#21)
 
 ---
 
@@ -49,7 +49,7 @@ Canonical cache/package layout (both inference engines read the **same** folder)
 - `LLMRepository.kt` — **no behavioral change required**. Optional: a secondary ctor / companion that, given a `sanitizedRepoId`, sets `modelName` (uses existing `modelName` setter validation, `LLMRepository.kt:83-92`). Do not move the filesystem probing.
 
 **Python (export toolkit, new — shared schema source of truth):**
-- `src/mobiletransformers/artifacts/manifest.py` — `MobileTransformersManifest` dataclass + emitter + validator (imports handoff dataclasses from #7's `handoff_map.py`).
+- `src/mobiletransformers/artifacts/manifest.py` — `MobileTransformersManifest` dataclass + emitter + validator (imports handoff dataclasses from #8's `handoff_map.py`).
 - `tests/unit/test_manifest.py`.
 
 ---
@@ -60,14 +60,15 @@ Builds on the field sketch in `02_tier1_hf_integrated_core.md:281-356`. Required
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `schemaVersion` | int | Validator rejects unknown majors. |
+| `schemaVersion` | string | `"MAJOR.MINOR"` (e.g. `"1.0"`). See the schema-versioning contract below. |
+| `minReaderVersion` | string | Lowest SDK that can read this manifest; readers below it fail closed. |
 | `baseModelId` | string | HF repo id of the base model. |
 | `variants` | list\<Variant\> | See below. |
 | `defaultVariant` | string | Must be a `variants[].id`. |
 | `downloadPlan` | object | `{ "groups": { "core": [...], "inference": [...], "train": [...], "rag": [...], "genai": [...], "checksums": [...] } }` (glob list per feature; `02_tier1...:312-325`). |
 | `requiredFiles` | list\<string\> | Relative paths that MUST exist post-install for the package to be valid. |
 | `sha256` | map\<path,hex\> | Per-file digest; mirrored into `checksums.json`. |
-| `weightHandoff` | object | Pointer `{ "path": "variants/<id>/inference/weight_handoff_map.json", "handoffMode": "external_initializer" }`. Map schema **owned by #7**, not redefined here. |
+| `weightHandoff` | object | Pointer `{ "path": "variants/<id>/inference/weight_handoff_map.json", "handoffMode": "external_initializer" }`. Map schema **owned by #8**, not redefined here. |
 | `androidRuntime` | object | `{ "minimumAndroidApi": int, "abis": ["arm64-v8a", ...], "recommendedDeviceMemoryMb": int }`. |
 | `onnxRuntimeTrainingVersion` | string | Train wheel provenance. |
 | `onnxRuntimeGenAIVersion` | string? | Present iff a GenAI variant exists. |
@@ -91,12 +92,16 @@ Builds on the field sketch in `02_tier1_hf_integrated_core.md:281-356`. Required
 
 `checksums.json`: `{ "<relativePath>": "<sha256hex>", ... }` over every `requiredFile` of the selected variant + core.
 
+### Schema versioning (F1)
+
+The manifest carries `schemaVersion` (`"MAJOR.MINOR"`) and `minReaderVersion`. Readers **preserve unknown fields** — an additive minor bump (new optional field) is non-breaking and parses fine on an older reader. A reader fails closed with a "needs newer SDK" message only when the manifest's `major` exceeds what it supports **or** its own version is below `minReaderVersion`. One `check_compat()` helper encodes this rule and is mirrored Python↔Kotlin (`ManifestValidator.check_compat` on the Android side, the same logic in `manifest.py`), so both ends agree on accept/reject. The handoff map (`#8`) and generated config schemas (`#6`) follow the same `{"schemaVersion":"1.2","minReaderVersion":"1.0", …}` field block.
+
 ---
 
 ## Implementation steps
 
 ### Selection & validation (no download yet)
-1. `MobileTransformersManifest.parse(json)` (Gson) → typed object; `ManifestValidator.validate` checks `schemaVersion` major, `defaultVariant ∈ variants`, every `weightHandoff.path` resolvable, and that each variant's `paths` cover the features it claims.
+1. `MobileTransformersManifest.parse(json)` (Gson) → typed object (preserving unknown fields); `ManifestValidator.validate` runs `check_compat` (`schemaVersion` major + `minReaderVersion`, F1), then `defaultVariant ∈ variants`, every `weightHandoff.path` resolvable, and that each variant's `paths` cover the features it claims.
 2. `VariantSelector.select(manifest, deviceCaps, requestedFeatures, requestedEngine)`:
    - Filter variants whose `abi` intersects `Build.SUPPORTED_ABIS`.
    - Filter by `quantization` acceptable + `minMemoryMb <= ActivityManager.MemoryInfo.totalMem` (the trainer already reads memory via `ActivityManager`, `ORTTrainerNative.kt:3/496`).
@@ -104,11 +109,11 @@ Builds on the field sketch in `02_tier1_hf_integrated_core.md:281-356`. Required
    - Tie-break: smallest `minMemoryMb`, then `defaultVariant`. Return a `SelectedVariant` or a typed `NoCompatibleVariant` error (fail closed).
 
 ### Download plan → staging
-3. From `SelectedVariant`, compute the file set = `downloadPlan.groups.core` + groups for each requested feature + `checksums`. (The actual network fetch is #20; this plan defines the plan + the install bridge and works against an already-staged dir for testing.)
+3. From `SelectedVariant`, compute the file set = `downloadPlan.groups.core` + groups for each requested feature + `checksums`. (The actual network fetch is #21; this plan defines the plan + the install bridge and works against an already-staged dir for testing.)
 4. Download/copy into a staging dir `<cacheDir>/.staging/<sanitizedRepoId>/` (sibling of the final dir so rename is same-filesystem and atomic).
 
 ### Verify
-5. `ChecksumVerifier.verify(stagingDir, manifest.sha256 ∩ selectedVariant files)` — SHA-256 each `requiredFile`; abort + delete staging on any mismatch. Verify the handoff map's own checksum (it gates correctness per #7).
+5. `ChecksumVerifier.verify(stagingDir, manifest.sha256 ∩ selectedVariant files)` — SHA-256 each `requiredFile`; abort + delete staging on any mismatch. Verify the handoff map's own checksum (it gates correctness per #8).
 
 ### Materialize into cache shape (the bridge)
 6. `ModelPackageInstaller.install`: map variant `paths` → conventional layout:
@@ -126,25 +131,76 @@ Builds on the field sketch in `02_tier1_hf_integrated_core.md:281-356`. Required
 ## Interactions
 
 - **`LLMRepository` (unchanged):** consumes the materialized convention layout; `modelName` setter validates against `availableModels` (`LLMRepository.kt:83-101`).
-- **#7 handoff map:** installer places `weight_handoff_map.json` in `inference/`; verifier checksums it; both engines read it from there.
-- **#8 merger/external-data:** the per-tensor `*.bin` + `frozen_base.onnx.data` layout the installer lands is produced by #8 and described by #7.
-- **#13 hub package format:** defines the HF-repo on-disk layout (`variants/`, `shared/`, `default/`) the manifest's `paths`/`downloadPlan` reference.
-- **#14 export CLI / #20 hub pull:** the CLI emits `mobiletransformers_manifest.json` + `checksums.json`; the Android downloader fetches manifest-first, then the selected variant only, then calls this installer.
-- **#16 facade:** `MobileTransformers.fromPretrained` orchestrates select→download→verify→install→hand to `LLMRepository`.
+- **#8 handoff map:** installer places `weight_handoff_map.json` in `inference/`; verifier checksums it; both engines read it from there.
+- **#9 merger/external-data:** the per-tensor `*.bin` + `frozen_base.onnx.data` layout the installer lands is produced by #9 and described by #8.
+- **#14 hub package format:** defines the HF-repo on-disk layout (`variants/`, `shared/`, `default/`) the manifest's `paths`/`downloadPlan` reference.
+- **#15 export CLI / #21 hub pull:** the CLI emits `mobiletransformers_manifest.json` + `checksums.json`; the Android downloader fetches manifest-first, then the selected variant only, then calls this installer.
+- **#17 facade:** `MobileTransformers.fromPretrained` orchestrates select→download→verify→install→hand to `LLMRepository`.
 
 ---
 
-## Tests & smokes
+## Worked example
 
-**Python (`test_manifest.py`):**
-- Round-trip manifest dataclass ↔ JSON; deterministic key order for checksumming.
-- Validator rejects: missing `defaultVariant`, `defaultVariant` not in variants, unresolvable `weightHandoff.path`, variant claiming a feature with no `paths` entry, unknown `schemaVersion` major.
+A minimal `mobiletransformers_manifest.json` (illustrative — one variant, one feature group):
 
-**Android (unit / Robolectric):**
-- `ManifestValidator`: missing required file, version mismatch (`onnxRuntimeTrainingVersion`), bad schema.
-- `VariantSelector`: ABI filter (no arm64 variant on an arm64-only device → `NoCompatibleVariant`); memory filter (variant `minMemoryMb` > device); feature filter (request `rag` but variant lacks it); engine filter (request `genai`, only `native` available); tie-break to `defaultVariant`.
-- `ChecksumVerifier`: corrupt one staged byte → verify fails, staging deleted.
-- `ModelPackageInstaller`: from a tiny fixture package, install and assert the four `updatePaths()` probe files exist at the conventional paths; assert `LLMRepository(cacheDir).availableModels` contains the `sanitizedRepoId` and `isGenerationAvailable`/`isTrainingAvailable`/`isRagAvailable` flip true.
-- Atomicity: kill install mid-copy (throw before rename) → no partial dir under `cacheDir`, only `.staging` residue which a retry cleans.
+```json
+{
+  "schemaVersion": "1.0",
+  "minReaderVersion": "1.0",
+  "baseModelId": "google/gemma-2-2b",
+  "defaultVariant": "cpu-int4",
+  "variants": [
+    {
+      "id": "cpu-int4",
+      "abi": ["arm64-v8a"],
+      "quantization": "int4",
+      "minMemoryMb": 2048,
+      "features": ["inference"],
+      "engines": ["native"],
+      "paths": { "inference": "variants/cpu-int4/inference", "tokenizer": "shared/tokenizer" }
+    }
+  ],
+  "downloadPlan": {
+    "groups": {
+      "inference": [
+        "variants/cpu-int4/inference/model.onnx",
+        "variants/cpu-int4/inference/generation_config.json",
+        "variants/cpu-int4/inference/frozen_base.onnx.data",
+        "variants/cpu-int4/inference/weight_handoff_map.json"
+      ]
+    }
+  },
+  "sha256": {
+    "variants/cpu-int4/inference/model.onnx": "9f2b…c1",
+    "variants/cpu-int4/inference/weight_handoff_map.json": "4ad0…7e"
+  },
+  "weightHandoff": {
+    "path": "variants/cpu-int4/inference/weight_handoff_map.json",
+    "handoffMode": "external_initializer"
+  }
+}
+```
 
-**Smoke:** export a tiny model via #14, point a local fixture server (or `file://`) at it, run select→verify→install, then load through `LLMRepository` + run one generation step.
+After install, `variants/cpu-int4/inference/**` lands at `<cacheDir>/<sanitizedRepoId>/inference/**` and `shared/tokenizer/**` at `…/tokenizer/**`, so `LLMRepository.updatePaths()` discovers the model with no change.
+
+## Tests & acceptance
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- Python `test_manifest.py`: round-trip manifest dataclass ↔ JSON with deterministic key order for checksumming; validator rejects missing `defaultVariant`, `defaultVariant` not in variants, unresolvable `weightHandoff.path`, a variant claiming a feature with no `paths` entry, and a `schemaVersion` major beyond support / `minReaderVersion` unmet (`check_compat`, F1).
+- Android JVM/Robolectric `ManifestValidator`: missing required file, version mismatch (`onnxRuntimeTrainingVersion`), bad schema.
+- Android `VariantSelector`: ABI filter (no arm64 variant on an arm64-only device → `NoCompatibleVariant`); memory filter (`minMemoryMb` > device); feature filter (request `rag` but variant lacks it); engine filter (request `genai`, only `native` available); tie-break to `defaultVariant`.
+- Android `ChecksumVerifier`: corrupt one staged byte → verify fails, staging deleted.
+- Android atomicity: kill install mid-copy (throw before rename) → no partial dir under `cacheDir`, only `.staging` residue which a retry cleans.
+- Module compiles: `./gradlew :MobileTransformers:compileDebugKotlin`.
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- `ModelPackageInstaller` (Robolectric, no device): from a tiny fixture package, install and assert the four `updatePaths()` probe files exist at the conventional paths; assert `LLMRepository(cacheDir).availableModels` contains the `sanitizedRepoId` and `isGenerationAvailable`/`isTrainingAvailable`/`isRagAvailable` flip true for the features the variant claims.
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- Export a tiny model via #15, point a local fixture server (or `file://`) at it, run select→verify→install, then load through `LLMRepository` + run one generation step on a device/emulator.
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- `mobiletransformers_manifest.json` parses to a typed object on both sides (Python dataclass + Kotlin Gson), preserves unknown fields, and passes `check_compat` (F1).
+- `VariantSelector` returns a `SelectedVariant` or a fail-closed `NoCompatibleVariant`; `ChecksumVerifier` aborts + cleans staging on any mismatch.
+- `ModelPackageInstaller` materializes a package into the exact `<cacheDir>/<sanitizedRepoId>/{train,inference,embedding,tokenizer}` shape via atomic rename, so `LLMRepository` discovers it with **zero** behavioral change.
+- `CacheIndex.list()` enumerates installed packages (tolerating legacy dirs without a manifest).

@@ -186,10 +186,22 @@ Secrets (HF_TOKEN, Azure, Gemini) skip ranks 1/3/4 — they live only at rank 2 
 - **Plan 05 / 13 (export CLI)** consume `get_settings()` for HF auth and `config/config.yml` for `TRAIN_BUILDER`/`INFERENCE_BUILDER`/`ARTIFACT_BUILDER` defaults; they own the CLI-flag layer (rank 1).
 - Doc 00 Implementation Sequence steps 11–14 sequence this exactly: move `config.yml` (11), move secrets/constants (12), add compat wrappers (13), migrate `parser_config` consumers first (14).
 
-## Tests & smokes
+## Tests & acceptance
 
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
 - `tests/unit/test_settings_precedence.py`: assert CLI > env > YAML > default using the `resolve()` idiom; monkeypatch `os.environ` and a temp YAML.
 - `get_settings()` returns identical object across calls (lru_cache) and reads `HF_TOKEN` from a `.env` via `load_dotenv()`.
 - Import-compat: `from tools.parser_config import TRAIN_CONFIG, TASK_NAME_TO_DATASET` and `from config import TASK_EPOCHS, AZURE_API_VERSION` both still resolve (and emit `DeprecationWarning`).
-- CI guard grep over `src/` returns no direct secret env reads.
-- `load_config_from_file("config/config.yml")` returns a dict containing all four top-level sections.
+- CI guard grep over `src/` returns no direct secret env reads (`grep -rn "os.environ\[.\(HF_TOKEN\|HF_CACHE\|GEMINI_API_KEY\|AZURE_\)" src/` → empty).
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- `load_config_from_file("config/config.yml")` returns a dict containing all four top-level sections (`TRAIN_BUILDER`, `INFERENCE_BUILDER`, `ARTIFACT_BUILDER`, `ARTIFACT_VALIDATOR`).
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- None for this plan (config layering is pure Python; no device or heavy-export step).
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- The three layers exist: `config/config.yml` (copied verbatim, all four sections preserved), `config/settings.py` (`Settings` + `get_settings()`), `config/constants.py` (section names + lookup tables + experiment constants).
+- `get_settings()` is the only `os.environ` reader for secrets in `src/` (CI grep guard passes); business logic uses `get_settings().hf_token` / `.require_hf_token()`.
+- Root `config.py` and `tools/parser_config.py` are deprecation shims that keep existing imports resolving while emitting `DeprecationWarning`.
+- `utils/yaml.load_config_from_file` replaces the six duplicate local YAML loaders.

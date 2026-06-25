@@ -1,6 +1,6 @@
 # Source-Built ONNX Runtime Training Pipeline
 
-**Priority #3 | Prerequisites: #2 (`00_code_plans/03_dependency_profiles_and_ort_training_wheel.md`) | Blocks: every training-artifact path that imports `onnxruntime.training` (notably #8 via the merger, #17 training lifecycle); proves Gate 0.3**
+**Priority #3 | Prerequisites: #2 (`00_code_plans/03_dependency_profiles_and_ort_training_wheel.md`) | Blocks: every training-artifact path that imports `onnxruntime.training` (notably #9 via the merger, #18 training lifecycle); proves Gate 0.3**
 
 ## Purpose
 
@@ -52,15 +52,32 @@ This is **Priority #3 — the first gate after toolchain lock** — because it p
 ## Interactions
 
 - **#2 (dependency profiles)**: this plan implements the build + uv wiring that #2 specified; #2's "one onnxruntime provider per env" and `conflicts` rules are enforced here. The torch unknown is shared between the two docs — resolve once, record in `manifest.json`.
-- **#8 (unified merger)** and **#17 (training lifecycle)**: both depend on `generate_artifacts` and the `onnxruntime.training.api` runtime working; this plan is the gate that proves they can.
+- **#9 (unified merger)** and **#18 (training lifecycle)**: both depend on `generate_artifacts` and the `onnxruntime.training.api` runtime working; this plan is the gate that proves they can.
 - **Android module** (`session_cache.h` `TrainingSessionCache`): consumes the training AAR from `build_ort_training_android.sh`; the AAR's ORT SHA must match the wheel so desktop-generated artifacts run on-device.
 - **Gate 0.3** (`01_tier0_foundation_decisions.md`): the documented, checksummed build + the passing smoke is the Gate 0.3 evidence (Path A: direct `onnxruntime.training.artifacts` on a source-built wheel).
 
-## Tests & smokes
+## Tests & acceptance
 
-- **Import smoke:** `import torch, onnxruntime; from onnxruntime.training import artifacts, onnxblock; from onnxruntime.training.api import CheckpointState, Module, Optimizer` succeeds in the `ort-training-local` env (catches torch-ABI mismatch — the locked unknown).
-- **`generate_artifacts` smoke:** run on `tests/fixtures/tiny_trainable.onnx`; assert `training_model.onnx`, `eval_model.onnx`, `optimizer_model.onnx`, `checkpoint` are produced with the AdamW optimizer.
+Per Gate 0.3's framing: **building the wheel and the Android AAR is Manual/CI** (long, toolchain-heavy), while the **`generate_artifacts` fixture smoke is Integration** — fast and automated once the wheel exists. The conflicts/resolution guards that don't need the built wheel are fast Unit checks.
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- **Fixture well-formedness** (`pytest tests/fixtures/test_tiny_trainable.py`): `tiny_trainable.onnx` has ≥1 trainable initializer and `training_config.json` carries the exact `requires_grad` / `frozen_params` fields `gen_artifacts` reads (`artifact/onnx_builder.py:52-59`); sub-MB.
+- **Conflicts-guard resolution:** `uv sync --frozen --extra export` resolves (public packages, no source wheel needed); co-syncing `--extra export` with `--group ort-training-local` **fails** at resolution time (proves the `[tool.uv] conflicts` guard) — fast, no build.
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- **Import smoke:** in the `ort-training-local` env, `import torch, onnxruntime; from onnxruntime.training import artifacts, onnxblock; from onnxruntime.training.api import CheckpointState, Module, Optimizer` succeeds (catches the torch-ABI mismatch — the locked unknown).
+- **`generate_artifacts` smoke:** run on `tests/fixtures/tiny_trainable.onnx`; assert `training_model.onnx`, `eval_model.onnx`, `optimizer_model.onnx`, `checkpoint` are produced with the AdamW optimizer. (This is the CI smoke in `ort-training-smoke.yml`.)
 - **Extended one-step train smoke (optional):** load the artifacts via `Module`/`Optimizer`, run one `train()` + `optimizer.step()` (per `onnx_checktrain`), assert a finite loss.
-- **uv sync smoke:** `uv sync --frozen --group ort-training-local` resolves; `uv sync --frozen --extra export` resolves separately; co-syncing the two **fails** (proves the `conflicts` guard).
+- **uv local-group sync smoke:** `uv sync --frozen --group ort-training-local` resolves with the local wheel and **no public `onnxruntime` shadowing** it.
 - **Provenance smoke:** re-hashing the local wheel/AAR matches `manifest.json` SHA256 (catches a silently-swapped artifact).
-- **Android AAR smoke:** the library module compiles and links against the training AAR; verify the headers/libs ORT version matches `manifest.json` `ort_version`.
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- **Build the training wheel:** run `scripts/build_ort_training_wheel.sh` at the pinned ORT SHA; emits `onnxruntime_training-1.23.0+cpu-*.whl` and updates `manifest.json` (SHA256 + flags).
+- **Build the Android AAR:** run `scripts/build_ort_training_android.sh` at the **same** ORT SHA / NDK / ABIs / API level; emits the training-enabled AAR and records its SHA256.
+- **Lock the torch unknown:** clean-resolve from `requirements-ort.txt`, `uv pip freeze | grep -i '^torch'`, pin `torch==X.Y.Z` into the group + `manifest.json`.
+- **Android AAR compile/link:** the library module compiles and links against the training AAR; verify the headers/libs ORT version matches `manifest.json` `ort_version` (real NDK build).
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- A reproducible, checksummed build exists: `build_ort_training_wheel.sh` + `build_ort_training_android.sh` + `manifest.json` (all provenance fields incl. the resolved `torch_version`) + `BUILD.md`, with the wheel/AAR referenced by path/checksum and **not** committed.
+- `pyproject.toml` wires the local wheel via `[tool.uv.sources]` + `ort-training-local` group + `conflicts`; `uv sync --frozen --group ort-training-local` resolves with no public `onnxruntime` shadow.
+- The CI smoke (`ort-training-smoke.yml`) passes: imports succeed and `generate_artifacts` produces the four artifacts on the tiny fixture — the Gate 0.3 evidence that the train toolchain is alive.

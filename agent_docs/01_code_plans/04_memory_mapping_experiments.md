@@ -1,6 +1,6 @@
 # Memory-Mapping Experiments — Copied-Buffer → File-Backed Weight Handoff
 
-**Priority #11 | Prerequisites: #8 (`01_code_plans/01_unified_merger_and_external_data_export.md`) | Blocks: nothing (non-blocking optimization of #8–#10); feeds Gate 0.2**
+**Priority #12 | Prerequisites: #9 (`01_code_plans/01_unified_merger_and_external_data_export.md`) | Blocks: nothing (non-blocking optimization of #9–#11); feeds Gate 0.2**
 
 ## Purpose
 
@@ -21,10 +21,10 @@ Native (Android C++):
 - NEW `android/.../cpp/mem_probe.h` — reads `/proc/self/statm` / `/proc/self/status` `VmRSS`; helper `log_rss(const char* tag)` for the four measurement points.
 
 Desktop (Python, for the base-blob / GenAI-format experiments):
-- NEW `spikes/mmap/measure_rss.py` — `psutil`-based RSS sampler shared with the File #9 spike harness.
-- NEW `spikes/mmap/base_blob_mmap_spike.py` — desktop ORT load of the File #8 package toggling the ORT-format / external-initializer config keys.
+- NEW `spikes/mmap/measure_rss.py` — `psutil`-based RSS sampler shared with the File #10 spike harness.
+- NEW `spikes/mmap/base_blob_mmap_spike.py` — desktop ORT load of the File #9 package toggling the ORT-format / external-initializer config keys.
 
-Inputs (from File #8): the unified `inference/` package — `model.onnx` (external refs), single immutable base blob, per-tensor `<name>.bin` trainable externals, `weight_handoff_map.json`.
+Inputs (from File #9): the unified `inference/` package — `model.onnx` (external refs), single immutable base blob, per-tensor `<name>.bin` trainable externals, `weight_handoff_map.json`.
 
 ## Data contracts / interfaces
 
@@ -93,7 +93,7 @@ static long read_rss_kb() {
 ### Experiment (a) — Frozen-base immutable-blob mmap via external-data file-path load  *(highest leverage; the base is most of the bytes)*
 
 - **Hypothesis:** loading the frozen quantized base as a single external `.data` blob via the file-path `Ort::Session` ctor lets ORT mmap it (read-only, shareable, evictable), so RSS at point (2) tracks page-faulted-in pages, not a full copy. The base is immutable, so this is the safe, big win.
-- **Change:** ensure File #8 emits the base as one external-data file referenced by relative location in `model.onnx` (already the layout). Add `options.AddConfigEntry("session.model_external_initializers_file_folder_path", inference_model_path)` so ORT resolves and (potentially) maps externals from the package dir. Do **not** add the trainable per-tensor values via `AddExternalInitializers` for this experiment in isolation — measure base-only first.
+- **Change:** ensure File #9 emits the base as one external-data file referenced by relative location in `model.onnx` (already the layout). Add `options.AddConfigEntry("session.model_external_initializers_file_folder_path", inference_model_path)` so ORT resolves and (potentially) maps externals from the package dir. Do **not** add the trainable per-tensor values via `AddExternalInitializers` for this experiment in isolation — measure base-only first.
 - **Measure:** RSS at the four points; compare base-blob-only load with the key set vs unset. mmap ⇒ RSS-after-load ≈ resident working set << file size; copy ⇒ RSS ≈ file size.
 - **Pass/fail:** pass if RSS at (2) is materially below base-file size with identical logits.
 
@@ -107,29 +107,45 @@ static long read_rss_kb() {
 ### Experiment (c) — `AddExternalInitializers` copied-buffer vs file-backed `Ort::Value::CreateTensor`
 
 - **Hypothesis:** the per-tensor copy in `tensorproto_to_ortvalue_with_allocator` can be replaced by mapping the tensor payload file and wrapping the mapped pointer with `Ort::Value::CreateTensor(memory_info, mapped_ptr, size, shape, ...)`, then still calling `AddExternalInitializers`. This keeps the explicit-injection path (which guarantees the trained tensor lands in the right slot) but removes the `memcpy`.
-- **Change:** add `OrtValueSerializer::tensorproto_to_ortvalue_mmap(...)` returning `{Ort::Value, MmapHandle}`; it requires the `.tensor` payload to be a contiguous raw blob (the `.bin` form from File #8, not protobuf-wrapped — note today's `.tensor` files are serialized `onnx::TensorProto`, so this experiment depends on File #8's raw per-tensor `.bin` layout). Store the `MmapHandle` in a new `mapped_buffers` map parallel to `allocated_buffers` (`session_cache.h:45`); **do not** free it in `clearWeights()` — move its release into the destructor. Also toggle `session.use_ort_model_bytes_for_initializers` (`session_cache.h:717`) from `"0"` to `"1"` as a sub-variant and measure both.
+- **Change:** add `OrtValueSerializer::tensorproto_to_ortvalue_mmap(...)` returning `{Ort::Value, MmapHandle}`; it requires the `.tensor` payload to be a contiguous raw blob (the `.bin` form from File #9, not protobuf-wrapped — note today's `.tensor` files are serialized `onnx::TensorProto`, so this experiment depends on File #9's raw per-tensor `.bin` layout). Store the `MmapHandle` in a new `mapped_buffers` map parallel to `allocated_buffers` (`session_cache.h:45`); **do not** free it in `clearWeights()` — move its release into the destructor. Also toggle `session.use_ort_model_bytes_for_initializers` (`session_cache.h:717`) from `"0"` to `"1"` as a sub-variant and measure both.
 - **Measure:** four-point RSS for: (i) current copy baseline, (ii) mmap + `AddExternalInitializers`, (iii) each with the `use_ort_model_bytes_for_initializers` toggle.
 - **Pass/fail:** pass if the mmap variant reduces RSS at (2)/(3) with identical output and no lifetime crash (segfault on use-after-unmap = hard fail; proves lifetime wiring).
 
 ### Experiment (d) — GenAI passthrough of `use_ort_model_bytes_*` and (ORT-format) `use_memory_mapped_ort_model`
 
-- **Hypothesis:** the GenAI engine (File #9/#10) honors the same ORT config keys via `genai_config.json` `model.decoder.session_options.config_entries`, so the base-blob mmap win from (a) transfers to GenAI for free; and for an **ORT-format** package, `session.use_memory_mapped_ort_model=1` maps the immutable model bytes.
-- **Change:** have File #8's `genai_config.json` emit `config_entries` including `["session.use_ort_model_bytes_for_initializers","1"]`, `["session.use_ort_model_bytes_directly","1"]`, `["session.model_external_initializers_file_folder_path","<dir>"]`, and (only when the package is exported in ORT-format) `["session.use_memory_mapped_ort_model","1"]`. Confirm pass-through with a recognizable `log_id` (reuses the File #9 config-pass-through check).
+- **Hypothesis:** the GenAI engine (File #10/#11) honors the same ORT config keys via `genai_config.json` `model.decoder.session_options.config_entries`, so the base-blob mmap win from (a) transfers to GenAI for free; and for an **ORT-format** package, `session.use_memory_mapped_ort_model=1` maps the immutable model bytes.
+- **Change:** have File #9's `genai_config.json` emit `config_entries` including `["session.use_ort_model_bytes_for_initializers","1"]`, `["session.use_ort_model_bytes_directly","1"]`, `["session.model_external_initializers_file_folder_path","<dir>"]`, and (only when the package is exported in ORT-format) `["session.use_memory_mapped_ort_model","1"]`. Confirm pass-through with a recognizable `log_id` (reuses the File #10 config-pass-through check).
 - **Measure:** GenAI four-point RSS vs Native (a)/(c) over the **same** package; this is the cross-engine memory comparison feeding Gate 0.1/0.2.
 - **Pass/fail:** pass if GenAI accepts the keys (no rejection in ORT logs) AND base-blob RSS matches Native's mmap result. If GenAI ignores the ORT-format key on the bundled build, record "key ignored on this genai/ort build" — expected risk per Tier 0.
 
 ## Interactions
 
-- **File #8** owns the package layout these experiments read; Experiment (c) specifically needs File #8's raw per-tensor `.bin` (not protobuf `.tensor`) for a zero-copy map, and the immutable single base blob for (a). Coordinate the layout there.
-- **File #9 / #10** (GenAI spike + engine abstraction): Experiment (d) shares the RSS harness (`spikes/mmap/measure_rss.py` ≈ `spikes/genai_external_swap/measure_rss.py`) and the config-pass-through check. The memory numbers from (a),(c),(d) are direct inputs to the Gate 0.1 cross-engine decision.
+- **File #9** owns the package layout these experiments read; Experiment (c) specifically needs File #9's raw per-tensor `.bin` (not protobuf `.tensor`) for a zero-copy map, and the immutable single base blob for (a). Coordinate the layout there.
+- **File #10 / #11** (GenAI spike + engine abstraction): Experiment (d) shares the RSS harness (`spikes/mmap/measure_rss.py` ≈ `spikes/genai_external_swap/measure_rss.py`) and the config-pass-through check. The memory numbers from (a),(c),(d) are direct inputs to the Gate 0.1 cross-engine decision.
 - **Gate 0.2** (`01_tier0_foundation_decisions.md`): the documented supported handoff path plus its memory smoke is the deliverable; these experiments produce the numbers that let the gate ratify mmap as v1-required or v1-optional.
 - The `clearWeights()` early-free at `session_cache.h:443` is **incompatible** with mmap lifetime — any mmap experiment must move release to the destructor or it will fault on first run.
 
-## Tests & smokes
+## Tests & acceptance
 
-- **Baseline RSS smoke:** run current code on the tiny File #8 package; record four-point RSS as the reference numbers. (No code change — just the probe wired in.)
-- **Correctness invariant (all experiments):** logits of the first generated token must be byte-identical to the copied-buffer baseline for the *same* weights; any mmap variant that changes output is a hard fail (means the bytes/shape/dtype mapping is wrong).
-- **Lifetime smoke:** run generation, then a second generation on the same session, with mmap-backed values; a use-after-unmap segfault fails the lifetime wiring.
-- **Toggle smoke:** flip `session.use_ort_model_bytes_for_initializers` `0`↔`1` (`session_cache.h:717`) and confirm load still succeeds and output is identical; record RSS delta.
-- **Config pass-through smoke (d):** set a recognizable `log_id` + the mmap keys in `genai_config.json`, enable ORT logging, confirm entries reach ORT and are not rejected.
-- **Memory comparison report:** single table — copied-buffer baseline | (a) base mmap | (b) folder externals | (c) mmap injection | (d) GenAI passthrough — peak RSS at points (2)/(3), with the pass/fail verdict per the ratified margin. This table is the Gate 0.2 artifact.
+This plan is a **measurement harness**, and mmap is explicitly **non-blocking** (a Gate 0.2 optimization decision, not a v1 requirement). The fast, automated Unit/Integration checks below verify the harness wiring and the correctness invariant on desktop; the **four-point RSS numbers — the actual win/no-win evidence — are Manual** because they require a real Android device.
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- **`mem_probe.h` reader unit**: `read_rss_kb()` parses a fixed `/proc/self/status`-shaped fixture and returns the `VmRSS` value.
+- **`mmap_tensor.h` lifetime unit**: map a small temp file, read through the pointer, and confirm `munmap` runs in the destructor (not eagerly) — no `clearWeights()` free path for mapped buffers.
+- Change sites **compile**: `./gradlew :MobileTransformers:compileDebugKotlin` after the `session_cache.h` / `weight_serializer.cpp` mmap additions.
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- **Desktop correctness invariant**: via `base_blob_mmap_spike.py` on the tiny File #9 package, the first-token logits with the mmap/config-key path are byte-identical to the copied-buffer baseline for the *same* weights (any variant that changes output is a hard fail — wrong bytes/shape/dtype mapping).
+- **Config pass-through smoke (d)**: set a recognizable `log_id` + the mmap keys in `genai_config.json`, enable ORT logging, confirm the entries reach ORT and are not rejected (desktop ORT load).
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- **Baseline RSS smoke** (device): run current code on the tiny File #9 package; record four-point RSS as the reference numbers (no code change — just the probe wired in).
+- **Per-experiment RSS + correctness** (device, experiments a–d): record four-point RSS for each experiment and confirm device output is identical to the baseline for the same weights.
+- **Lifetime smoke** (device): run generation, then a second generation on the same session with mmap-backed values; a use-after-unmap segfault fails the lifetime wiring.
+- **Toggle smoke** (device): flip `session.use_ort_model_bytes_for_initializers` `0`↔`1` (`session_cache.h:717`); confirm load still succeeds and output is identical; record the RSS delta.
+- **Memory comparison report** (device): single table — copied-buffer baseline | (a) base mmap | (b) folder externals | (c) mmap injection | (d) GenAI passthrough — peak RSS at points (2)/(3), with the pass/fail verdict per the ratified margin. This table is the Gate 0.2 artifact.
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- The Gate 0.2 memory-comparison table exists with four-point RSS deltas for experiments (a)–(d) against the copied-buffer baseline, each with a pass/fail verdict per the pre-registered ≥15% margin.
+- Every reported variant produced **byte-identical** generated output vs baseline (correctness is the hard gate; memory is the win condition), and no mmap variant faulted on use-after-unmap.
+- A clear recommendation: ratify mmap as **v1-optional or v1-required** — mmap remains non-blocking for Files #9–#11 either way.

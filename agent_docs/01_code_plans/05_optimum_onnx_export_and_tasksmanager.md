@@ -1,6 +1,6 @@
 # Optimum-ONNX Inference Export + TasksManager Front Door
 
-**Priority #6 | Prerequisites: #2 (`00_code_plans/03_dependency_profiles_and_ort_training_wheel.md`), #4 (`00_code_plans/02_config_layering_settings_constants.md`), #5 (`00_code_plans/09_typed_models_enums_and_registries.md`, architecture registry) | Blocks: #8 (`01_code_plans/01_unified_merger_and_external_data_export.md`), #14 (`02_code_plans/05_one_command_export_cli.md`); feeds #19 (`02_code_plans/02_optimum_support_matrix.md`)**
+**Priority #7 | Prerequisites: #2 (`00_code_plans/03_dependency_profiles_and_ort_training_wheel.md`), #4 (`00_code_plans/02_config_layering_settings_constants.md`), #6 (`00_code_plans/09_typed_models_enums_and_registries.md`, architecture registry) | Blocks: #9 (`01_code_plans/01_unified_merger_and_external_data_export.md`), #15 (`02_code_plans/05_one_command_export_cli.md`); feeds #20 (`02_code_plans/02_optimum_support_matrix.md`)**
 
 ## Purpose
 
@@ -25,7 +25,8 @@ It also runs **the migration spike** that Tier 0 flagged: under `optimum-onnx 0.
 - **`discover_tasks(model_id) -> {model_type, supported_tasks}`**: reads `AutoConfig.from_pretrained(model_id).model_type` (NOT `architectures[0]` — `model_type` is the TasksManager key, e.g. `"llama"`, `"phi3"`, `"qwen2"`), then `TasksManager.get_supported_tasks_for_model_type(model_type, "onnx")`.
 - **`choose_task(supported_tasks, override=None) -> task`**: selection order **`text-generation-with-past` > `text-generation` > `feature-extraction` > `sentence-similarity` > explicit `override`**. `with-past` is preferred because the inference engine needs the KV-cache (past/present) graph; fall back to `text-generation` only if `with-past` is unsupported. An explicit user `override` is honored last (it forces a task even outside the auto order) and recorded in the matrix.
 - **`main_export` invocation**: `optimum.exporters.onnx.main_export(model_name_or_path=model_id, output=out_dir, task=task, opset=opset, trust_remote_code=trust_remote_code, ...)` (CLI equivalent: `optimum-cli export onnx --model <id> --task <task> ...`). Record the exact `optimum-onnx` version, `optimum` version, `transformers` version, opset, exporter mode, and whether `trust_remote_code` was needed — these go into the package manifest and the support matrix.
-- **Normalized output (repo conventions)**: a package dir with the inference `model.onnx` (+ single external `.data`), normalized input names (`input_ids`, `attention_mask`, `position_ids`), KV-cache names (`past_key_values.<i>.key/value` in, `present.<i>.key/value` out — the same scheme `inference/builder.py:325-356` already writes into `genai_config.json`), tokenizer files, `generation_config.json`, and an external-data layout matching File #8's expectation (one immutable base blob; trainable tensors as external initializers later overwritten by the merger).
+- **Export-frontend registry (F3)**: the export *front door* is selected from an `EXPORT_FRONTEND_REGISTRY` keyed by frontend (`optimum-onnx` — the default/durable inference exporter — and `torch.onnx` — the manual graph path used by Fallback A; future frontends slot in the same way), so the chosen exporter is **data, not an `if/elif`**. Each row carries its export callable + an availability/capability probe; `inference_export.py` resolves the frontend from config and the support-discovery result rather than branching on import success. Adding a frontend = registry row + enum member, no business-logic edit — the same closed-set-is-data principle as the architecture registry (`09`). The migration spike (step 6) feeds the `optimum-onnx` row's probe; if `OnnxConfigWithLoss`/`export` are gone, the training-graph export switches to the `torch.onnx` row without touching callers.
+- **Normalized output (repo conventions)**: a package dir with the inference `model.onnx` (+ single external `.data`), normalized input names (`input_ids`, `attention_mask`, `position_ids`), KV-cache names (`past_key_values.<i>.key/value` in, `present.<i>.key/value` out — the same scheme `inference/builder.py:325-356` already writes into `genai_config.json`), tokenizer files, `generation_config.json`, and an external-data layout matching File #9's expectation (one immutable base blob; trainable tensors as external initializers later overwritten by the merger).
 - **`model_support_matrix.json` statuses** (per model): `optimum_exportable`, `mobile_package_exportable`, `train_artifacts_exportable`, `android_inference_smoked`, `android_training_smoked`, `rag_ready`. This plan sets `optimum_exportable` (from discovery) and `mobile_package_exportable` (from a successful normalized export); later plans flip the rest.
 
 ## Implementation steps
@@ -34,7 +35,7 @@ It also runs **the migration spike** that Tier 0 flagged: under `optimum-onnx 0.
 
 2. **Inference export** (`inference_export.py`): resolve task via `choose_task`, run `main_export` into a temp dir, capture the version/opset/mode metadata. Keep this in the **export-only** profile (public `onnxruntime` + `optimum-onnx[onnxruntime]`); never co-sync with the training profile (`00_code_plans/03`).
 
-3. **Normalize** (`normalize.py`): rename graph IO to the repo's canonical input/KV-cache names; relay out external data into one base blob; copy tokenizer + `generation_config.json`; emit the package shape File #8 consumes. Fail closed if any expected output (logits, present.*) is missing.
+3. **Normalize** (`normalize.py`): rename graph IO to the repo's canonical input/KV-cache names; relay out external data into one base blob; copy tokenizer + `generation_config.json`; emit the package shape File #9 consumes. Fail closed if any expected output (logits, present.*) is missing.
 
 4. **Support matrix** (`support_matrix.py`): write/merge the per-model row. Set `optimum_exportable` from step 1 and `mobile_package_exportable` from steps 2–3 success. Leave training/android/rag statuses for later plans.
 
@@ -56,15 +57,31 @@ It also runs **the migration spike** that Tier 0 flagged: under `optimum-onnx 0.
 
 - **#2 (dependency profiles)**: export-only vs train+export-unified are mutually-exclusive `onnxruntime` providers. `main_export` inference export runs in export-only; the `OnnxConfigWithLoss`/`export` training path and its spike run in train+export-unified. Never co-sync.
 - **#4 (config layering)**: supplies `opset`, `task` override, `trust_remote_code`, HF token to the exporter.
-- **#8 (unified merger/external-data export)**: consumes the normalized package; the canonical KV-cache/initializer names this plan emits are what File #8's `weight_handoff_map.json` maps merged tensors onto. Naming must agree.
-- **#19 (`02_code_plans/02_optimum_support_matrix.md`)**: the reporting layer that reads/extends `model_support_matrix.json` this plan seeds.
+- **#9 (unified merger/external-data export)**: consumes the normalized package; the canonical KV-cache/initializer names this plan emits are what File #9's `weight_handoff_map.json` maps merged tensors onto. Naming must agree.
+- **#20 (`02_code_plans/02_optimum_support_matrix.md`)**: the reporting layer that reads/extends `model_support_matrix.json` this plan seeds.
 - **`inference/builder.py`**: its `make_genai_config` (`inference/builder.py:325`) already emits the canonical input/KV-cache naming — reuse those exact name templates in `normalize.py` so the native and GenAI engines agree.
 
-## Tests & smokes
+## References
 
-- **Discovery smoke:** `discover_tasks` for `llama`, `phi3`, `qwen2` returns non-empty supported sets including `text-generation-with-past`; one unknown/unsupported `model_type` returns empty + `optimum_exportable=false` (no raise).
+- `https://huggingface.co/docs/optimum/` — Optimum ONNX exporter (`main_export`) + TasksManager task discovery.
+
+## Tests & acceptance
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- **Discovery smoke** (`pytest tests/export/test_registry.py`): `discover_tasks` for `llama`, `phi3`, `qwen2` returns non-empty supported sets including `text-generation-with-past`; one unknown/unsupported `model_type` returns empty + `optimum_exportable=false` (no raise). (TasksManager lookup is a metadata-only call; cache/mock the config fetch to keep it fast.)
 - **Task-selection unit test:** given a supported set, `choose_task` returns `text-generation-with-past`; with it removed, returns `text-generation`; with an `override`, returns the override.
-- **Inference export smoke:** `main_export` one tiny text-generation model (e.g. SmolLM2-135M), assert the normalized package has `model.onnx` + single `.data`, canonical IO names, present logits + `present.*`, tokenizer files, `generation_config.json`. Record opset + exporter mode.
-- **Migration spike (the decisive one):** run `check_symbols.py` in the train+export profile; produce the 4-line import PASS/FAIL matrix, with `OnnxConfigWithLoss`/`export` reported independently from `main_export`/`TasksManager`.
-- **Support-matrix smoke:** export two models, assert `model_support_matrix.json` has one row each with `optimum_exportable=true` and `mobile_package_exportable` reflecting normalization success.
-- **Fallback smoke (only if spike fails):** export the training graph via the chosen fallback (torch.onnx of `OnnxTrainerWrapper`, or legacy optimum profile) and confirm it still feeds `artifacts.generate_artifacts` (File #7 pipeline).
+- **Export-frontend registry unit (F3):** `EXPORT_FRONTEND_REGISTRY` resolves `optimum-onnx` by default and `torch.onnx` when selected; an unknown frontend key fails closed; selection is table lookup, not `if/elif`.
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- **Support-matrix merge smoke:** feed two synthetic discovery/normalization results (fixtures, no real export) into `support_matrix.py`; assert `model_support_matrix.json` has one row each with `optimum_exportable=true` and `mobile_package_exportable` reflecting normalization success, and that re-merging is idempotent.
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- **Inference export smoke:** `main_export` one tiny text-generation model (e.g. SmolLM2-135M) in the export-only profile; assert the normalized package has `model.onnx` + single `.data`, canonical IO names, present logits + `present.*`, tokenizer files, `generation_config.json`. Record opset + exporter mode. (Real multi-minute export.)
+- **Migration spike (the decisive one):** run `check_symbols.py` in the **train+export-unified profile** (needs the source-built ORT-training wheel); produce the 4-line import PASS/FAIL matrix, with `OnnxConfigWithLoss`/`export` reported independently from `main_export`/`TasksManager`.
+- **Support-matrix end-to-end:** export two real models and confirm the rows match the merge-smoke expectations on live exports.
+- **Fallback smoke (only if spike fails):** export the training graph via the chosen fallback (torch.onnx of `OnnxTrainerWrapper`, or legacy optimum profile) and confirm it still feeds `artifacts.generate_artifacts` (File #8 pipeline).
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- A single export front door (`inference_export.py` over `EXPORT_FRONTEND_REGISTRY`) replaces the `trainer/builder.py:261-272` `architectures[0]` ladder: task via `registry.choose_task`, per-architecture `OnnxConfig` via `09.resolve_architecture(...).onnx_config_class`, no ladder remaining.
+- A tiny model exports to a normalized package (canonical IO/KV-cache names, one base `.data`, tokenizer + `generation_config.json`) that File #9 consumes, and `model_support_matrix.json` carries `optimum_exportable` + `mobile_package_exportable` rows.
+- The migration spike's 4-line PASS/FAIL matrix is recorded; if `OnnxConfigWithLoss`/`export` are gone, the documented fallback (torch.onnx frontend, or pinned legacy optimum) is selected via the registry and still feeds `generate_artifacts`.

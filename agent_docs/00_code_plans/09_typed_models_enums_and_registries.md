@@ -1,6 +1,6 @@
 # Typed Config Models, Enums & Method/Architecture/Merger Registries
 
-**Priority (global #):** 5  |  **Prerequisites:** `00_code_plans/03_dependency_profiles_and_ort_training_wheel.md` (#2, adds `pydantic>=2` to core), `00_code_plans/02_config_layering_settings_constants.md` (#4, `config/` package + `constants.py`)  |  **Blocks:** `00_code_plans/07_weight_handoff_map_and_tensor_codec.md` (#7), `01_code_plans/01_unified_merger_and_external_data_export.md` (#8), `01_code_plans/05_optimum_onnx_export_and_tasksmanager.md`, and every builder-consuming Tier-2/3 plan (`03_code_plans/*`, `04_code_plans/01`, `/05`)
+**Priority (global #):** 6  |  **Prerequisites:** `00_code_plans/03_dependency_profiles_and_ort_training_wheel.md` (#2, adds `pydantic>=2` to core), `00_code_plans/02_config_layering_settings_constants.md` (#4, `config/` package + `constants.py`)  |  **Blocks:** `00_code_plans/07_weight_handoff_map_and_tensor_codec.md` (#8), `01_code_plans/01_unified_merger_and_external_data_export.md` (#9), `01_code_plans/05_optimum_onnx_export_and_tasksmanager.md`, and every builder-consuming Tier-2/3 plan (`03_code_plans/*`, `04_code_plans/01`, `/05`)
 
 > This plan **OWNS** four cross-cutting contracts: (1) the Pydantic config models, (2) the Python+Kotlin enum/constants vocabulary, (3) the **PEFT method registry** + **architecture registry**, and (4) the **merger registry** + unified `build_merger_model`. Every other plan *references* these and must not redefine them. The rule this plan enforces everywhere: **a closed set of choices is data (enum + registry entry), never an `if/elif` chain in business logic.** Adding a PEFT method, model architecture, or merger variant is a registry entry plus an enum member — no new branch.
 
@@ -114,6 +114,10 @@ class QuantizationOptions(_Base):                       # lifts trainer/builder.
 
 Cross-boundary rule: export writes `Model.model_dump(by_alias=True, mode="json")`; `schemas/<name>.schema.json` is produced by `Model.model_json_schema(by_alias=True)` and checked in; Kotlin/C++ validate the file they read against that schema before parsing. The Python and Kotlin field vocabularies are tested for parity (see Tests).
 
+**Parity enforcement (F2).** The Pydantic models (`config/models.py`) + enums (`config/constants.py`) are the **single source of truth**; the checked-in `schemas/*.schema.json` and a golden `enums.json` are *generated* from them, never hand-edited. A CI `parity` job regenerates and diffs: `python -m mobiletransformers.codegen.enums --check` fails the build if the checked-in Kotlin/C++ mirrors have drifted from the Python source. This is the mechanism behind the enum-parity and grep guards below.
+
+**Schema versioning (F1).** Each generated cross-boundary schema also carries a `schemaVersion` (`"MAJOR.MINOR"`) + `minReaderVersion` field block — the same contract the manifest (`#13`) and handoff map (`#8`) use — so a reader fails closed on a major it does not support and tolerates additive minor bumps (unknown fields preserved). One `check_compat()` helper, mirrored Python↔Kotlin.
+
 ### A2 — Enum vocabulary (`config/constants.py`, mirrored in Kotlin)
 
 ```python
@@ -213,6 +217,15 @@ Full unification (decision 3): the four factories collapse into `build_merger_mo
 
 C++ side (coordinated with `01_code_plans/01`, which owns the on-device merge filename contract): `WeightMerger::get_merger_type` (`weight_merger.cpp:476-499`) is replaced by a handoff-map/registry lookup that returns the resolved `MergerVariant`; `run_merger_model` (`:526-712`) selects the session by variant from a registry-built map instead of `if (merger_type == "lora")` chains; merger ONNX paths (`:448-464`) come from the handoff map. The hand-derivation stays correct because `MergerVariant` is computed from the same adapter-shape + quantization signals it uses today (`has_shared_A`, `has_quantized`), just expressed as registry data.
 
+### More registries as consumers land (F3)
+
+This plan **owns the registry pattern** — a closed set of choices is data (enum member + registry row), never an `if/elif` chain in business logic. Beyond PEFT/architecture/merger above, the same pattern is extended (one new registry per closed set) as each consumer plan lands, so a new entry is a registry row plus an enum member with no business-logic edit:
+
+- `TASK_REGISTRY` — task types (`TaskType`), as the task-routing consumers arrive.
+- `EXECUTION_PROVIDER_REGISTRY` — `cpu`/`xnnpack`/`nnapi`/`genai`/future-NPU (`ExecutionProvider`).
+- `DOCUMENT_LOADER_REGISTRY` — `txt`/`md`/`jsonl` now, `pdf`/`html` later (RAG ingestion, `03_code_plans/*`).
+- `EXPORT_FRONTEND_REGISTRY` — `optimum-onnx` / `torch.onnx` export frontends.
+
 ---
 
 ## Implementation steps
@@ -243,11 +256,30 @@ C++ side (coordinated with `01_code_plans/01`, which owns the on-device merge fi
 
 ---
 
-## Tests & smokes
+## References
 
-- `test_config_models.py`: round-trip each model `model_validate(json) → model_dump(by_alias=True)` is byte-stable; the `SchedulerConfig` discriminated union selects `Linear` vs `Cosine` by `schedulerType`; `extra="forbid"` rejects unknown keys; legacy `config.yml` parses through the models unchanged.
-- `test_registries.py`: `resolve_architecture` covers every entry currently in `trainer/builder.py:260-272` + `inference/builder.py:3234-3271` (parametrized) and raises a clear error for unknown architectures; `get_peft_spec` covers `lora/lora-xs/mars/all/nolora`; `resolve_merger` returns the correct `MergerVariant` for each `(method, quant_in, quant_out)` and a descriptive (no-`_2`) filename; `build_adapter_mapping` reproduces the keys the old `create_*_adapter_mapping` produced (golden vs a checked-in fixture).
-- `test_enum_parity.py`: parse the Kotlin `constants/*.kt` `wire` values and assert the set equals the Python enum values for every enum (the cross-language guard).
-- Merger-unification golden: `build_merger_model` output ONNX is functionally equivalent (graph structure / IO names within quant tolerance) to the legacy `create_*_merger_model{,_2}` outputs for each variant.
+- `https://docs.pydantic.dev/latest/` — Pydantic v2 models, validation, and JSON-schema generation (`model_json_schema`/`model_dump(by_alias=True)`) used for the typed config layer + generated `schemas/*.schema.json`.
+
+---
+
+## Tests & acceptance
+
+**Unit (automated)** — small, fast; prove the component wires together and compiles.
+- `pytest tests/unit/test_config_models.py`: round-trip each model `model_validate(json) → model_dump(by_alias=True)` is byte-stable; the `SchedulerConfig` discriminated union selects `Linear` vs `Cosine` by `schedulerType`; `extra="forbid"` rejects unknown keys; legacy `config.yml` parses through the models unchanged.
+- `pytest tests/unit/test_registries.py`: `resolve_architecture` covers every entry currently in `trainer/builder.py:260-272` + `inference/builder.py:3234-3271` (parametrized) and raises a clear error for unknown architectures; `get_peft_spec` covers `lora/lora-xs/mars/all/nolora`; `resolve_merger` returns the correct `MergerVariant` for each `(method, quant_in, quant_out)` and a descriptive (no-`_2`) filename; `build_adapter_mapping` reproduces the keys the old `create_*_adapter_mapping` produced (golden vs a checked-in fixture).
+- `pytest tests/unit/test_enum_parity.py`: parse the Kotlin `constants/*.kt` `wire` values and assert the set equals the Python enum values for every enum (the cross-language parity guard, F2; equivalently `python -m mobiletransformers.codegen.enums --check`).
 - Grep guard (CI): no `architectures[0] ==`, `train_method ==`/`peft_method ==`, or `merger_type ==` string-literal branch remains in `trainer/`, `inference/`, `artifact/`, or `weight_merger.cpp` business paths (registry lookups only).
-- Kotlin: `SamplingMethod.fromWire("bogus")` throws (fail-closed); `FileUtil` rejects a JSON whose enum value is not in the schema.
+- Kotlin: `SamplingMethod.fromWire("bogus")` throws (fail-closed); `FileUtil` rejects a JSON whose enum value is not in the schema; module compiles (`./gradlew :MobileTransformers:compileDebugKotlin`).
+
+**Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
+- Merger-unification golden: `build_merger_model` output ONNX is functionally equivalent (graph structure / IO names within quant tolerance) to the legacy `create_*_merger_model{,_2}` outputs for each variant.
+- Generated artifacts are regenerable: `Model.model_json_schema(by_alias=True)` reproduces the checked-in `schemas/*.schema.json` and the golden `enums.json` byte-for-byte (no diff on re-run).
+
+**Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
+- None for this plan (typed config + registries are host-side; the device/export consumers exercise them in their own plans).
+
+**Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
+- One typed config layer (`config/models.py`, Pydantic v2, alias-driven) is the source of truth; the three JSON emit sites write `model_dump(by_alias=True, mode="json")`; `schemas/*.schema.json` (+ a `schemaVersion`/`minReaderVersion` block, F1) and a golden `enums.json` are generated and checked in.
+- One mirrored enum vocabulary exists Python↔Kotlin; the CI `parity` job (F2) fails on drift.
+- The three data-driven registries (PEFT, architecture, merger) are the single source of truth for every closed choice; adding a method/architecture/merger is a registry row + enum member with **no** new `if/elif` branch (grep guard passes), and the pattern extends to further registries (F3) as consumers land.
+- The four `create_*_merger_model{,_2}` factories collapse into one `build_merger_model`; the C++ merger dispatch resolves variant/paths from the handoff map/registry, not literals.
