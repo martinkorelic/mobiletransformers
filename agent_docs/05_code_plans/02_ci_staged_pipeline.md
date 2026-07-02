@@ -28,7 +28,7 @@ Add a staged CI that compiles the core, validates packages, and runs an end-to-e
 
 Use `matrix`, `fail-fast: false`, and per-job `timeout-minutes` (GitHub Actions workflow syntax). Do **not** make zoo builds mandatory on PRs. Where the Android matrix pins runtime libraries (e.g. WorkManager for #34), keep the pinned versions explicit in the workflow.
 
-**Parity gate (F2).** The fast stage runs a `parity` job: the Pydantic models (`config/models.py`) + enums (`config/constants.py`) are the single source of truth, so the job regenerates `schemas/*.schema.json` + a golden `enums.json` from them (`python -m mobiletransformers.codegen.enums --check`) and **fails on drift** vs the checked-in Kotlin/C++ mirrors. The same fast stage also gates `make lint` + `make typecheck` (the #5 / #28 tooling).
+**Parity gate (F2).** The fast stage runs a `parity` job: the Pydantic models (`mobiletransformers/config/models.py`) + enums (`mobiletransformers/config/constants.py`) are the single source of truth, so the job regenerates `schemas/*.schema.json` + a golden `enums.json` from them (`python -m mobiletransformers.codegen.enums --check`) and **fails on drift** vs the checked-in Kotlin/C++ mirrors. The same fast stage also gates `make lint` + `make typecheck` (the #5 / #28 tooling).
 
 ### Rename transition
 

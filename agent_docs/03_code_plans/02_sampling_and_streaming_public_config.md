@@ -11,9 +11,9 @@ Give the public facade HuggingFace-aligned sampling/generation config names whil
 ## Touched / new files
 
 Kotlin:
-- NEW `android/.../config/SamplingConfig.kt` (public) — HF-named data class mapped into the internal `SamplingOptions` (`ORTGenerationConfig.kt:3-9`). `method: SamplingMethod` (the 09 enum), not `String`.
+- `android/.../config/SamplingConfig.kt` (public; the type #17's signature set names — created there if not already present, finalized here) — HF-named data class mapped into the internal `SamplingOptions` (`ORTGenerationConfig.kt:3-9`). `method: SamplingMethod` (the 09 enum), not `String`.
 - `android/.../ORTGeneratorNative.kt` — replace `methodMap = mapOf("greedy" to 0, "top_k" to 1, "top_p" to 2)` + `methodMap[args.method] ?: 0` (`:266-267`) with `SamplingMethod.fromWire(args.method).nativeOrdinal` (the enum owns the ordinal; fail-closed on unknown).
-- NEW `android/.../config/GenerationConfig.kt` (public) — exposes `maxNewTokens` mapped onto internal `ORTGenerationConfig.maxSequenceLength` (`ORTGenerationConfig.kt:15`).
+- `android/.../config/GenerationConfig.kt` (public; created by #17 with `maxNewTokens` from day one) — this plan verifies/locks the `maxNewTokens` → internal `ORTGenerationConfig.maxSequenceLength` (`ORTGenerationConfig.kt:15`) mapping and its new-tokens semantics; no rename happens here.
 - `android/.../ORTGenerationConfig.kt` — unchanged internally; gains a `fromPublic(GenerationConfig)` mapper. Keep `overrideConfig` (`:23-42`).
 - `android/.../repository/LLMRepository.kt` — `GenerationCallback` (`:40-47`) is the immutable parity contract; do not fork per engine.
 - `android/.../ORTProgress.kt` — `InferenceProgress` (`:18-27`) fields are the parity payload; both engines populate all of them.

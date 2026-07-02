@@ -38,6 +38,8 @@ FederatedAdapterRecord
   metrics: { numExamples, numTokens, trainLoss, peakMemoryMb, durationMs }
 ```
 
+**Byte serialization (pinned here; #36's JNI `ByteArray` uses exactly this).** One record = a 4-byte little-endian `uint32` header length, then the UTF-8 JSON header (the record above with `tensors[].bytes` omitted — each tensor entry instead carries `byteOffset`/`byteLength` into the payload), then the concatenated raw tensor payloads in **codec order**, each little-endian, contiguous C-order, dtype/shape exactly as declared in the header. No compression, no alignment padding in v1. This is what the cross-language golden fixture freezes; `fileRef` is only for the on-disk simulation variant (header field pointing at a sibling file instead of an inline payload span).
+
 The record never invents its own tensor list (F8): `tensors` names/order/dtype are read straight from `TrainableTensorCodec` + `weight_handoff_map.json` (#8), and `adapterFormatVersion` **equals** `weight_handoff_map.schemaVersion` — a record whose `adapterFormatVersion` doesn't match the codec it was built from fails closed. The record's own `schemaVersion` follows the F1 contract (`"MAJOR.MINOR"` + `minReaderVersion`): readers preserve unknown fields (additive minor bumps are non-breaking) and reject only when `major` exceeds support or `minReaderVersion` is unmet, via the one shared `check_compat()` helper.
 
 ### Flower mapping
@@ -59,7 +61,7 @@ The record never invents its own tensor list (F8): `tensors` names/order/dtype a
 ## Implementation steps
 
 1. `FederatedAdapterRecord` over `TrainableTensorCodec`: deterministic tensor order from the handoff map; round-trip serialize.
-2. `flower_client.py`: load a tiny MobileTransformers-ready package, expose `get_parameters` (export adapter tensors), `fit` (local ORT train ≥1 step), `evaluate`.
+2. `flower_client.py`: load a tiny MobileTransformers-ready package, expose `get_parameters` (export adapter tensors), `fit` (local ORT train ≥1 step — reuse the `CheckpointState`/`Module`/`Optimizer` loop shape from `artifact/onnx_builder.py`'s `onnx_checktrain`, `:111-153`, over the package's `train/` artifacts), `evaluate`.
 3. `flower_sim.py`: ≥2 clients, `FedAvg`, save a new global adapter artifact per round.
 4. CLI: `mobiletransformers federated simulate --package ... --strategy fedavg --clients 4 --rounds 3 --local-max-steps 2 --output ...`.
 5. Measure and bound communication size per round (LoRA payload).
@@ -96,7 +98,8 @@ app = ClientApp()
 def train(msg, ctx):
     arrays = parameters_to_ndarrays(msg.content["arrays"])     # incoming global adapter (codec order, #8)
     record = FederatedAdapterRecord.from_ndarrays(arrays)      # names/order/dtype from weight_handoff_map.json
-    updated = run_ort_training(record, max_steps=2)            # existing ORT Training Python loop
+    updated = run_ort_training(record, max_steps=2)            # the onnx_checktrain-shaped loop: CheckpointState/Module/Optimizer
+                                                               # from onnxruntime.training.api (artifact/onnx_builder.py:111-153) — reuse, don't rewrite
     return msg.create_reply(content={
         "arrays": ArrayRecord(updated.to_ndarrays()),          # only adapter/trainable tensors back
         "metrics": {"numExamples": updated.num_examples, "trainLoss": updated.loss},

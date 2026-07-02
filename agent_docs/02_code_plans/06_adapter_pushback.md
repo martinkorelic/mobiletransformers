@@ -26,7 +26,7 @@ Reads from the on-device cache shape (produced by #21, owned by #13):
 - `<cacheDir>/<sanitizedRepoId>/train/checkpoint/` — ORT `CheckpointState` with the trained parameters.
 - `<cacheDir>/<sanitizedRepoId>/train/training_config.json` — `requires_grad`, `peft_mapping`, `rank`, `alpha`, `peft_target`, `trainable_parameter_count`, `peftMethod`, `modelId`.
 - `<cacheDir>/<sanitizedRepoId>/train/weight_handoff_map.json` — train→infer tensor contract (#8/07).
-- `<cacheDir>/<sanitizedRepoId>/inference/merged/<per-tensor files>` — the per-tensor merged external initializers written on-device by `ORTTrainerNative.mergeExportSessionWeights()` (→ `inference/merged`).
+- `<cacheDir>/<sanitizedRepoId>/inference/<name>.bin` — the per-tensor merged external initializers, **flat** in `inference/` (canonical layout; written on-device by the #9 map-driven merge — the legacy `inference/merged/` subdir no longer exists at this point).
 
 ## Data contracts / interfaces
 
@@ -44,7 +44,7 @@ Reads from the on-device cache shape (produced by #21, owned by #13):
   "tensors": [                                // one entry per trained tensor
     {
       "trainingCheckpointName": "backbone.model.layers.0.self_attn.q_proj.base_layer.weight",
-      "mergedInitializerFile": "model.layers.0.attn.q_proj.MatMul.weight",  // file under inference/merged/
+      "externalDataLocation": "model.layers.0.attn.q_proj.MatMul.weight.bin",  // per-tensor file flat in inference/, from the handoff map
       "dtype": "float16", "shape": [896, 896]
     }
   ],
@@ -58,7 +58,10 @@ Two export modes, chosen by `convert.py` gate:
 1. **PEFT-compatible (`lora`, or `mars` proven LoRA-decomposable):** emit standard PEFT files — `adapter_config.json` (PEFT type, r, alpha, target_modules, base_model_name_or_path) + `adapter_model.safetensors` (the A/B low-rank factors). Requires the handoff map to expose the LoRA factors (not just merged weights); if only merged weights are present, decomposition is lossy → fall to mode 2.
 2. **MobileTransformers-native adapter (gate fallback, esp. MARS):** emit the per-tensor merged initializers + `weight_handoff_map.json` + `training_config.json` under a `variants/<id>/train/` style subtree (#14), with the model card stating it is **not** a drop-in PEFT adapter and must be re-applied via MobileTransformers.
 
-`to_peft_layout()` returns `None` (→ mode 2) when: `peftMethod == "mars"` and `marsOptimizationLevel` involves quantization/fusion that breaks a clean `W + BA` recovery, or when the handoff map only carries merged tensors. Otherwise returns the PEFT layout.
+`to_peft_layout()` decides by a **deterministic, checkable signal** (no fuzzy "recoverable" judgment):
+
+- **Mode 1 (PEFT-compatible)** iff ALL of: `peftMethod == "lora"`; AND the ORT checkpoint (`train/checkpoint/`, loaded via `CheckpointState`) still contains the **adapter component tensors** named by 09's `PEFTMethodSpec.component_schema` joined through `training_config.json`'s `peft_mapping` (i.e. the A/B low-rank factors exist as tensors — not just their merged product); AND `rank`/`alpha` are present in `training_config.json`. The exported `adapter_model.safetensors` is built from those checkpoint tensors directly.
+- **Mode 2 (MobileTransformers-native)** otherwise — including every `peftMethod == "mars"` case in v1 (no `W + BA` decomposition is attempted from merged/fused/quantized MARS output; it is lossy by construction), and any LoRA package whose checkpoint no longer carries the A/B factors (only merged per-tensor `.bin`s exist).
 
 ### Model card mandatory sections
 
@@ -73,11 +76,11 @@ Two export modes, chosen by `convert.py` gate:
 1. `export_adapter_from_cache(cache_repo_dir)`:
    - Read `train/training_config.json` → fill `baseModelId`/`peftMethod`/`rank`/`alpha`/`peftTarget`/`trainableParameterCount`/`marsOptimizationLevel`.
    - Read `train/weight_handoff_map.json` → `handoffMode` + per-tensor name mapping.
-   - Enumerate `inference/merged/` files; for each, cross-reference the handoff map to build `tensors[]`. (Optionally read `train/checkpoint/` via ORT `CheckpointState` to recover requires_grad params directly if `inference/merged` is absent.)
+   - Enumerate the per-tensor `.bin` files listed in the handoff map's `externalDataLocation` entries (flat in `inference/`); for each, cross-reference the map to build `tensors[]`. (Optionally read `train/checkpoint/` via ORT `CheckpointState` to recover requires_grad params directly if the merged `.bin`s are absent.)
    - Return `AdapterPackage`.
 2. `to_peft_layout(adapter_pkg)`:
-   - If `peftMethod == "lora"` and handoff exposes A/B factors → build `adapter_config.json` + `adapter_model.safetensors`; return `PeftAdapter`.
-   - If `peftMethod == "mars"` → attempt decomposition only when the handoff map flags it as cleanly recoverable; else return `None`.
+   - If the Mode-1 signal above holds (LoRA + A/B component tensors present in the checkpoint per `component_schema` × `peft_mapping`) → build `adapter_config.json` + `adapter_model.safetensors` from the checkpoint tensors; return `PeftAdapter`.
+   - Otherwise (all MARS in v1; LoRA without surviving A/B factors) → return `None` (Mode 2). Never attempt decomposition from merged tensors.
 3. `build adapter package dir`:
    - Mode 1: write PEFT files at repo root.
    - Mode 2: write the native adapter subtree (merged tensors + handoff map + training_config) and a `mobiletransformers_adapter.json` header noting mode + base model + handoff pointer.
@@ -87,11 +90,11 @@ Two export modes, chosen by `convert.py` gate:
 
 ## Interactions
 
-- **#9 (unified merger + external-data):** defines the `inference/merged/` per-tensor files and the merge semantics this exporter reads; the MARS-vs-PEFT gate hinges on what #9's handoff map records.
+- **#9 (unified merger + external-data):** defines the flat per-tensor `.bin` files and the merge semantics this exporter reads; the MARS-vs-PEFT gate hinges on what #9's handoff map records.
 - **#14 (package format):** mode-2 native adapters reuse the `variants/<id>/train/` subtree shape and the `weight_handoff_map.json` location.
 - **#8/07 (handoff map):** authoritative source for `handoffMode` and per-tensor name mapping; the gate decision reads its flags.
 - **#15 (export CLI):** shares `model_card.py` and the `huggingface_hub.upload_folder` push path.
-- **`ORTTrainerNative.mergeExportSessionWeights()`:** the on-device producer of `inference/merged` that this exporter consumes.
+- **`ORTTrainerNative.mergeExportSessionWeights()`:** the on-device merge entry whose #9-rewired output (flat per-tensor `.bin`s in `inference/`) this exporter consumes.
 
 ## Tests & acceptance
 
@@ -107,4 +110,4 @@ Two export modes, chosen by `convert.py` gate:
 **Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
 - Round-trip (optional, gated): export PEFT adapter → reload with `PeftModel.from_pretrained` (already used in `inference/builder.py`) to confirm the layout loads (needs torch/peft).
 
-**Definition of done** — `mobiletransformers push-adapter` reads the materialized Android cache (`train/checkpoint`, `training_config.json`, `weight_handoff_map.json`, `inference/merged/`), builds an `AdapterPackage`, and emits either a PEFT-compatible layout (`adapter_config.json` + `adapter_model.safetensors`) when `to_peft_layout` proves a clean LoRA decomposition or a MobileTransformers-native adapter subtree otherwise; the gate falls back honestly (and `--peft-only` errors instead of falling back); every rendered model card carries the bold privacy warning + exact base-model license + PEFT/MARS metadata (upload fails if missing); and uploads go through the shared `huggingface_hub.upload_folder` path with the expected repo id.
+**Definition of done** — `mobiletransformers push-adapter` reads the materialized Android cache (`train/checkpoint`, `training_config.json`, `weight_handoff_map.json`, the flat per-tensor `.bin`s in `inference/`), builds an `AdapterPackage`, and emits either a PEFT-compatible layout (`adapter_config.json` + `adapter_model.safetensors`) when `to_peft_layout` proves a clean LoRA decomposition or a MobileTransformers-native adapter subtree otherwise; the gate falls back honestly (and `--peft-only` errors instead of falling back); every rendered model card carries the bold privacy warning + exact base-model license + PEFT/MARS metadata (upload fails if missing); and uploads go through the shared `huggingface_hub.upload_folder` path with the expected repo id.

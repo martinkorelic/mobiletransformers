@@ -37,8 +37,10 @@ Android (`com.martinkorelic.mobiletransformers` SDK module, post-rename per `00_
 ```text
 <cacheDir>/<sanitizedRepoId>/
   train/         training_model.onnx, eval_model.onnx, optimizer_model.onnx, checkpoint/,
-                 training_config.json, trainable_parameters.json, weight_handoff_map.json, *_merger_model.onnx, <task>.jsonl
-  inference/     base/model.onnx(+.data), merged/<per-tensor files>, generation_config.json, genai_config.json?, session_options.json
+                 training_config.json, trainable_parameters.json, weight_handoff_map.json,
+                 merger_*.onnx (descriptive registry filenames from 09), <task>.jsonl
+  inference/     model.onnx, frozen_base.onnx.data (immutable), per-tensor <name>.bin (+ .sha256) FLAT,
+                 weight_handoff_map.json, generation_config.json, genai_config.json?, session_options.json
   embedding/     embedding_model.onnx, tokenizer/, rag_config.json          (only if rag pulled)
   tokenizer/     tokenizer.json, tokenizer_config.json, special_tokens_map.json, added_tokens.json, ortmobile_tokenizer_config.json, chat_template.jinja
   mobiletransformers_manifest.json
@@ -47,7 +49,7 @@ Android (`com.martinkorelic.mobiletransformers` SDK module, post-rename per `00_
 
 This is exactly what `LLMRepository.updatePaths()` and `ORTTrainerNative` probe (`<cacheDir>/<repoName>/train/...`, `inference/...`, `embedding/rag_config.json`, `tokenizer`). `<sanitizedRepoId>` becomes `LLMRepository.modelName` / `ORTTrainingConfig.repoName`.
 
-> Mapping note: the Hub repo splits tokenizer under `shared/tokenizer/` and chat template under `shared/chat_template.jinja`; the cache bridge flattens these into the single `<repo>/tokenizer/` dir the repository expects. `inference/base` + `inference/merged` are kept as subdirs (the engine + #9/01 merge contract read them).
+> Mapping note: the Hub repo splits tokenizer under `shared/tokenizer/` and chat template under `shared/chat_template.jinja`; the cache bridge flattens these into the single `<repo>/tokenizer/` dir the repository expects. `inference/` is copied through as-is — it is already the flat canonical layout (#9/#13); there are **no** `base/` or `merged/` subdirs.
 
 ### Variant selection (`select_variant`)
 
@@ -96,7 +98,7 @@ Python passes the glob list straight to `snapshot_download(allow_patterns=...)`.
 
 ### B. Android downloader (next milestone)
 
-4. `ManifestClient.fetchManifest(repoId, revision, token)` → GET resolve URL for `mobiletransformers_manifest.json`, parse to a Kotlin `Manifest` data class (kotlinx.serialization).
+4. `ManifestClient.fetchManifest(repoId, revision, token)` → GET resolve URL for `mobiletransformers_manifest.json`, parse with #13's Gson-based `MobileTransformersManifest` (one JSON library on Android — do not add kotlinx.serialization).
 5. `VariantSelector.select(manifest, DeviceConstraints)` → Kotlin port of `select_variant`; `DeviceConstraints` filled from `Build.SUPPORTED_ABIS`, `ActivityManager`, `StatFs` on cacheDir, plus caller's `features`/`engine`.
 6. `PackageDownloadWorker` (WorkManager `CoroutineWorker`, foreground for large pulls, `Constraints` = unmetered + storage-not-low):
    - For each file in the computed list: HEAD (size/etag) → cross-check against `manifest.fileSizes`/`etag` → GET via OkHttp streaming into `<cacheDir>/.partial/<sanitizedRepoId>/<repoRelativePath>`.

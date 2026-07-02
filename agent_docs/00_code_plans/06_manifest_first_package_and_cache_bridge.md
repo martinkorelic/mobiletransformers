@@ -31,14 +31,14 @@ Canonical cache/package layout (both inference engines read the **same** folder)
   checksums.json
 ```
 
-`<sanitizedRepoId>` is the repo id with `/`→`_` (and other FS-unsafe chars stripped), so it is a single directory name under `cacheDir` — i.e. the `modelName` that `LLMRepository.availableModels` returns.
+`<sanitizedRepoId>` is the repo id sanitized per the **single algorithm defined in `02_code_plans/03`** (`/` → `__` double underscore, other FS-unsafe chars stripped; e.g. `mobiletransformers/Qwen2-0.5B-mobile` → `mobiletransformers__Qwen2-0.5B-mobile`), so it is a single directory name under `cacheDir` — i.e. the `modelName` that `LLMRepository.availableModels` returns. The Kotlin sanitizer here must be byte-identical to the Python one (shared `sanitize_repo_id_cases.json` parity fixture).
 
 ---
 
 ## Touched / new files
 
-**Android Kotlin (new), package `com.martinkorelic.ortmobile.package`:**
-- `MobileTransformersManifest.kt` — data class + Gson (de)serialization (project already uses Gson, see `ORTTrainerNative.kt:7`).
+**Android Kotlin (new), package `com.martinkorelic.ortmobile.packages`** (NOT `.package` — `package` is a Kotlin hard keyword and illegal as a package segment; `.packages` also matches the facade layout in `00_code_plans/05`):
+- `MobileTransformersManifest.kt` — data class + Gson (de)serialization (project already uses Gson, see `ORTTrainerNative.kt:7`; Gson is the single JSON library for all manifest/config parsing on Android — do not introduce kotlinx.serialization for this).
 - `ManifestValidator.kt` — schema + required-file presence + version-compat checks.
 - `VariantSelector.kt` — capability/variant selection.
 - `ChecksumVerifier.kt` — SHA-256 over `requiredFiles` vs `checksums.json`.
@@ -56,57 +56,35 @@ Canonical cache/package layout (both inference engines read the **same** folder)
 
 ## Data contract — `mobiletransformers_manifest.json`
 
-Builds on the field sketch in `02_tier1_hf_integrated_core.md:281-356`. Required fields:
+> **The full field list is owned by `02_code_plans/03` (#14) — this plan does NOT redefine it.** #14 is the single definition site of the schema (camelCase wire names, `downloadPlan` keyed `[variantId][group]`, variant fields `supportedEngines` / `recommendedDeviceMemoryMb` / `paths`, integrity maps `sha256` / `fileSizes` / `etag`, provenance fields). This plan owns the **validator, variant-selection, and cache-install semantics** over that schema. The fields the components below consume:
 
-| Field | Type | Notes |
+| Field (per #14) | Consumed by | Notes |
 | --- | --- | --- |
-| `schemaVersion` | string | `"MAJOR.MINOR"` (e.g. `"1.0"`). See the schema-versioning contract below. |
-| `minReaderVersion` | string | Lowest SDK that can read this manifest; readers below it fail closed. |
-| `baseModelId` | string | HF repo id of the base model. |
-| `variants` | list\<Variant\> | See below. |
-| `defaultVariant` | string | Must be a `variants[].id`. |
-| `downloadPlan` | object | `{ "groups": { "core": [...], "inference": [...], "train": [...], "rag": [...], "genai": [...], "checksums": [...] } }` (glob list per feature; `02_tier1...:312-325`). |
-| `requiredFiles` | list\<string\> | Relative paths that MUST exist post-install for the package to be valid. |
-| `sha256` | map\<path,hex\> | Per-file digest; mirrored into `checksums.json`. |
-| `weightHandoff` | object | Pointer `{ "path": "variants/<id>/inference/weight_handoff_map.json", "handoffMode": "external_initializer" }`. Map schema **owned by #8**, not redefined here. |
-| `androidRuntime` | object | `{ "minimumAndroidApi": int, "abis": ["arm64-v8a", ...], "recommendedDeviceMemoryMb": int }`. |
-| `onnxRuntimeTrainingVersion` | string | Train wheel provenance. |
-| `onnxRuntimeGenAIVersion` | string? | Present iff a GenAI variant exists. |
-| `supportedTasks` | list\<string\> | e.g. `["text-generation","feature-extraction"]` (matches `trainer/builder.py` `task_type`). |
-| `selectedTask` | string | Default task. |
-| `trustRemoteCode` | bool | Mirrors `trust_remote_code=True` used in `trainer/builder.py:255-258`. |
-| `license` | string | SPDX; framework Apache-2.0, weights keep upstream license. |
-
-**Variant** object:
-```json
-{
-  "id": "cpu-int4",
-  "abi": ["arm64-v8a"],
-  "quantization": "int4",
-  "minMemoryMb": 2048,
-  "features": ["inference", "train", "rag"],
-  "engines": ["native", "genai"],
-  "paths": { "inference": "variants/cpu-int4/inference", "train": "variants/cpu-int4/train", "embedding": "variants/cpu-int4/embedding", "tokenizer": "shared/tokenizer" }
-}
-```
+| `schemaVersion` / `minReaderVersion` | `ManifestValidator.check_compat` | `"MAJOR.MINOR"`; see the schema-versioning contract below. |
+| `defaultVariant`, `variants[]` | `VariantSelector` | Variant fields: `id`, `abi`, `quantization`, `supportedEngines`, `features`, `recommendedDeviceMemoryMb`, `minimumAndroidApi`, `weightHandoff`, `paths`. |
+| `variants[].paths` | `ModelPackageInstaller` | Map of `train`/`inference`/`embedding`/`tokenizer` → repo-relative subtree; the cache-bridge mapping source. |
+| `downloadPlan[variantId][group]` | file-set computation (step 3) | Groups: `core`, `inference`, `train`, `rag`, `genai`, `checksums`. |
+| `requiredFiles`, `sha256`, `fileSizes` | `ChecksumVerifier` | Per-file integrity; `sha256` mirrored into per-variant `checksums.json`. |
+| `weightHandoff` (top-level + per-variant) | installer + engines | Pointer to `weight_handoff_map.json`; map schema **owned by #8**. Per-variant pointer wins over top-level. |
+| `androidRuntime`, `onnxRuntimeTrainingVersion`, `onnxRuntimeGenAIVersion`, `supportedTasks`, `selectedTask`, `trustRemoteCode`, `license` | validator / `CacheIndex` metadata | Provenance + runtime requirements. |
 
 `checksums.json`: `{ "<relativePath>": "<sha256hex>", ... }` over every `requiredFile` of the selected variant + core.
 
 ### Schema versioning (F1)
 
-The manifest carries `schemaVersion` (`"MAJOR.MINOR"`) and `minReaderVersion`. Readers **preserve unknown fields** — an additive minor bump (new optional field) is non-breaking and parses fine on an older reader. A reader fails closed with a "needs newer SDK" message only when the manifest's `major` exceeds what it supports **or** its own version is below `minReaderVersion`. One `check_compat()` helper encodes this rule and is mirrored Python↔Kotlin (`ManifestValidator.check_compat` on the Android side, the same logic in `manifest.py`), so both ends agree on accept/reject. The handoff map (`#8`) and generated config schemas (`#6`) follow the same `{"schemaVersion":"1.2","minReaderVersion":"1.0", …}` field block.
+The manifest carries `schemaVersion` (`"MAJOR.MINOR"`) and `minReaderVersion`. Readers **tolerate unknown fields** (readers never rewrite the manifest — only the Python exporter writes it — so "preserve" means parse-and-ignore, not round-trip): an additive minor bump (new optional field) is non-breaking and parses fine on an older reader. A reader fails closed with a "needs newer SDK" message only when the manifest's `major` exceeds what it supports **or** its own version is below `minReaderVersion`. One `check_compat()` helper encodes this rule and is mirrored Python↔Kotlin (`ManifestValidator.check_compat` on the Android side, the same logic in `manifest.py`), so both ends agree on accept/reject — **implement exactly the algorithm pinned in `00_code_plans/07` ("check_compat — the ONE canonical algorithm")**, including the per-contract `READER_SCHEMA_VERSION` constant (here: `MANIFEST_READER_VERSION`) and the shared `check_compat_cases.json` test fixture. The handoff map (`#8`) and generated config schemas (`#6`) follow the same `{"schemaVersion":"1.2","minReaderVersion":"1.0", …}` field block.
 
 ---
 
 ## Implementation steps
 
 ### Selection & validation (no download yet)
-1. `MobileTransformersManifest.parse(json)` (Gson) → typed object (preserving unknown fields); `ManifestValidator.validate` runs `check_compat` (`schemaVersion` major + `minReaderVersion`, F1), then `defaultVariant ∈ variants`, every `weightHandoff.path` resolvable, and that each variant's `paths` cover the features it claims.
+1. `MobileTransformersManifest.parse(json)` (Gson) → typed object (unknown fields tolerated/ignored — Gson skips them by default); `ManifestValidator.validate` runs `check_compat` (`schemaVersion` major + `minReaderVersion`, F1), then `defaultVariant ∈ variants`, every `weightHandoff.path` resolvable, and that each variant's `paths` cover the features it claims.
 2. `VariantSelector.select(manifest, deviceCaps, requestedFeatures, requestedEngine)`:
    - Filter variants whose `abi` intersects `Build.SUPPORTED_ABIS`.
-   - Filter by `quantization` acceptable + `minMemoryMb <= ActivityManager.MemoryInfo.totalMem` (the trainer already reads memory via `ActivityManager`, `ORTTrainerNative.kt:3/496`).
-   - Filter by `features ⊇ requestedFeatures` and `engines ∋ requestedEngine` (default `native`, the guaranteed path).
-   - Tie-break: smallest `minMemoryMb`, then `defaultVariant`. Return a `SelectedVariant` or a typed `NoCompatibleVariant` error (fail closed).
+   - Filter by `quantization` acceptable + `recommendedDeviceMemoryMb <= ActivityManager.MemoryInfo.totalMem` (the trainer already reads memory via `ActivityManager`, `ORTTrainerNative.kt:3/496`).
+   - Filter by `features ⊇ requestedFeatures` and `supportedEngines ∋ requestedEngine` (default `native`, the guaranteed path).
+   - Tie-break: smallest `recommendedDeviceMemoryMb`, then `defaultVariant`. Return a `SelectedVariant` or a typed `NoCompatibleVariant` error (fail closed).
 
 ### Download plan → staging
 3. From `SelectedVariant`, compute the file set = `downloadPlan.groups.core` + groups for each requested feature + `checksums`. (The actual network fetch is #21; this plan defines the plan + the install bridge and works against an already-staged dir for testing.)
@@ -141,7 +119,7 @@ The manifest carries `schemaVersion` (`"MAJOR.MINOR"`) and `minReaderVersion`. R
 
 ## Worked example
 
-A minimal `mobiletransformers_manifest.json` (illustrative — one variant, one feature group):
+A minimal `mobiletransformers_manifest.json` (illustrative — one variant, one feature group; an instance of the #14 canonical schema):
 
 ```json
 {
@@ -154,14 +132,14 @@ A minimal `mobiletransformers_manifest.json` (illustrative — one variant, one 
       "id": "cpu-int4",
       "abi": ["arm64-v8a"],
       "quantization": "int4",
-      "minMemoryMb": 2048,
+      "recommendedDeviceMemoryMb": 2048,
       "features": ["inference"],
-      "engines": ["native"],
+      "supportedEngines": ["native"],
       "paths": { "inference": "variants/cpu-int4/inference", "tokenizer": "shared/tokenizer" }
     }
   ],
   "downloadPlan": {
-    "groups": {
+    "cpu-int4": {
       "inference": [
         "variants/cpu-int4/inference/model.onnx",
         "variants/cpu-int4/inference/generation_config.json",
@@ -188,7 +166,7 @@ After install, `variants/cpu-int4/inference/**` lands at `<cacheDir>/<sanitizedR
 **Unit (automated)** — small, fast; prove the component wires together and compiles.
 - Python `test_manifest.py`: round-trip manifest dataclass ↔ JSON with deterministic key order for checksumming; validator rejects missing `defaultVariant`, `defaultVariant` not in variants, unresolvable `weightHandoff.path`, a variant claiming a feature with no `paths` entry, and a `schemaVersion` major beyond support / `minReaderVersion` unmet (`check_compat`, F1).
 - Android JVM/Robolectric `ManifestValidator`: missing required file, version mismatch (`onnxRuntimeTrainingVersion`), bad schema.
-- Android `VariantSelector`: ABI filter (no arm64 variant on an arm64-only device → `NoCompatibleVariant`); memory filter (`minMemoryMb` > device); feature filter (request `rag` but variant lacks it); engine filter (request `genai`, only `native` available); tie-break to `defaultVariant`.
+- Android `VariantSelector`: ABI filter (no arm64 variant on an arm64-only device → `NoCompatibleVariant`); memory filter (`recommendedDeviceMemoryMb` > device); feature filter (request `rag` but variant lacks it); engine filter (request `genai`, only `native` available); tie-break to `defaultVariant`.
 - Android `ChecksumVerifier`: corrupt one staged byte → verify fails, staging deleted.
 - Android atomicity: kill install mid-copy (throw before rename) → no partial dir under `cacheDir`, only `.staging` residue which a retry cleans.
 - Module compiles: `./gradlew :MobileTransformers:compileDebugKotlin`.

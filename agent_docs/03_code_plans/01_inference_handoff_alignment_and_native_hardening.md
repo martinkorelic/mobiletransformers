@@ -11,10 +11,10 @@ This is the Tier-2 expression of the canonical decision: **trained/merged weight
 ## Touched / new files
 
 Kotlin:
-- `android/.../ORTGeneratorNative.kt` — replace the `inference/merged` directory probe in the `loadMergedWeights` setter (`ORTGeneratorNative.kt:41-47`) with the handoff-map precondition (map present + all `external_file`s exist + checksums valid). Keep `generate(promptText, generationArgs, callback)` (`:80-82`) and the callback emission (`:123-237`) unchanged. Adapt the class to implement `ModelRuntime` (per #11).
+- `android/.../ORTGeneratorNative.kt` — replace the `inference/merged` directory probe in the `loadMergedWeights` setter (`ORTGeneratorNative.kt:41-47`) with the handoff-map precondition (map present + every `externalDataLocation[role]` file exists + checksums valid). Keep `generate(promptText, generationArgs, callback)` (`:80-82`) and the callback emission (`:123-237`) unchanged. Adapt the class to implement `ModelRuntime` (per #11).
 - `android/.../ORTGenerationConfig.kt` — keep `loadMergedWeights` (`:19`) as the public flag; its *meaning* changes to "consume merged external initializers," not "load from `merged/`".
 - `android/.../repository/LLMRepository.kt` — `makeOrtNativeInference()` (`:262-282`) and `prepareGeneration` (`:334-380`) route through `ModelRuntimeFactory` (#11), not a direct `ORTGeneratorNative(...)`.
-- `android/.../ORTGenAINative.kt` — **delete the six dead `NotImplementedError` stubs** (`:74-94`: `releaseWeightSession`/`releaseGenAISession`/`initializeGenAIInference`/`performGenAIInferenceStep`/`cacheSessionWeights`/`createGenAISession`). This abandoned JNI-GenAI bridge is superseded by the real GenAI engine (`ORTGeneratorGenAI`, owned by #11); it must not linger as half-implemented surface. Retire the file (and `onnx-genai.cpp`) as part of this cleanup.
+- `android/.../ORTGenAINative.kt` / `onnx-genai.cpp` — **verify deleted** (#11 step 8 owns the deletion of the six dead `NotImplementedError` stubs, `:74-94`, and the commented-out C++). This plan only asserts via the grep regression test below that neither file nor any dangling reference survived.
 
 C++:
 - `android/.../cpp/inference.cpp` — no behavior change; document the input/output contract (below). The dynamic input-name resolution (`inference.cpp:112`) and optional `position_ids` handling (`:122-124, 139-144`) are the source of truth for the documented names.
@@ -45,18 +45,18 @@ loadMergedWeightsReady(cacheDir, model) :=
     AND for each entry.externalDataLocation[role]: file exists in inference/
     AND checksum(file) == manifest checksum
     AND entry dtype/shape match the loaded TensorProto
-→ exposed as RuntimeCapabilities.supportsLoadMergedWeights (#11)
+→ exposed as EngineCapabilities.supportsLoadMergedWeights (#11)
 ```
 
 Fail closed: if the map is present but any file/checksum/dtype/shape fails, raise **before** `createInferenceSession`, with the offending tensor name.
 
 ## Implementation steps
 
-1. **Retire the `merged/` probe.** In `ORTGeneratorNative.kt:41-47`, replace the directory existence check with `loadMergedWeightsReady(...)` above. Remove any path construction pointing at `inference/merged/`.
-2. **Implement `ModelRuntime`** on `ORTGeneratorNative` (factor session open into `load(...)`, keep `generate(...)`); populate `RuntimeCapabilities(engine=NATIVE, supportsStreaming=true, supportsLoadMergedWeights=<precondition>)`.
+1. **Verify the `merged/` probe is retired** (#11 step 2 already moved it). If any residue remains in `ORTGeneratorNative.kt:41-47`, replace the directory existence check with `loadMergedWeightsReady(...)` above; remove any path construction pointing at `inference/merged/`. This plan's contribution is the **full precondition** (per-file existence + checksum + dtype/shape, not just map presence) and its tests.
+2. **Verify `ModelRuntime` conformance** (#11 already adapted `ORTGeneratorNative`; do not re-implement). Confirm session open is factored into `load(...)`, `generate(...)` unchanged, and `EngineCapabilities(engine=NATIVE, supportsStreaming=true, supportsLoadMergedWeights=<precondition>)` now reflects the hardened precondition.
 3. **Map-driven load** in `session_cache.h:662-709`: take initializer names from `inferenceInitializerNames[role]` (#8), not filesystem reconstruction; verify dtype/shape; then `AddExternalInitializers`.
 4. **Fix conversation-state prepend** (`ORTGeneratorNative.kt:96-97`, the `// NOTE: Sometimes one token from the previous assistant message keeps prepending` / `// TODO: Will need fix`). Audit the prompt assembly in `generate(...)` (`:80-237`) for the case where the previous assistant token leaks into the next prompt; add a `resetConversation()` that clears KV/position/attention state and is called on new sessions.
-5. **Route via factory** in `LLMRepository.kt:262-282/334-380`.
+5. **Verify factory routing** in `LLMRepository.kt:262-282/334-380` (#11 step 6 introduced `ModelRuntimeFactory`; assert no direct `ORTGeneratorNative(...)` construction survives, add one if a path was missed).
 6. **Error messages**: unsupported model (missing required input), missing/mismatched handoff, shape mismatch — all before session creation.
 
 ## Interactions
@@ -84,7 +84,7 @@ Fail closed: if the map is present but any file/checksum/dtype/shape fails, rais
 
 **Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
 - `ORTGeneratorNative` implements `ModelRuntime` (per #11) and is selected via `ModelRuntimeFactory`, not constructed directly.
-- Load is map-driven and fail-closed: `weight_handoff_map.json` present + all `external_file`s exist + checksums/dtype/shape valid, else it raises (naming the offending tensor) **before** `createInferenceSession`.
+- Load is map-driven and fail-closed: `weight_handoff_map.json` present + every `externalDataLocation[role]` file exists + checksums/dtype/shape valid, else it raises (naming the offending tensor) **before** `createInferenceSession`.
 - Zero references to `inference/merged/` survive anywhere in the load path or build output.
 - The six dead `NotImplementedError` GenAI stubs (and `ORTGenAINative` / `onnx-genai.cpp`) are deleted, not left half-implemented.
 - The conversation-state prepend bug is fixed and `resetConversation()` clears KV/position/attention state on new sessions.

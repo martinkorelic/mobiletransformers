@@ -26,7 +26,7 @@ not a freeze.
 - `pyproject.toml` (from #1/#2) — add `[tool.ruff]` (lint + format) and `[tool.mypy]` (typing) sections;
   add `ruff`, `mypy` to the `dev` group.
 - NEW `src/mobiletransformers/exceptions.py` — the Python exception hierarchy, deliberately **parallel to the
-  Kotlin facade's** (`00_code_plans/05`): `MobileTransformersError` → `ExportError`, `ManifestError`,
+  Kotlin facade's `MobileTransformersException` hierarchy** (declared in `02_code_plans/01`, stubbed by `00_code_plans/05`): `MobileTransformersError` → `ExportError`, `ManifestError`,
   `HandoffError`, `MergeError`, `ConfigValidationError`, `UnsupportedModelError`, `HubError`.
 - NEW `src/mobiletransformers/utils/logging.py` — structured, module-level `get_logger(__name__)`; bans
   `print()` in library code (CLI user output stays in `cli/`).
@@ -55,7 +55,7 @@ not a freeze.
   - global: `ignore_missing_imports = true` to start; CI-green from day one.
   - **new** modules (`src/mobiletransformers/**` created from #1 onward): `disallow_untyped_defs = true`.
   - legacy modules: per-module overrides relaxed, tightened over time; each tightening is a small PR.
-- **Exception hierarchy** (must mirror Kotlin names from `00_code_plans/05` so errors read the same on both
+- **Exception hierarchy** (must mirror the Kotlin names from `02_code_plans/01` so errors read the same on both
   sides): single root `MobileTransformersError`; raise typed subclasses, never bare `Exception`.
 - **Logging**: `logger = get_logger(__name__)` per module; levels not `print`. CLI-facing output is the CLI's
   responsibility, not library modules.

@@ -23,7 +23,7 @@ Python (server):
 
 ## Data contracts / interfaces
 
-- **Wire format** = `FederatedAdapterRecord` (#35), serialized identically on both sides; the Kotlin codec and Python codec must produce byte-identical tensor ordering (golden cross-language test).
+- **Wire format** = `FederatedAdapterRecord` (#35), using #35's **pinned byte serialization** (length-prefixed JSON header + concatenated raw little-endian tensor payloads in codec order — see #35 §Byte serialization); the Kotlin codec and Python codec must produce byte-identical output (golden cross-language test).
 - **JNI boundary**:
   ```kotlin
   external fun exportTrainableTensors(session: Long, handoffMapPath: String): /* serialized record */ ByteArray

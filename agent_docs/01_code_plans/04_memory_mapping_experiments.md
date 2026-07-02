@@ -21,7 +21,7 @@ Native (Android C++):
 - NEW `android/.../cpp/mem_probe.h` — reads `/proc/self/statm` / `/proc/self/status` `VmRSS`; helper `log_rss(const char* tag)` for the four measurement points.
 
 Desktop (Python, for the base-blob / GenAI-format experiments):
-- NEW `spikes/mmap/measure_rss.py` — `psutil`-based RSS sampler shared with the File #10 spike harness.
+- `spikes/mmap/measure_rss.py` — thin re-export of File #10's `spikes/genai_external_swap/measure_rss.py` (#10 lands first at order 10; import/reuse it, do **not** write a second sampler).
 - NEW `spikes/mmap/base_blob_mmap_spike.py` — desktop ORT load of the File #9 package toggling the ORT-format / external-initializer config keys.
 
 Inputs (from File #9): the unified `inference/` package — `model.onnx` (external refs), single immutable base blob, per-tensor `<name>.bin` trainable externals, `weight_handoff_map.json`.
@@ -100,7 +100,7 @@ static long read_rss_kb() {
 ### Experiment (b) — Per-tensor trainable external files: does ORT mmap or copy them?
 
 - **Hypothesis:** if the trainable tensors are *also* left as external initializers resolved from the folder (via `session.model_external_initializers_file_folder_path`) instead of injected through `AddExternalInitializers`, ORT may mmap them from their per-tensor files — eliminating the `WeightSessionCache` copy entirely.
-- **Change:** in `setSessionOptions`, behind a `handoff_mode == file_folder` flag, **skip** the `WeightSessionCache`/`AddExternalInitializers` block (`session_cache.h:662-709`) and instead rely on the folder-path config key, with the per-tensor `.bin`/`.data` names matching the inference initializer names from `weight_handoff_map.json`.
+- **Change:** in `setSessionOptions`, behind an **experiment-local native load-strategy flag** (e.g. `loadStrategy = FOLDER_RESOLUTION` vs the default `ADD_EXTERNAL_INITIALIZERS`; this is NOT a new `HandoffMode` member — `HandoffMode` stays the closed 3-value enum of F7, and the handoff mode remains `external_initializer` throughout this experiment), **skip** the `WeightSessionCache`/`AddExternalInitializers` block (`session_cache.h:662-709`) and instead rely on the folder-path config key, with the per-tensor `.bin`/`.data` names matching the inference initializer names from `weight_handoff_map.json`.
 - **Measure:** four-point RSS vs the `AddExternalInitializers` baseline. Critically determine **whether ORT mmaps these or silently copies** — compare RSS-after-load to total trainable byte size.
 - **Pass/fail:** pass if folder-path externals load with lower RSS and identical output. If ORT copies them anyway (RSS unchanged), record as "ORT copies external initializers on this build" — that result steers us back to (c).
 

@@ -10,10 +10,10 @@ Implement the currently-empty `ORTRetriever.ingestData()` (`ORTRetriever.kt:172-
 
 Kotlin:
 - `android/.../ORTRetriever.kt` — implement `ingestData()` (`:172-175`); reuse the embedding session created in `createEmbeddingModel()` (`:26-63`) and `performEmbeddingStep(...)` (`:192-200`); store via `VectorStore.insert` (#25).
-- NEW `android/.../rag/DocumentChunker.kt` — pure-Kotlin chunking by `chunkSize`/`chunkOverlap` (`ORTRagConfig.kt:25-26`); JVM-testable.
+- NEW `android/.../rag/DocumentChunker.kt` — pure-Kotlin chunking by `chunkSize`/`chunkOverlap` (`ORTRagConfig.kt:25-26`); JVM-testable. **Chunk unit is CHARACTERS, not tokens** (chunking happens before tokenization in the pipeline; the existing `chunkSize=512`/`chunkOverlap=50` defaults are character counts). Window advance = `chunkSize - chunkOverlap` characters; optional whitespace-aware boundary snapping must never change the deterministic window count for a given input.
 - NEW `android/.../rag/DocumentSource.kt` — readers for `.txt`, `.md`, `.jsonl` from the filesystem.
 - `android/.../ORTRagConfig.kt` — reuse `chunkSize` (`:25`), `chunkOverlap` (`:26`), `maxTextLength` (`:24`); add `indexingMode` later (`05` plan), not here.
-- `android/.../repository/RagRepository.kt` (or `LLMRepository` RAG path) — expose an `ingest(documents, progress)` orchestration with cooperative cancellation.
+- `android/.../repository/RagRepository.kt` — expose the `ingest(documents, progress)` orchestration with cooperative cancellation (RagRepository is the owner; do not add a parallel entry point on `LLMRepository`).
 
 ## Data contracts / interfaces
 
@@ -30,7 +30,7 @@ Kotlin:
 
 `.txt`/`.md` files map to one record each (filename → `id`/`title`, file body → `text`). JSONL = one record per line.
 
-**Future-proofing (F3 — document-loader registry).** Readers live behind a `DOCUMENT_LOADER_REGISTRY` keyed by file extension (`txt`/`md`/`jsonl` now) rather than an `if ext == "txt"` chain, so a new format is one registry entry that yields the same `RagDocument` record shape — no edit to the chunk/embed/store pipeline. `pdf`/`html` loaders are explicitly **out of v1 scope** (they slot in as later registry entries); any extension not in the registry is rejected with the "v1 supports text/Markdown/JSONL only" error.
+**Future-proofing (F3 — document-loader registry).** Readers live behind a `DOCUMENT_LOADER_REGISTRY` — a Kotlin `Map<String, DocumentLoader>` declared in `rag/DocumentSource.kt`, keyed by lowercase file extension (`txt`/`md`/`jsonl` now) rather than an `if ext == "txt"` chain, so a new format is one registry entry that yields the same `RagDocument` record shape — no edit to the chunk/embed/store pipeline. `pdf`/`html` loaders are explicitly **out of v1 scope** (they slot in as later registry entries); any extension not in the registry is rejected with the "v1 supports text/Markdown/JSONL only" error.
 
 ### Ingestion pipeline
 

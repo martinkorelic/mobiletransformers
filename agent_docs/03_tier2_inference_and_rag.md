@@ -33,7 +33,7 @@ Tier 2 turns existing inference and retrieval code into deliberate, documented s
 
 **The inference engine boundary is already owned upstream — Tier 2 consumes it, it does not redefine it.** Tier 0 / Tier 1 lock the `ModelRuntime` interface with two implementations (`ORTGeneratorNative` = default/guaranteed floor, `ORTGeneratorGenAI` = opt-in, gated on Gate 0.1) in `01_code_plans/03_inference_engine_abstraction_native_and_genai.md`. Both engines run over the **same package / same `inference/` folder**. Tier 2's job is therefore **hardening + RAG**, not inventing a parallel engine abstraction.
 
-> **Do not introduce a new `InferenceEngine` interface.** Earlier drafts of this doc defined one; it is superseded by `ModelRuntime`. The engine selection, fallback, and streaming-parity contract live in `01_code_plans/03`. Tier 2 plans reference it.
+> **Do not introduce a new engine *interface*.** Earlier drafts of this doc defined an `InferenceEngine` interface; it is superseded by `ModelRuntime` (the name `InferenceEngine` now refers only to the selector *enum* `{ NATIVE, GENAI }` declared by `01_code_plans/03`). The engine selection, fallback, and streaming-parity contract live in `01_code_plans/03`. Tier 2 plans reference it.
 
 The public API exposes one `generate()` path; the engine is auto-selected from the manifest. A `config.engine` flag exists only for advanced users/diagnostics.
 
@@ -59,7 +59,7 @@ The Native engine is hardened regardless of the GenAI decision (it is the guaran
 - Document supported input/output names and graph requirements from the real loop: `input_ids`, `attention_mask`, optional `position_ids`, past/present KV-cache shapes, and `logits` (`inference.cpp:12-59` forward; `inference.cpp:102-183` KV-cache generate; KV shapes from `session_cache.h:462-505`).
 - Fix or document the current conversation-state TODO where a token from the previous assistant message can prepend.
 - Add explicit session lifecycle tests for switching between training and generation.
-- **Handoff is external initializers, not `inference/merged/`.** The stable contract (canonical per `IMPLEMENTATION_ORDER.md`, `01_code_plans/01`, `00_code_plans/07`) is: trained/merged weights are **flat per-tensor external initializers in `<cacheDir>/<model>/inference/`** loaded via `OrtSessionOptions::AddExternalInitializers` (`session_cache.h:662-709`), keyed by `weight_handoff_map.json`. The `loadMergedWeights` precondition becomes "handoff map present + all `external_file`s exist with valid checksums," **replacing** the legacy `inference/merged/` directory probe (`ORTGeneratorNative.kt:41-47`). Do not preserve the `inference/merged/` subdir as a contract.
+- **Handoff is external initializers, not `inference/merged/`.** The stable contract (canonical per `IMPLEMENTATION_ORDER.md`, `01_code_plans/01`, `00_code_plans/07`) is: trained/merged weights are **flat per-tensor external initializers in `<cacheDir>/<model>/inference/`** loaded via `OrtSessionOptions::AddExternalInitializers` (`session_cache.h:662-709`), keyed by `weight_handoff_map.json`. The `loadMergedWeights` precondition becomes "handoff map present + every `externalDataLocation[role]` file exists with valid checksums," **replacing** the legacy `inference/merged/` directory probe (`ORTGeneratorNative.kt:41-47`). Do not preserve the `inference/merged/` subdir as a contract.
 - Add fail-closed error messages for unsupported models, missing/handoff-mismatched weights (wrong name/dtype/shape/quant role), and shape mismatch — before session creation.
 
 ### GenAI Path Adoption
@@ -67,7 +67,7 @@ The Native engine is hardened regardless of the GenAI decision (it is the guaran
 If GenAI is adopted (per `01_code_plans/02` spike + `01_code_plans/03`):
 
 - **Delete the dead `ORTGenAINative.kt` and `onnx-genai.cpp`**; implement `ORTGeneratorGenAI.kt` over a new `genai_runtime.cpp` (narrow wrapper around `OgaModel`, `OgaGeneratorParams`, `OgaGenerator`, `OgaTokenizer`, tokenizer stream). Do **not** revive the abandoned classes.
-- The manifest declares engines via `supported_engines` / `default_engine` (owned by `00_code_plans/06`), not a bespoke `inferenceEngine` field.
+- The manifest declares engines via `variants[].supportedEngines` / `defaultEngine` (schema owned by `02_code_plans/03`, validated by `00_code_plans/06`), not a bespoke `inferenceEngine` field.
 - Both engines consume the **same `inference/` folder** (external initializers). Use `genai_config.json` `session_options.config_entries` (`session.model_external_initializers_file_folder_path`) for the external-data folder; rely on `weight_handoff_map.json` for the trained-tensor contract. Avoid `OgaNamedTensors` / `SetInputs` for decoder-only LLM handoff (upstream treats it as graph-input batching and rejects LLM/pipeline model types).
 - Prove the engine can run before and after a train/merge cycle (the runtime expression of Gate 0.1 equivalence).
 - Native remains the guaranteed fallback until GenAI passes all release smokes.
@@ -202,7 +202,7 @@ Sequence:
 
 1. Adopt `ModelRuntime` (from `01_code_plans/03`) and wrap current native inference behind it without changing behavior; retire the legacy `inference/merged/` probe in favor of the handoff-map precondition.
 2. Add tests around the runtime wrapper, repository-backed selection/fallback, and facade routing.
-3. Reflect the Tier 0 GenAI/manual decision in package manifest `supported_engines` / `default_engine`.
+3. Reflect the Tier 0 GenAI/manual decision in package manifest `supportedEngines` / `defaultEngine`.
 4. If GenAI wins, complete `ORTGeneratorGenAI` (per `01_code_plans/03`); otherwise document Native as intentional and harden it.
 5. Keep the non-default engine behind diagnostics/experimental flags until train/merge/generate smokes pass.
 6. Define `VectorStore` and wrap `ORTVectorDatabase`.

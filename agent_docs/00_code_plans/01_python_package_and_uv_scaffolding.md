@@ -14,7 +14,7 @@ New:
 - `src/mobiletransformers/__init__.py` — exports `__version__`.
 - `src/mobiletransformers/cli/__init__.py`, `src/mobiletransformers/cli/main.py` — console entry `main()`.
 - `src/mobiletransformers/cli/export.py`, `validate.py`, `package_model.py` — stubs (real logic in later plans).
-- Empty package skeletons mirroring doc 00 Target Hierarchy: `export/`, `artifacts/`, `peft/` (`mars/`, `lora_xs/`, `ablation/`), `training/`, `inference/`, `rag/`, `hub/`, `evaluation/` (`benchmarks/`, `mobile/`, `smoke/`), `utils/` — each with `__init__.py`.
+- Empty package skeletons mirroring doc 00 Target Hierarchy: `config/` (populated by plans 02/09: `constants.py`, `settings.py`, `models.py`, `registry/`), `export/`, `artifacts/`, `peft/` (`mars/`, `lora_xs/`, `ablation/`), `training/`, `inference/`, `rag/`, `hub/`, `evaluation/` (`benchmarks/`, `mobile/`, `smoke/`), `utils/` — each with `__init__.py`.
 - `tests/unit/`, `tests/integration/`, `tests/smoke/` with `__init__.py` and one import-compat test.
 - `requirements/` (empty dir; populated by plan 03 via `uv export`).
 - `third_party/onnxruntime/` placeholder (manifest authored in plan 03).
@@ -97,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
 
 Subcommand stubs (`export.py`, `validate.py`, `package_model.py`) expose `add_parser(subparsers)` + `run(args) -> int`. In this plan they parse args and print a "not yet wired" notice, then return 0 under `--dry-run`. Real bodies land in plans 05 / 13.
 
+> **This dispatcher contract is canonical for every later CLI plan.** `02_code_plans/05` (one-command export CLI) and `02_code_plans/04` (pull/install) register their subcommands into **this** `cli/main.py` argparse dispatcher via the same `add_parser`/`run` shape — they do not add a `cli/__main__.py`, do not change the console-script entry (`mobiletransformers.cli.main:main`), and do not introduce typer/click.
+
 ### Compatibility shim contract
 
 Goal: a developer who runs `uv pip install -e .` can still execute `python -m trainer.builder` and `from tools.parser_config import TRAIN_CONFIG`. Two mechanisms, pick per-module as migration proceeds:
@@ -117,7 +119,7 @@ The migration map (doc 00 "Migration Map") is the source of truth for old→new 
 
 ## Implementation steps
 
-1. Create `src/mobiletransformers/` and the full subpackage tree from doc 00 Target Hierarchy. Add `__init__.py` to every package and subpackage (`peft/mars`, `peft/lora_xs`, `peft/ablation`, `evaluation/benchmarks`, `evaluation/mobile`, `evaluation/smoke`, `cli`, `export`, `artifacts`, `training`, `inference`, `rag`, `hub`, `utils`).
+1. Create `src/mobiletransformers/` and the full subpackage tree from doc 00 Target Hierarchy. Add `__init__.py` to every package and subpackage (`config`, `peft/mars`, `peft/lora_xs`, `peft/ablation`, `evaluation/benchmarks`, `evaluation/mobile`, `evaluation/smoke`, `cli`, `export`, `artifacts`, `training`, `inference`, `rag`, `hub`, `utils`).
 2. Set `src/mobiletransformers/__init__.py` to `__version__ = "0.1.0"`.
 3. Write `cli/main.py` with the argparse dispatcher and `if __name__ == "__main__": raise SystemExit(main())`. Wire `export`/`validate`/`package-model` subparsers to the stub modules.
 4. Write the stub subcommand modules with `add_parser`/`run` and a `--dry-run` flag.
@@ -130,7 +132,7 @@ The migration map (doc 00 "Migration Map") is the source of truth for old→new 
 
 ## Interactions with other plans
 
-- **Plan 02 (config layering)** adds `config/settings.py`, `config/constants.py`, `config/config.yml`. The `python-dotenv` core dep here exists because `config.py` currently calls `load_dotenv()` (`config.py:2-4`); plan 02 owns the migration of those secrets.
+- **Plan 02 (config layering)** adds `src/mobiletransformers/config/` (`settings.py`, `constants.py` — **inside the package**, so the installed wheel is self-contained) plus repo-root `config/config.yml` (user-editable YAML only). The `config` subpackage created here in the skeleton (`src/mobiletransformers/config/__init__.py`) is plan 02's home. The `python-dotenv` core dep here exists because `config.py` currently calls `load_dotenv()` (`config.py:2-4`); plan 02 owns the migration of those secrets.
 - **Plan 03 (dependency profiles + ORT wheel)** fills in exact pins inside the extras/groups defined here, builds the wheel that `[tool.uv.sources]` points at, authors `third_party/onnxruntime/manifest.json`, and generates the `requirements/*.lock.txt` files via `uv export`.
 - **Plan 05 (optimum-onnx export)** and **plan 13 (one-command export CLI)** flesh out the CLI stubs and add the first real root→`src` shims following the Migration Map.
 

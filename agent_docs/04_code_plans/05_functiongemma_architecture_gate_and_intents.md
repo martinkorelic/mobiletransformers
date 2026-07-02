@@ -90,7 +90,7 @@ A per-user action schema, an allowlist validator, and a dry-run intent binder th
 ```kotlin
 // FunctionCallValidator.kt — post-hoc JSON validation (GenAI constrained decoding is preview-only)
 fun validate(raw: String): ValidatedCall {
-    val call = Json.decodeFromString<ToolCall>(raw)            // parse model output
+    val call = gson.fromJson(raw, ToolCall::class.java)        // parse model output (Gson — the module's single JSON library, per the typed-parsing canonical decision)
     val spec = allowlist[call.actionName]                      // allowlist check
         ?: throw RejectedCallException("action not allowlisted: ${call.actionName}")
     require(spec.validate(call.parameters)) { "parameters fail validationRules" }

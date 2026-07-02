@@ -25,7 +25,7 @@ Android (JNI, run second):
 - Symbol-check script `spikes/genai_external_swap/check_symbols.sh` — `nm`/`readelf` over the linked GenAI `.so`.
 
 Inputs (produced by File #9):
-- A packaged `inference/` dir with `model.onnx` (external refs), `genai_config.json`, `weight_handoff_map.json`, `base/base_weights.onnx.data`, and per-tensor `<name>.bin`.
+- A packaged `inference/` dir with `model.onnx` (external refs), `genai_config.json`, `weight_handoff_map.json`, `frozen_base.onnx.data` (flat), and per-tensor `<name>.bin`.
 
 ## Data contracts / interfaces
 
@@ -40,11 +40,11 @@ Inputs (produced by File #9):
 
 2. **Baseline generation (desktop)**: `Model(dir)` -> `GeneratorParams` -> fixed prompt, greedy (temp 0), generate **one token**; record logits vector `L_base` and token id. Snapshot RSS at: pre-load, post-`Model()`, post-first-token.
 
-3. **One train -> merge**: run the real device-shaped merge offline (`artifact/merger.py` driver from File #9) on a checkpoint with a non-trivial delta, OR for the minimal spike, deterministically perturb exactly one trainable `.bin` (e.g. add a constant) using the handoff map's `external_file`, refresh its `.sha256`. Do NOT touch `base/`.
+3. **One train -> merge**: run the real device-shaped merge offline (`artifact/merger.py` driver from File #9) on a checkpoint with a non-trivial delta, OR for the minimal spike, deterministically perturb exactly one trainable `.bin` (e.g. add a constant) using the handoff map's `externalDataLocation`, refresh its `.sha256`. Do NOT touch `frozen_base.onnx.data`.
 
 4. **Swapped generation (desktop)**: construct a **fresh** `Model(dir)` (GenAI caches at construction; reuse is not valid), regenerate one token; record `L_swap`. **Assert `L_swap != L_base`** beyond float tolerance. This proves the external swap is observed.
 
-5. **Constant-folding check**: confirm the trainable tensors were NOT constant-folded into a producer node at export. Inspect `model.onnx` post-export: each `inference_initializer_name` from the handoff map must still be a live external initializer feeding a MatMul/MatMulNBits, not folded away. If GenAI/ORT folds them, the swap silently no-ops — this is a hard fail condition. (This is the "trainable externals aren't constant-folded" confirmation.)
+5. **Constant-folding check**: confirm the trainable tensors were NOT constant-folded into a producer node at export. Inspect `model.onnx` post-export: each `inferenceInitializerNames[role]` from the handoff map must still be a live external initializer feeding a MatMul/MatMulNBits, not folded away. If GenAI/ORT folds them, the swap silently no-ops — this is a hard fail condition. (This is the "trainable externals aren't constant-folded" confirmation.)
 
 6. **Config pass-through check**: set a recognizable `log_id` and `session.model_external_initializers_file_folder_path` in `genai_config.json`; enable ORT logging; confirm the entries reach ORT (appear in logs / no rejection). Confirms `session_options.config_entries` are honored by GenAI.
 
@@ -83,9 +83,9 @@ def first_logits(prompt: str) -> np.ndarray:
 
 L_base = first_logits("Hello world")
 
-# perturb exactly ONE trainable external (simulates a merge); never touch base/
-t = hmap["tensors"][0]
-path = os.path.join(INF_DIR, t["external_file"])
+# perturb exactly ONE trainable external (simulates a merge); never touch frozen_base.onnx.data
+t = hmap["entries"][0]
+path = os.path.join(INF_DIR, t["externalDataLocation"]["weight"])
 buf = bytearray(open(path, "rb").read())
 arr = np.frombuffer(buf, dtype=np.uint8).copy(); arr[:64] ^= 0x01    # tiny deterministic delta
 open(path, "wb").write(arr.tobytes())                                # atomic in real code: tmp+os.replace
@@ -161,7 +161,7 @@ Because this is a spike, the **measurement harness itself is the test suite**: t
 
 **Unit (automated)** — small, fast; prove the component wires together and compiles.
 - **Symbol smoke** (`check_symbols.sh`): `nm`/`readelf` on the linked Android GenAI `.so` confirms `OgaCreateModelWithInitializers` ABSENT and `OgaCreateModel` PRESENT — a fast deterministic check over the bundled binary.
-- **Handoff-map read unit**: `desktop_spike.py`'s helper resolves `tensors[i].external_file` against the package dir and computes its `.sha256` (no model load).
+- **Handoff-map read unit**: `desktop_spike.py`'s helper resolves `entries[i].externalDataLocation[role]` against the package dir and computes its `.sha256` (no model load).
 
 **Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
 - **Desktop swap smoke**: base vs swapped logits differ after one merge; fresh `Model()` per generation. (`assert not np.allclose(L_base, L_swap)`.)

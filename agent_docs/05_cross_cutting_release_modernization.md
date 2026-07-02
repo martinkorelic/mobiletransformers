@@ -2,7 +2,7 @@
 
 > Detailed code-implementation plans for the build/CI/AAR/docs/release work live in `agent_docs/05_code_plans/`; global order in `agent_docs/IMPLEMENTATION_ORDER.md`.
 >
-> **Public contracts are typed.** The config enums, Pydantic models + generated JSON Schemas, and the PEFT/architecture/merger registries from `00_code_plans/09` are documented as public extension points (`docs/CONFIGURATION.md`); the compatibility matrix is enumerated from those registries so it cannot drift from the code.
+> **Public contracts are typed.** The config enums, Pydantic models + generated JSON Schemas (CI parity artifacts — devices use typed fail-closed parsing), and the PEFT/architecture/merger registries from `00_code_plans/09` are documented as public extension points (`docs/CONFIGURATION.md`); the compatibility matrix is enumerated from those registries so it cannot drift from the code.
 
 ## Purpose
 
@@ -79,7 +79,7 @@ Exit gate: the team can prove whether a future migration broke something that wo
 ### Phase 1 - Python Package, Config, And Dependency Foundation
 
 - Add `pyproject.toml`, `uv.lock`, package metadata, dependency groups, public extras, and exported requirements.
-- Add `config/config.yml`, `config/settings.py`, `config/constants.py`, and config precedence tests.
+- Add `config/config.yml` (root YAML) plus `src/mobiletransformers/config/settings.py` / `constants.py` (inside the package — see `00_code_plans/02`), and config precedence tests.
 - Add package skeleton under `src/mobiletransformers/` but keep root compatibility wrappers.
 - Keep implementation moves small until the export/toolchain gates pass.
 
@@ -108,7 +108,7 @@ Exit gate: a fixture package can validate and materialize into the current Andro
 
 - Rename Gradle root/module/app to `MobileTransformers`, `:MobileTransformers`, and `:MobileTransformersApp`.
 - Add public facade classes under `com.martinkorelic.mobiletransformers`.
-- Wrap existing `LLMRepository`, `TrainingRepository`, `InferenceRepository`, and `RagRepository` through a repository-backed runtime.
+- Wrap existing `LLMRepository`, `TrainingRepository`, `InferenceRepository`, and `RagRepository` through the repository-backed session adapter (`RepositoryBackedModelSession`, `00_code_plans/05`).
 - Add compatibility wrappers/typealiases where practical for old `com.martinkorelic.ortmobile` imports.
 - Keep native library names and C++ internals stable unless JNI smokes cover the rename.
 
@@ -136,7 +136,7 @@ Exit gate: one command can build a package and one facade call can load it local
 
 Code plans: `03_code_plans/01`–`05`.
 
-- Wire the native path into the existing `ModelRuntime` boundary (`01_code_plans/03`) — do **not** add a new `InferenceEngine` interface — and retire the `inference/merged/` probe (`03_code_plans/01`).
+- Wire the native path into the existing `ModelRuntime` boundary (`01_code_plans/03`) — do **not** add a new engine interface (`InferenceEngine` is only the selector enum) — and retire the `inference/merged/` probe (`03_code_plans/01`).
 - Harden the chosen inference engine without changing public generation config names; align sampling/streaming public names (`03_code_plans/02`).
 - Add `VectorStore` boundary, `InMemoryVectorStore`, ObjectBox wrapper (`03_code_plans/03`), ingestion (`03_code_plans/04`), and grounded generation helper (`03_code_plans/05`).
 

@@ -13,7 +13,7 @@ Lower clone-to-running to minutes with one repeatable command path. The `Makefil
 - NEW `Makefile` (repo root).
 - NEW `scripts/` (repo root) — `android_build_aar.sh`, `publish_local_maven.sh` (bodies owned by #30); `run_smoke.sh`.
 - `pyproject.toml` (from #1) — provides the `mobiletransformers` console entrypoint the Makefile calls.
-- `android/ORTransformer/gradlew` — wrapped by `android-build` / `build-aar` targets.
+- `android/MobileTransformers/gradlew` (post-#16 rename path; `android/ORTransformer/gradlew` if this lands during the transition) — wrapped by `android-build` / `build-aar` targets.
 
 ## Data contracts / interfaces
 
@@ -37,16 +37,16 @@ Each is `≤ ~3 lines` calling the CLI/Gradle. Example:
 
 ```make
 export-model:
-	mobiletransformers export onnx --model $(MODEL) --peft $(PEFT) --quant $(QUANT)
+	mobiletransformers export --model $(MODEL) --peft $(PEFT) --quant $(QUANT)
 ```
 
 ### Profile isolation guard
 
-`setup` must respect the dependency-profile isolation from #2 (the `onnxruntime` / `onnxruntime-training` / `onnxruntime-genai` / `optimum-onnx` envs must never collide). Provide `setup-train`, `setup-export`, `setup-genai` if a single env cannot host all profiles (decision inherited from #2).
+`setup` must respect the dependency-profile isolation from #2 — and #2 already decided a single env **cannot** host the colliding profiles (`[tool.uv] conflicts` makes co-sync fail). So the targets are unconditional: `setup` = core + `dev` group only (no onnxruntime provider); `setup-export` = `uv sync --extra export`; `setup-train` = `uv sync --group ort-training-local`; `setup-genai` = `uv sync --group genai-smoke`. Each syncs its own environment; none combines the conflicting pairs.
 
 ## Implementation steps
 
-1. Create `pyproject.toml` console-script (`mobiletransformers = mobiletransformers.cli:main`) — already in #1/#15; the Makefile depends on it existing.
+1. Confirm the `pyproject.toml` console-script (`mobiletransformers = mobiletransformers.cli.main:main` — plan #1's canonical dispatcher contract, extended by #15); the Makefile depends on it existing.
 2. Write `Makefile` with the targets above as thin wrappers; add `.PHONY` and `## help` self-documentation.
 3. Create `scripts/` with executable shell stubs; `android_build_aar.sh` / `publish_local_maven.sh` bodies land in #30.
 4. `clean-generated` removes only `build/`, generated packages, and `onnx_models/` — never `cache_dir/` or anything outside the repo (Tier-5 risk: destructive cleanup).
@@ -68,7 +68,7 @@ export-model:
 	mobiletransformers export --model $(MODEL) --peft $(PEFT) --quant $(QUANT)
 
 package-model:
-	mobiletransformers package --build-dir $(BUILD_DIR)
+	mobiletransformers package-model --build-dir $(BUILD_DIR)
 
 lint:
 	ruff check src/ && ruff format --check src/
@@ -77,7 +77,7 @@ typecheck:
 	mypy src/mobiletransformers
 
 android-build:
-	cd android/ORTransformer && ./gradlew assembleDebug
+	cd android/MobileTransformers && ./gradlew assembleDebug   # post-#16 path; ORTransformer during transition
 ```
 
 `lint` and `typecheck` wire the #5 tooling (ruff + mypy); they are the standing checks CI re-invokes (#29).

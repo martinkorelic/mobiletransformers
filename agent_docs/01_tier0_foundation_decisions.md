@@ -7,6 +7,8 @@ Tier 0 decides the architecture before implementation work fans out. It covers t
 This revision is more concrete than the first draft: ONNX Runtime Training is treated as a source-built local artifact, not as a normal public PyPI dependency, and ONNX Runtime GenAI is treated as feasible enough for a serious spike because the repo already contains several useful integration hooks.
 
 > Detailed code-implementation plans live in `agent_docs/01_code_plans/` and the global order in `agent_docs/IMPLEMENTATION_ORDER.md`.
+>
+> **This doc is a decision-time record.** Its "Current Repo Evidence" and analysis sections describe the code **as it was when the decisions were made** — including contracts that the decisions themselves retire (e.g. the `inference/merged/*.tensor` layout, the two overlapping export paths). Where wording here differs from the IMPLEMENTATION_ORDER canonical decisions or a code plan's Data-contracts section, **those win**; do not implement against the historical descriptions in this file.
 
 ## Current Repo Evidence
 
@@ -95,7 +97,7 @@ Concrete implementation:
 3. Run `optimum-cli export onnx` or `optimum.exporters.onnx.main_export` for inference export.
 4. Normalize graph names, KV-cache names, tokenizer files, `generation_config.json`, and external-data layout into MobileTransformers package conventions.
 5. Generate training artifacts only after the model's PEFT target modules and trainable parameter set are known.
-6. Emit `model_support_matrix.json` with statuses such as `optimum_exportable`, `mobile_package_exportable`, `train_artifacts_exportable`, `android_inference_smoked`, `android_training_smoked`, and `rag_ready`.
+6. Emit `model_support_matrix.json` with statuses `optimum_exportable`, `mobile_package_exportable`, `train_artifacts_exportable`, `android_inference_ready`, `android_training_ready`, and `rag_ready` (canonical names owned by `02_code_plans/02`).
 
 This keeps the repo aligned with Optimum's expanding model coverage while protecting users from a false promise that every exported ONNX graph can be trained, merged, and run inside the Android SDK.
 

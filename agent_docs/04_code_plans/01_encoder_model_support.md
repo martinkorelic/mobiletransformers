@@ -68,7 +68,7 @@ The `taskType` closed set is **data-driven, not `if/elif`**: add a `TASK_REGISTR
 A Bert/encoder entry is **registry data**, not new branches. Sketch of the `TASK_REGISTRY` + `ArchitectureSpec` rows (09) and the encoder export/inference calls they drive:
 
 ```python
-# config/registries.py — closed sets, no if/elif
+# mobiletransformers/config/registry/ (09's registries) — closed sets, no if/elif
 TASK_REGISTRY["feature-extraction"] = TaskSpec(
     onnx_config_class=BertOnnxConfig,          # optimum-onnx front door (#7)
     auto_model_class=AutoModel,                 # not AutoModelForCausalLM

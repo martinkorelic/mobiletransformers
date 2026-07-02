@@ -20,7 +20,7 @@ Existing facts to wrap (do not reimplement):
 
 ## Touched / new files
 
-**Android Kotlin (new), package `com.martinkorelic.ortmobile.training`:**
+**Android Kotlin (new), package `com.martinkorelic.mobiletransformers.training`** (this plan runs at order #18, *after* the #16 rename; the wrapped `ORTTrainerNative` may still live in the legacy `com.martinkorelic.ortmobile` package per #16 option A — import it from there):
 - `TrainingJob.kt` — public handle: `start`, `cancel`, `status`, progress flow, checkpoint info, final result.
 - `TrainingStatus.kt` — sealed status + `TrainingResult`.
 - `TrainingEvent.kt` — structured event stream (sealed) mapping the `TrainingCallback` surface.
@@ -47,6 +47,8 @@ sealed interface TrainingStatus {
     data class Failed(val error: Throwable) : TrainingStatus
 }
 
+// NOTE: this is the SAME TrainingResult class that #17's ModelSession.train(...) returns —
+// this plan enriches it with the fields below; it is not a second type.
 data class TrainingResult(
     val finalStep: Int, val finalEpoch: Int,
     val finalLoss: Float, val totalDurationMs: Long,

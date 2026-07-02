@@ -16,7 +16,7 @@ This plan **references** those contracts and pins them into the repo layout.
 ### Canonical inheritance
 
 - **One shared package, dual engine.** The same package directory and the same materialized Android cache folder are consumable by **both** the native ORT engine and the ONNX Runtime GenAI engine. The *variant* (not the package) declares which engines it supports. GenAI is selectable; Native is the guaranteed path.
-- **Per-tensor external initializers.** Trainable/merged weights are ONNX external initializers, one-file-per-tensor, living under `inference/`. The frozen quantized base is a separate immutable external blob, also under `inference/`. On-device merge overwrites the per-tensor files (atomic rename + checksum), matching `ORTTrainerNative.mergeExportSessionWeights()` which writes into `<repo>/inference/merged`.
+- **Per-tensor external initializers, FLAT layout.** Trainable/merged weights are ONNX external initializers, one-file-per-tensor, living **flat** in `inference/` beside `model.onnx`. The frozen quantized base is the separate immutable blob `inference/frozen_base.onnx.data`. On-device merge overwrites the per-tensor files (atomic rename + checksum). (Today's `ORTTrainerNative.mergeExportSessionWeights()` writes into `<repo>/inference/merged` — that is the **legacy** behavior #9/#23 retire; there is no `base/` or `merged/` subdir in this format.)
 - **Apache-2.0** is the framework license. Base-model weights keep their upstream license, declared per package in the manifest `license` field and restated in the model card.
 
 ## Touched / new files
@@ -25,11 +25,11 @@ New (authored by this plan; emitted by the export CLI in #15, validated by #13):
 
 - `docs/HUB_PACKAGE_FORMAT.md` — human-facing spec mirror of this plan (added in Tier 1 step 14).
 - `agent_docs/fixtures/tiny_package/` — tiny on-disk fixture repo used by #13 validator and #21 pull smoke. Contains a manifest, stub configs, and zero-byte/placeholder ONNX files sized to match `fileSizes`.
-- `mobiletransformers/hub/package_format.py` (Python pkg root scaffolded by #1) — module of constants: `SCHEMA_VERSION`, `REQUIRED_TOP_LEVEL_FILES`, `FEATURE_GROUPS = ("core","inference","train","rag","genai","checksums")`, `VARIANT_SUBDIRS = ("train","inference","embedding")`, `sanitize_repo_id(repo_id)` (e.g. `mobiletransformers/Qwen2-0.5B-mobile` → `mobiletransformers__Qwen2-0.5B-mobile`; must match the Kotlin `sanitizedRepoId` used by `LLMRepository.cacheDir/<sanitizedRepoId>`).
+- `mobiletransformers/hub/package_format.py` (Python pkg root scaffolded by #1) — module of constants: `SCHEMA_VERSION`, `REQUIRED_TOP_LEVEL_FILES`, `FEATURE_GROUPS = ("core","inference","train","rag","genai","checksums")`, `VARIANT_SUBDIRS = ("train","inference","embedding")`, `sanitize_repo_id(repo_id)` — **the single canonical definition of the algorithm**, precisely: (1) replace every `/` with `__` (double underscore); (2) replace every remaining character NOT in `[A-Za-z0-9._-]` with a single `_`; (3) no trimming, no case-folding, no length cap (HF repo ids are already length-bounded). Deterministic and order-independent — e.g. `mobiletransformers/Qwen2-0.5B-mobile` → `mobiletransformers__Qwen2-0.5B-mobile`. The Kotlin sanitizer (`00_code_plans/06`/#21) must match byte-for-byte; the shared `sanitize_repo_id_cases.json` fixture (checked in with edge cases: unicode, spaces, `..`, leading dots) is the parity oracle.
 
 Existing files that define the contract this format must stay compatible with:
 
-- `tools/onnx_builder.py` → `convert_pipeline()` already emits `build/train/{training_model.onnx,eval_model.onnx,optimizer_model.onnx,checkpoint,training_config.json}`, `build/inference/{generation_config.json, model + .onnx.data}`, `build/tokenizer/`, `build/embedding/rag_config.json`. The package layout is a reorganization of these outputs.
+- `artifact/onnx_builder.py` → `convert_pipeline()` already emits `build/train/{training_model.onnx,eval_model.onnx,optimizer_model.onnx,checkpoint,training_config.json}`, `build/inference/{generation_config.json, model + .onnx.data}`, `build/tokenizer/`, `build/embedding/rag_config.json`. The package layout is a reorganization of these outputs.
 - `inference/builder.py` → `make_genai_config()` emits `genai_config.json`; `create_model()` emits `model.onnx` + `model.onnx.data`.
 - Android `LLMRepository` expects, under `<cacheDir>/<repoName>/`: `tokenizer/`, `train/training_config.json`, `inference/generation_config.json`, `embedding/rag_config.json` (see `LLMRepository.updatePaths()` and `ORTTrainerNative` paths).
 
@@ -68,18 +68,16 @@ mobiletransformers/Qwen2-0.5B-mobile/
         training_config.json       # requires_grad, peft_mapping, rank, alpha, peft_target, trainable_parameter_count, peftMethod, modelId
         trainable_parameters.json  # list of per-tensor trainable initializer names (one-file-per-tensor manifest)
         weight_handoff_map.json    # train→infer tensor contract (schema owned by #8/07)
-        mars_merger_model.onnx     # MARS/LoRA on-device merger graphs (from artifact/merger.py)
-        mars_qmerger_model.onnx
-        lora_merger_model.onnx
-        lora_qmerger_model.onnx
+        merger_*.onnx              # on-device merger graphs — descriptive registry filenames from 09's
+                                   # build_merger_model (e.g. merger_mars_qin_qout.onnx), recorded in the
+                                   # handoff map's mergerModels; NO legacy lora_/mars_(q)merger_model names
         <task>.jsonl               # optional bundled fine-tune dataset (export_dataset)
-      inference/
-        base/                      # frozen quantized base — immutable external blob
-          model.onnx
-          model.onnx.data
-        merged/                    # per-tensor trainable/merged external initializers (one file per tensor)
-          model.layers.0.attn.q_proj.MatMul.weight
-          ...
+      inference/                   # FLAT canonical layout — no base/ or merged/ subdirs
+        model.onnx                 # graph; initializers are external refs only
+        frozen_base.onnx.data      # frozen quantized base — immutable external blob
+        model.layers.0.attn.q_proj.MatMul.weight.bin        # per-tensor trainable/merged externals
+        model.layers.0.attn.q_proj.MatMul.weight.bin.sha256 # (+ sibling checksums; one pair per tensor)
+        weight_handoff_map.json    # installed copy the engines read (source copy under train/)
         generation_config.json     # MobileTransformers inference config: { "type": "native" | "genai", ... }
         genai_config.json          # present only if variant supports the GenAI engine
         session_options.json       # ORT SessionOptions hints (threads, graph opt level)
@@ -94,7 +92,7 @@ mobiletransformers/Qwen2-0.5B-mobile/
 
 Notes:
 - `default/` is the manifest-declared `defaultVariant`. Emit it either as a real copy or as a manifest alias (`downloadPlan` paths point at `variants/<defaultVariant>/...`). Prefer alias to avoid doubling repo size; only materialize a real `default/` copy if Xet dedup is unavailable.
-- `inference/base/` + `inference/merged/` realize the per-tensor-external + frozen-base split. Android merge overwrites files under `inference/merged/`; the base blob is never rewritten on device.
+- The flat `inference/` dir realizes the per-tensor-external + frozen-base split: Android merge overwrites the per-tensor `.bin` files in place (atomic rename + checksum); `frozen_base.onnx.data` is never rewritten on device.
 - Variant ids are free-form but should encode `<ep>-<quant>` and optionally engine, e.g. `cpu-int4`, `cpu-fp16`, `cpu-int4-genai`.
 
 ### `mobiletransformers_manifest.json` — full field list
@@ -132,7 +130,8 @@ Notes:
       "features": ["core", "inference", "train", "rag", "genai"],
       "minimumAndroidApi": 28,
       "recommendedDeviceMemoryMb": 3072,
-      "weightHandoff": "variants/cpu-int4/train/weight_handoff_map.json"
+      "weightHandoff": "variants/cpu-int4/inference/weight_handoff_map.json",
+      "paths": { "train": "variants/cpu-int4/train", "inference": "variants/cpu-int4/inference", "embedding": "variants/cpu-int4/embedding", "tokenizer": "shared/tokenizer" }
     },
     {
       "id": "cpu-fp16",
@@ -143,7 +142,8 @@ Notes:
       "features": ["core", "inference", "train"],
       "minimumAndroidApi": 28,
       "recommendedDeviceMemoryMb": 6144,
-      "weightHandoff": "variants/cpu-fp16/train/weight_handoff_map.json"
+      "weightHandoff": "variants/cpu-fp16/inference/weight_handoff_map.json",
+      "paths": { "train": "variants/cpu-fp16/train", "inference": "variants/cpu-fp16/inference", "tokenizer": "shared/tokenizer" }
     }
   ],
 
@@ -153,7 +153,7 @@ Notes:
   "downloadPlan": {
     "cpu-int4": {
       "core":      ["mobiletransformers_manifest.json", "shared/tokenizer/**", "shared/chat_template.jinja", "shared/config.json", "shared/generation_config.json"],
-      "inference": ["variants/cpu-int4/inference/base/**", "variants/cpu-int4/inference/merged/**", "variants/cpu-int4/inference/generation_config.json", "variants/cpu-int4/inference/session_options.json"],
+      "inference": ["variants/cpu-int4/inference/**"],
       "train":     ["variants/cpu-int4/train/**"],
       "rag":       ["variants/cpu-int4/embedding/**"],
       "genai":     ["variants/cpu-int4/inference/genai_config.json"],
@@ -162,13 +162,13 @@ Notes:
   },
 
   // --- integrity / sizing (keyed by repo-relative path) ---
-  "requiredFiles": ["mobiletransformers_manifest.json", "shared/tokenizer/tokenizer.json", "variants/cpu-int4/inference/base/model.onnx", "..."],
-  "fileSizes": { "variants/cpu-int4/inference/base/model.onnx.data": 412000000, "...": 0 },
-  "sha256":    { "variants/cpu-int4/inference/base/model.onnx.data": "ab12...", "...": "" },
-  "etag":      { "variants/cpu-int4/inference/base/model.onnx.data": "\"ab12...\"" },  // optional, from Hub HEAD
+  "requiredFiles": ["mobiletransformers_manifest.json", "shared/tokenizer/tokenizer.json", "variants/cpu-int4/inference/model.onnx", "..."],
+  "fileSizes": { "variants/cpu-int4/inference/frozen_base.onnx.data": 412000000, "...": 0 },
+  "sha256":    { "variants/cpu-int4/inference/frozen_base.onnx.data": "ab12...", "...": "" },
+  "etag":      { "variants/cpu-int4/inference/frozen_base.onnx.data": "\"ab12...\"" },  // optional, from Hub HEAD
 
   // --- top-level pointer to the active handoff (default variant) ---
-  "weightHandoff": "variants/cpu-int4/train/weight_handoff_map.json",
+  "weightHandoff": "variants/cpu-int4/inference/weight_handoff_map.json",
 
   // --- android runtime requirements (top-level summary; per-variant overrides win) ---
   "androidRuntime": {
@@ -186,7 +186,7 @@ Notes:
 ```
 
 Field semantics that matter for consumers:
-- `schemaVersion` / `minReaderVersion` (**F1 schema versioning**): `schemaVersion` is `"MAJOR.MINOR"`; readers preserve unknown fields, so additive minor bumps (a new manifest key, a new variant attribute) are non-breaking. A reader fails closed with a "needs newer SDK" message only when the manifest's `major` exceeds what it supports or its own version is below `minReaderVersion`. One `check_compat()` helper is mirrored Python↔Kotlin so the CLI, Python pull, and Android downloader all gate identically.
+- `schemaVersion` / `minReaderVersion` (**F1 schema versioning**): `schemaVersion` is `"MAJOR.MINOR"`; readers preserve unknown fields, so additive minor bumps (a new manifest key, a new variant attribute) are non-breaking. A reader fails closed with a "needs newer SDK" message only when the manifest's `major` exceeds what it supports or its own version is below `minReaderVersion`. One `check_compat()` helper is mirrored Python↔Kotlin so the CLI, Python pull, and Android downloader all gate identically (exact algorithm + `READER_SCHEMA_VERSION` convention pinned in `00_code_plans/07`).
 - `downloadPlan[variant][group]` is the **only** thing a downloader needs to convert "I want inference + rag" into an `allow_patterns` list — no path knowledge baked into clients.
 - `requiredFiles` is the minimal set whose absence fails validation regardless of requested features (manifest + tokenizer + base inference graph).
 - `sha256` / `fileSizes` are the integrity source of truth; `checksums.json` per variant is a redundant copy so a variant subtree is self-validating after extraction.
@@ -194,13 +194,13 @@ Field semantics that matter for consumers:
 
 ### `weight_handoff_map.json` (referenced, schema owned by #8/07)
 
-Lives at `variants/<id>/train/weight_handoff_map.json`. It is the contract that replaces hard-coded name rewrites (e.g. `weight_merger.cpp:904`). For `handoffMode = "external_initializer"` (the canonical dual-engine mode), each entry maps a training checkpoint tensor name → the per-tensor external initializer file under `inference/merged/`. Android consults it during merge instead of string-replacing names. This plan only pins its **location** and requires that every name it references resolves to a real file in `inference/merged/` (validated by #13).
+The copy consumers resolve lives at `variants/<id>/inference/weight_handoff_map.json` (the `weightHandoff` pointer targets this one, and it ships in the `inference` download group so inference-only pulls carry it); the exporter also emits the source copy next to `training_config.json` under `train/`. It is the contract that replaces hard-coded name rewrites (e.g. `weight_merger.cpp:904`). For `handoffMode = "external_initializer"` (the canonical dual-engine mode), each entry maps a training checkpoint tensor name → the per-tensor external initializer `.bin` file flat in `inference/` (`externalDataLocation[role]`). Android consults it during merge instead of string-replacing names. This plan only pins its **location** and requires that every `externalDataLocation` it references resolves to a real file in the variant's `inference/` dir (validated by #13).
 
 ## Implementation steps
 
 1. Add `mobiletransformers/hub/package_format.py` with the constants, `FEATURE_GROUPS`, `VARIANT_SUBDIRS`, and `sanitize_repo_id()`. Keep `sanitize_repo_id` byte-identical to the Kotlin sanitizer used in #21/cache bridge (single source: document the algorithm here and in #13).
 2. Write a `build_manifest(package_dir, variants, base_model_id, export_report) -> dict` helper that walks the package tree, computes `fileSizes` + `sha256` (stream-hash, 1 MiB chunks), and assembles `downloadPlan` from `FEATURE_GROUPS` × variant subtrees. The export CLI (#15) calls this as its final emit step.
-3. Define the mapping from `convert_pipeline()`/`create_model()` outputs into the variant tree: `build/train/*` → `variants/<id>/train/`, `build/inference/model.onnx(.data)` → `inference/base/`, per-tensor merged initializers → `inference/merged/`, `build/tokenizer` → `shared/tokenizer`, `build/embedding` → `variants/<id>/embedding`. Pull `chat_template.jinja` out of the tokenizer (use `tokenizer.chat_template`).
+3. Define the mapping from `convert_pipeline()`/`create_model()` outputs into the variant tree: `build/train/*` → `variants/<id>/train/`, the inference graph → `variants/<id>/inference/model.onnx` with the frozen base as `frozen_base.onnx.data` and per-tensor trainable `.bin` files flat beside it (#9's layout), `build/tokenizer` → `shared/tokenizer`, `build/embedding` → `variants/<id>/embedding`. Pull `chat_template.jinja` out of the tokenizer (use `tokenizer.chat_template`).
 4. Emit `optimum/export_report.json`, `optimum/supported_tasks.json`, `optimum/optimum_config.json` from the export run's metadata (TasksManager output + the resolved `inference_export_config`).
 5. Emit per-variant `checksums.json` (subset of manifest `sha256` scoped to that variant subtree) so a downloaded variant is independently verifiable.
 6. Build the fixture `agent_docs/fixtures/tiny_package/`: a `cpu-int4` variant with placeholder ONNX files whose byte sizes match `fileSizes`, a real tiny tokenizer, and a real (tiny) `weight_handoff_map.json`. This is the shared fixture for #13 validator tests and #21 pull/downloader smokes.
@@ -213,7 +213,7 @@ Lives at `variants/<id>/train/weight_handoff_map.json`. It is the contract that 
 - **#21 (hub pull + cache flow):** Python pull derives `allow_patterns` from `downloadPlan`; Android downloader fetches manifest first, selects a variant by `abi`/`quantization`/`supportedEngines`/`features`/`recommendedDeviceMemoryMb`, then downloads the variant's grouped files.
 - **#22 (adapter push-back):** an exported adapter is published into a `variants/<id>/train/` subtree (or a dedicated adapter repo) and references the same `weight_handoff_map.json` contract.
 - **#8/07:** owns `weight_handoff_map.json` schema; this plan pins its location and the resolvability invariant.
-- **#9/01:** owns the `inference/base` (frozen) + `inference/merged` (per-tensor) split; this plan pins where those land in the repo.
+- **#9/01:** owns the frozen-blob (`frozen_base.onnx.data`) + per-tensor `.bin` flat split; this plan pins where those land in the repo.
 
 ## Tests & acceptance
 
@@ -224,7 +224,7 @@ Lives at `variants/<id>/train/weight_handoff_map.json`. It is the contract that 
 
 **Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
 - `build_manifest()` round-trip: build over the tiny fixture → assert `requiredFiles` present, every `sha256`/`fileSizes` key exists on disk, `downloadPlan` groups reference only existing paths.
-- Handoff resolvability: every name in `weight_handoff_map.json` `inferenceInitializerNames` resolves to a file under `variants/<id>/inference/merged/` (this assertion is owned by #13 but the fixture supports it here).
+- Handoff resolvability: every `externalDataLocation` in `weight_handoff_map.json` resolves to a file under `variants/<id>/inference/` (this assertion is owned by #13 but the fixture supports it here).
 - Dual-engine sanity: a variant advertising `supportedEngines: ["native","genai"]` has both `inference/generation_config.json` (`type: native`) and `inference/genai_config.json`; a `["native"]`-only variant omits `genai_config.json` and its `downloadPlan.genai` group is empty.
 - Fixture lint: `agent_docs/fixtures/tiny_package/` validates clean against the #13 validator in CI.
 

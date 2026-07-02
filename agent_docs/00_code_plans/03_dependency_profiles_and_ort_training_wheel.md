@@ -9,7 +9,7 @@ Evidence the repo already has the collision: `requirements-ort.txt` pins `onnxru
 
 ## The collision (why isolation is mandatory)
 
-`onnxruntime`, `onnxruntime-training`, `onnxruntime-rocm`, `onnxruntime-genai`, and `optimum-onnx[onnxruntime]` all install code under (or depend on) the **same top-level `onnxruntime` import package**. Installing two of them into one venv yields whichever wins the install order — silent, version-dependent breakage. uv treats them as the same distribution name in some cases and as conflicting providers in others, so the safe contract is: **one onnxruntime provider per synced environment**, enforced by never combining the relevant extra/group pairs in a single `uv sync`.
+`onnxruntime`, `onnxruntime-training`, `onnxruntime-rocm`, and `optimum-onnx[onnxruntime]` all install code under (or depend on) the **same top-level `onnxruntime` import package**. Installing two of them into one venv yields whichever wins the install order — silent, version-dependent breakage. (`onnxruntime-genai` is the one exception in the list: it installs its own `onnxruntime_genai` import package and bundles its own ORT native libraries rather than shadowing the `onnxruntime` import — but co-installing it beside a different ORT distribution still risks mismatched native-runtime versions in one process, so it gets the same isolation treatment.) uv treats them as the same distribution name in some cases and as conflicting providers in others, so the safe contract is: **one onnxruntime provider per synced environment**, enforced by never combining the relevant extra/group pairs in a single `uv sync`.
 
 ## Dependency profile table
 
@@ -43,7 +43,7 @@ rag/eval carry no onnxruntime provider and may combine with any one runtime prof
 
 ### Core (always-synced) dependencies
 
-Independent of the onnxruntime profiles, the **core** dependency set (alongside `python-dotenv` from plan 01) must include **`pydantic>=2`**. It carries no onnxruntime provider, so it combines with every profile. This is required by `00_code_plans/09`, which makes Pydantic v2 the typed config contract for every config object and the cross-boundary JSON schema (`schemas/*.schema.json`). Add it to the base `[project] dependencies` (not an extra/group) so `config/models.py` is importable in any synced environment, including the train+export and export profiles that emit `training_config.json` / `generation_config.json` / `rag_config.json` via `model_dump(by_alias=True)`.
+Independent of the onnxruntime profiles, the **core** dependency set (alongside `python-dotenv` from plan 01) must include **`pydantic>=2`**. It carries no onnxruntime provider, so it combines with every profile. This is required by `00_code_plans/09`, which makes Pydantic v2 the typed config contract for every config object and the cross-boundary JSON schema (`schemas/*.schema.json`). Add it to the base `[project] dependencies` (not an extra/group) so `mobiletransformers/config/models.py` is importable in any synced environment, including the train+export and export profiles that emit `training_config.json` / `generation_config.json` / `rag_config.json` via `model_dump(by_alias=True)`.
 
 ## Verified facts to state in the build docs
 

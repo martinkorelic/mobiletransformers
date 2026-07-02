@@ -53,12 +53,16 @@ mobiletransformers/
   CHANGELOG.md
   Makefile
   config/
-    config.yml
-    settings.py
-    constants.py
+    config.yml        # user-editable YAML only — NO Python in repo-root config/ (import-collision + wheel rules; see 00_code_plans/02)
     logging.yml
   src/mobiletransformers/
     __init__.py
+    config/
+      __init__.py
+      settings.py     # secrets/env (ships in the wheel)
+      constants.py    # shared constants + enums (00_code_plans/09)
+      models.py       # Pydantic v2 typed config (00_code_plans/09)
+      registry/       # PEFT / architecture / merger registries (00_code_plans/09)
     cli/
       __init__.py
       main.py
@@ -169,7 +173,7 @@ mobiletransformers/
 | `inference/builder.py` | `src/mobiletransformers/export/inference_export.py` | Large file; migrate behind one stable CLI command first. |
 | `inference/generator.py` | `src/mobiletransformers/inference/generator.py` | Python-side validation/generation helper. |
 | `tools/tokenizer_export.py` | `src/mobiletransformers/export/tokenizer_export.py` | Shared by package builder and Hub package export. |
-| `tools/parser_config.py` | `config/constants.py` or `src/mobiletransformers/utils/yaml.py` | Constants become typed constants; parsing helper moves to utils. |
+| `tools/parser_config.py` | `src/mobiletransformers/config/constants.py` (+ `src/mobiletransformers/utils/yaml.py` for the loader) | Constants become typed constants inside the package; parsing helper moves to utils. |
 | `peft_models/mars/` | `src/mobiletransformers/peft/mars/` | Public differentiator; keep names stable. |
 | `peft_models/lora_xs/` | `src/mobiletransformers/peft/lora_xs/` | Preserve import compatibility until tests move. |
 | `database/` | `src/mobiletransformers/rag/` | Python-side RAG/database helpers; Android ObjectBox remains in Android module. |
@@ -196,9 +200,9 @@ mobiletransformers/
 
 Use three explicit configuration layers:
 
-- `config/config.yml`: user-editable defaults for export, training, inference, artifact packaging, RAG, and smoke tests. This replaces root `config.yml` after compatibility shims are added.
-- `config/settings.py`: typed runtime settings that read environment variables. This owns secrets and machine-specific values: `HF_TOKEN`, `HF_CACHE`, Azure OpenAI values, `GEMINI_API_KEY`, build cache directories, and optional Android SDK/NDK overrides.
-- `config/constants.py`: non-secret constants shared across the repo, such as config section names, default artifact filenames, supported PEFT method names, supported embedding dimensions, and canonical package manifest filenames.
+- `config/config.yml`: user-editable defaults for export, training, inference, artifact packaging, RAG, and smoke tests. This replaces root `config.yml` after compatibility shims are added. Repo-root `config/` holds **YAML only**.
+- `src/mobiletransformers/config/settings.py`: typed runtime settings that read environment variables. This owns secrets and machine-specific values: `HF_TOKEN`, `HF_CACHE`, Azure OpenAI values, `GEMINI_API_KEY`, build cache directories, and optional Android SDK/NDK overrides. Lives **inside the package** so installed wheels are self-contained (and so the root `config.py` shim can import it without colliding on the `config` module name — see `00_code_plans/02`).
+- `src/mobiletransformers/config/constants.py`: non-secret constants shared across the repo, such as config section names, default artifact filenames, supported PEFT method names, supported embedding dimensions, and canonical package manifest filenames.
 
 Recommended environment precedence:
 
@@ -432,11 +436,12 @@ com.martinkorelic.mobiletransformers/
     ChecksumVerifier.kt
     CacheIndex.kt
   runtime/
-    ModelRuntime.kt
-    RepositoryBackedModelRuntime.kt
-    RuntimeCapabilities.kt
+    ModelSession.kt                 # facade-level whole-model contract (the name ModelRuntime is reserved for the engine boundary, 01_code_plans/03)
+    RepositoryBackedModelSession.kt
+    InferenceEngine.kt              # declared by 01_code_plans/03; reused here
+    RuntimeCapabilities.kt          # model-level flags (engine-level = EngineCapabilities, 01_code_plans/03)
   training/
-    DatasetSource.kt
+    DatasetConfig.kt   # single dataset type everywhere (no separate DatasetSource)
     TrainingJob.kt
     TrainingProgress.kt
     AdapterPackage.kt
@@ -472,7 +477,7 @@ These features should land with the mobile restructure so later HF, background-t
 | Cache bridge | Avoids rewriting current model discovery. | Install packages into the existing cache shape used by `LLMRepository`, plus a `CacheIndex` for manifest metadata and storage usage. |
 | Variant/capability selection | Lets one HF repo host multiple mobile-ready builds. | Choose by ABI, quantization, memory estimate, requested features, ORT/GenAI support, and default variant. |
 | Typed user configs | Replaces leaking `ORT*` details in public APIs. | Public `TrainConfig`, `GenerationConfig`, `RagConfig`, `PeftConfig`, `DeviceConfig`, `HubConfig`; map internally to existing config classes. |
-| Dataset abstraction | Needed by local training, scheduled training, and federated rounds. | `DatasetSource` for local JSONL/text/tokenized datasets, mapped to the existing dataset loader. |
+| Dataset abstraction | Needed by local training, scheduled training, and federated rounds. | `DatasetConfig` for local JSONL/text/tokenized datasets, mapped to the existing dataset loader. |
 | Training lifecycle API | Needed for foreground use, WorkManager scheduling, and retries. | `TrainingJob` with `start`, `cancel`, progress callbacks, checkpoint path, and final status. |
 | Checkpoint/resume contract | Makes sleep/charging-cycle training possible later. | Expose checkpoint metadata already saved in `training_state.json`; do not change native checkpoint format yet. |
 | Adapter package contract | Needed for adapter export, Hub push-back, and Flower-style federation. | `AdapterPackage` metadata plus file refs; start with LoRA/MARS trainable tensors already produced by the current pipeline. |
@@ -562,12 +567,12 @@ Tracked examples should use `tests/fixtures/` or `docs/examples/` and must be sm
 4. Add manifest-first package schema, validation fixtures, and cache-install bridge that materializes selected variants into the current `train/`, `inference/`, and `embedding/` cache layout.
 5. Rename Android Gradle root/module/app from `ORTTransformer`/`ORTransformersMobile`/`app` to `MobileTransformers`/`MobileTransformers`/`MobileTransformersApp`.
 6. Update Android namespaces, app `applicationId`, source package directories, Gradle project dependencies, scripts, and docs to the new MobileTransformers names.
-7. Add the Android public facade namespace with `MobileTransformers`, `MobileTransformerModel`, public config classes, package manifest classes, and `RepositoryBackedModelRuntime` adapters around existing repositories.
+7. Add the Android public facade namespace with `MobileTransformers`, `MobileTransformerModel`, public config classes, package manifest classes, and `RepositoryBackedModelSession` adapters around existing repositories.
 8. Add Android-side package validation against the same manifest/cache contract before `fromPretrained` loads any package.
 9. Add `TrainingJob`, progress events, checkpoint metadata access, and cancel/resume hooks around the existing training repository before adding WorkManager scheduling.
 10. Add `AdapterPackage` and `TrainableTensorCodec` interfaces with no network implementation yet; use them only for local adapter/tensor export-import tests.
 11. Move root `config.yml` to `config/config.yml`; leave root compatibility path or loader fallback for one release.
-12. Move root `config.py` secrets/constants into `config/settings.py` and `config/constants.py`; update direct imports in evaluation and export code.
+12. Move root `config.py` secrets/constants into `src/mobiletransformers/config/settings.py` and `src/mobiletransformers/config/constants.py`; root `config.py` becomes a deprecation shim importing from the package; update direct imports in evaluation and export code.
 13. Add compatibility wrappers for current root packages while new imports stabilize.
 14. Migrate `tools/parser_config.py` constants first because many modules depend on them.
 15. Migrate export/artifact modules behind CLI entry points.

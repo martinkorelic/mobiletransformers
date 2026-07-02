@@ -15,7 +15,7 @@ Kotlin:
 - NEW `android/.../rag/ObjectBoxVectorStore.kt` — wraps `ORTVectorDatabase`.
 - NEW (test source set) `.../rag/InMemoryVectorStore.kt` — pure-Kotlin cosine store for JVM tests.
 - `android/.../ORTVectorDatabase.kt` — unchanged behavior; the wrapper calls `queryDocuments` (`:217-246`), `searchVectors`/`nearestNeighbors` (`:255-256`), the `1 - result.score` conversion (`:262`), `minScore` filter (`:238`), and `queryByContent` (`:293`).
-- `android/.../entity/VectorEntity.kt` — the per-dimension entity classes (`:23-162`) plus the `// TODO: Could add other popular dimensions` (`:164`): the `embeddingDimension`→entity map becomes a single declared **dimension registry** (one source of truth for the supported set), so adding a dimension is one registry entry + its `@HnswIndex` entity, not edits scattered across call sites. The wrapper rejects unsupported sizes with a clear error.
+- `android/.../entity/VectorEntity.kt` — the per-dimension entity classes (`:23-162`) plus the `// TODO: Could add other popular dimensions` (`:164`): **promote the already-existing `SUPPORTED_DIMENSIONS = setOf(64,128,256,384,512,768,1024,1536)` (`ORTVectorDatabase.kt:47`) into the single declared dimension registry** (dimension → entity/box constructor), so adding a dimension is one registry entry + its `@HnswIndex` entity, not edits scattered across call sites. The wrapper rejects unsupported sizes with a clear error.
 - `android/.../ORTVectorDatabase.kt` — resolve `// TODO: Clear embeddings from returning` (`:226`): strip the embedding `FloatArray` from results before returning (memory), since `RagMatch` only needs the document + similarity.
 - `android/.../ORTRetriever.kt` — retrieval (`:76-134`) routes through `VectorStore`.
 
@@ -44,7 +44,7 @@ interface VectorStore {
 - **Distance**: COSINE via `@HnswIndex(... distanceType = VectorDistanceType.COSINE)` (`VectorEntity.kt:23-162`).
 - **Similarity**: ObjectBox `findWithScores()` returns a distance; similarity = `1 - result.score` (`ORTVectorDatabase.kt:262`). `RagMatch.score` carries the **similarity** (post-conversion), so callers never re-convert.
 - **`minScore`**: applied as `it.second >= minScore` after conversion (`ORTVectorDatabase.kt:238`).
-- **Dimensions**: the supported set (today `{64,128,256,384,512,768,1024,1536}`) lives in **one declared dimension registry**, not hardcoded per call site; an `embeddingDimension` not in the registry must throw a clear error, not silently pick a box. Adding a dimension = one registry entry + its `@HnswIndex` entity.
+- **Dimensions**: the supported set already exists as `SUPPORTED_DIMENSIONS` (`ORTVectorDatabase.kt:47`, `{64,128,256,384,512,768,1024,1536}`); this plan upgrades it from a bare set into **the declared dimension registry** (dimension → entity mapping in one place); an `embeddingDimension` not in the registry must throw a clear error, not silently pick a box. Adding a dimension = one registry entry + its `@HnswIndex` entity.
 - **No embeddings in results**: returned `RagMatch`es carry document + similarity only; embedding vectors are stripped (`ORTVectorDatabase.kt:226`).
 - **Text search**: `textSearch` maps to the VALUE-index `queryByContent` (`ORTVectorDatabase.kt:293`), assigning a fixed similarity (today `1.0`, `ORTRetriever.kt:118`) — document that text matches are not similarity-ranked.
 

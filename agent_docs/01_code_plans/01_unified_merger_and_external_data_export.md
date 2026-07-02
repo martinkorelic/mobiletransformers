@@ -24,14 +24,14 @@ Python (export side):
 - `inference/builder.py` — becomes the **single** inference builder. Keep `make_genai_config(...)` (lines ~325-391), `make_external_tensor(...)` (lines ~559-574, already emits `<name>.bin` one-file-per-tensor), `make_inputs_and_outputs(...)` KV-cache naming (lines ~627-638). **Add**: handoff-map emission, base/trainable file separation, `handoff_mode`, ported `model_input` conversion, `session_options.config_entries` emission.
 - `artifact/onnx_builder.py` — **demote** `gen_genai(...)` (lines 384-498). Its `weight_input=True` block (lines 410-445) and `force_dequantize_external_and_save(...)` (lines 184-257) move into the unified builder as named helpers (`_convert_initializers_to_inputs`, `_force_external`). `gen_genai` becomes a thin deprecated shim that calls the unified path, or is deleted once callers migrate.
 - `artifact/merger.py` — the four merger-model factories (`create_lora_merger_model` `:240`, `create_lora_merger_model_2` `:351`, `create_mars_merger_model_2` `:599`, `create_mars_merger_model` `:824`) are **collapsed by `00_code_plans/09` into one `build_merger_model(MergerSpec, output_path)`** (graph math preserved per-variant, but expressed once and parameterized by `(peft_method, quant_in, quant_out)`). The **offline merge driver** calls `build_merger_model` per required `MergerSpec` and looks up output filenames from the handoff map instead of inventing `_2`/`qmerger` names. `artifact/onnx_builder.py:628-641` (`if peft_method == "lora" … elif "mars" … else raise "Unsupported PEFT method."`) and its `_2`-factory imports (`:31`) are deleted in favor of iterating `09.resolve_merger(...)` specs.
-- NEW `inference/handoff_map.py` (or reuse module from `00_code_plans/07`) — builder/loader/validator for `weight_handoff_map.json`. If `00_code_plans/07` already provides the schema + codec module, import it; this plan only *produces* the file.
+- Handoff-map builder/loader/validator: **import `mobiletransformers.artifacts.handoff_map` (#8's module — #8 is order 8, already merged when this plan runs).** Do NOT create a second `handoff_map.py`; this plan only *produces* the `weight_handoff_map.json` file through #8's `TrainableTensorCodec`/`HandoffMap` APIs.
 - NEW `inference/export_inference_package.py` — top-level orchestrator: take Optimum/torch.onnx graph -> normalize -> split base vs trainable externals -> emit handoff map + genai_config -> validate.
 
 C++ (device merge side):
 - `android/ORTransformer/ORTransformersMobile/src/main/cpp/weight_merger.cpp` / `.h` — replace `WeightMerger::inference_name(...)` (lines 904-925) and the filename logic in `save_merged_parameters(...)` (lines 815-901) with a **handoff-map lookup**. Add a handoff-map loader (`load_handoff_map(path)`), atomic write (`temp + rename`), and checksum. **Also replace the merger-variant string dispatch:** `get_merger_type` (`:476-499`, which returns the literals `"mars_q"/"lora_q"/"lora"`) resolves the `MergerVariant` from the handoff map (the variant is recorded per-entry by the exporter); `run_merger_model`'s `if (merger_type == "lora") … else if "lora_q" … else if "mars_q"` branches (`:526, :562, :613, :687, :707`) select session + IO names from a registry-built variant→session map; the hard-coded merger ONNX paths (`:448-464`: `/lora_merger_model.onnx`, `/lora_qmerger_model.onnx`, `/mars_qmerger_model.onnx`) come from the handoff map's descriptive filenames. Closes `weight_merger.cpp:494` (`// TODO: Custom merger model?`).
 
 Config:
-- root `config.yml` — `ARTIFACT_BUILDER.inference_export_config` already has `weight_input` (line ~183) and `force_external_initializers` (line ~195); `INFERENCE_BUILDER.export_genai_config` (line ~141); `inference_config.loadMergedWeights` (line ~208). **Add** `handoff_mode: external_initializer` and keep `weight_input` as the `model_input`-mode toggle (or fold `weight_input: true` -> `handoff_mode: model_input`).
+- `config/config.yml` (moved there by `00_code_plans/02`) — `ARTIFACT_BUILDER.inference_export_config` already has `weight_input` (line ~183) and `force_external_initializers` (line ~195); `INFERENCE_BUILDER.export_genai_config` (line ~141); `inference_config.loadMergedWeights` (line ~208). **Add** `handoff_mode: external_initializer` and keep `weight_input` as the `model_input`-mode toggle (or fold `weight_input: true` -> `handoff_mode: model_input`).
 
 ## Data contracts / interfaces
 
@@ -42,42 +42,21 @@ inference/
   model.onnx                      # graph; initializers are EXTERNAL refs only
   genai_config.json               # GenAI engine config (see below)
   weight_handoff_map.json         # SINGLE SOURCE OF TRUTH (schema: 00_code_plans/07)
-  base/
-    base_weights.onnx.data        # frozen quantized base — IMMUTABLE, mmap'd read-only
+  frozen_base.onnx.data           # frozen quantized base — IMMUTABLE, mmap'd read-only (flat; matches the map's frozenBaseBlob)
   <trainable_tensor_a>.bin        # one file per trainable tensor (overwritten by merge)
   <trainable_tensor_a>.bin.sha256
   <trainable_tensor_b>.bin
   ...
 ```
 
-- Frozen base initializers point (`set_external_data location=...`) at `base/base_weights.onnx.data`. They are **never** written by a merger.
+- Frozen base initializers point (`set_external_data location=...`) at `frozen_base.onnx.data` (flat in `inference/` — the canonical layout; **no `base/` subdir, no `merged/` subdir**). They are **never** written by a merger.
 - Trainable initializers point at their own `<name>.bin` (one-file-per-tensor) so the device merge can overwrite a single file atomically without touching the base blob. This is what `make_external_tensor` already does for `<name>.bin`; extend it to *route* base tensors into the shared blob and trainable tensors into per-tensor files.
 
-### `weight_handoff_map.json` (consumed here; schema authored in `00_code_plans/07`)
+### `weight_handoff_map.json` (consumed here; schema authored in `00_code_plans/07` — that camelCase `entries[]` schema is the ONLY vocabulary)
 
-Each entry maps one logical trainable weight across the train -> merge -> infer chain. Fields this plan **must populate**:
+Each entry maps one logical trainable weight across the train -> merge -> infer chain. This plan **must populate**, per entry (field names exactly as in #8): `trainingBaseLayerName`, `checkpointNames`, `mergerOutputNames` (e.g. `{"weight_quantized": "merged_weight_quantized"}` — the merger graph's output tensor per role), `mergedTensorNames`, `inferenceInitializerNames`, `externalDataLocation` (per-role `.bin` filename), `sha256` (per-role, of the bytes actually written), `genaiInputNames` (populated only in `model_input` mode), `dtype`, `shape`, `quantization` (role names for `weight_quantized`/`scale`/`zero_point`), `transposePolicy`. Top-level: `handoffMode`, `frozenBaseBlob` (`frozen_base.onnx.data`), `externalDataLayout`, `engines`, and `mergerModels` (resolved `MergerVariant` → descriptive merger ONNX filename from 09's `build_merger_model`). A worked instance lives in #8 — do not restate a divergent shape here.
 
-```
-{
-  "handoff_mode": "external_initializer",
-  "tensors": [
-    {
-      "training_param_names": ["backbone.model.layers.0.self_attn.q_proj.base_layer.weight", ...],
-      "merger_output_name": "merged_weight_quantized",          // tensor produced by merger model
-      "inference_initializer_name": "model.layers.0.attn.q_proj.MatMul.weight",
-      "genai_model_input_name": null,                            // set only in model_input mode
-      "external_file": "model.layers.0.attn.q_proj.MatMul.weight.bin",
-      "dtype": "uint8",
-      "shape": [4096, 4096],
-      "quantization": { "scheme": "matmulnbits", "scale_file": "...weight_scale.bin", "zero_point_file": "...weight_zero_point.bin" },
-      "transpose": false,
-      "sha256": "<hex of last-written bytes>"
-    }
-  ]
-}
-```
-
-Note the quantized triple comes straight from the current code: `WeightMerger::save_merged_parameters` writes `weight_quantized.tensor`, `weight_zero_point.tensor`, `weight_scale.tensor`; `artifact/merger.py` outputs `merged_weight_quantized` / `merged_scale` / `merged_zero_point`; `force_dequantize_external_and_save` keys on `MatMul.weight`, `MatMul.weight_zero_point`, `MatMul.weight_scale`. **The map reconciles all three vocabularies into the single `inference_initializer_name` + `external_file`.** This is also where Tier-0 finding #10 (the `safe_name` vs `base_layer_name + ".weight_scale"` inconsistency) is resolved: the scale filename becomes data in the map, with a regression test.
+Note the quantized triple comes straight from the current code: `WeightMerger::save_merged_parameters` writes `weight_quantized.tensor`, `weight_zero_point.tensor`, `weight_scale.tensor`; `artifact/merger.py` outputs `merged_weight_quantized` / `merged_scale` / `merged_zero_point`; `force_dequantize_external_and_save` keys on `MatMul.weight`, `MatMul.weight_zero_point`, `MatMul.weight_scale`. **The map reconciles all three vocabularies into the single `inferenceInitializerNames[role]` + `externalDataLocation[role]`.** This is also where Tier-0 finding #10 (the `safe_name` vs `base_layer_name + ".weight_scale"` inconsistency) is resolved: the scale filename becomes data in the map, with a regression test.
 
 ### `genai_config.json` additions
 
@@ -105,17 +84,17 @@ This is a real documented ORT key. On a file-path load (`OgaCreateModel(<inferen
 
 1. **Lift the legacy conversions into named helpers** (no behavior change yet). Move `gen_genai`'s `weight_input=True` block (onnx_builder.py:410-445) into `inference/builder.py` as `_convert_initializers_to_inputs(model, requires_grad_names, opset_version)`. Move `force_dequantize_external_and_save` (onnx_builder.py:184-257) into `_force_external(model, path)`. Keep the existing `force_external or training_config` guard semantics (onnx_builder.py:476-480).
 
-2. **Split base vs trainable externals.** In `inference/builder.py`, change initializer routing so `make_external_tensor` (builder.py:559-574) takes a `kind` ("base" | "trainable"). Base tensors append into one shared `base/base_weights.onnx.data` (`onnx.save(..., save_as_external_data=True, location="base/base_weights.onnx.data", size_threshold=0)` semantics, matching the current single-`.data` flow). Trainable tensors keep one `<name>.bin` each. Drive the split from `training_config["requires_grad"]` (the same list already read by `gen_genai` at onnx_builder.py:412 and by `generator_genai.py`).
+2. **Split base vs trainable externals.** In `inference/builder.py`, change initializer routing so `make_external_tensor` (builder.py:559-574) takes a `kind` ("base" | "trainable"). Base tensors append into one shared `frozen_base.onnx.data` flat in `inference/` (`onnx.save(..., save_as_external_data=True, location="frozen_base.onnx.data", size_threshold=0)` semantics, matching the current single-`.data` flow). Trainable tensors keep one `<name>.bin` each. Drive the split from `training_config["requires_grad"]` (the same list already read by `gen_genai` at onnx_builder.py:412 and by `generator_genai.py`).
 
-3. **Emit `weight_handoff_map.json`.** Build one entry per `requires_grad` base layer. Populate `training_param_names`, `merger_output_name`, `inference_initializer_name`, `external_file`, `dtype`, `shape`, `quantization` (resolve scale/zero-point filenames here — fix the `safe_name` vs `.weight_scale` inconsistency), `transpose`. Set `genai_model_input_name` only in `model_input` mode. Write SHA256 of the bytes actually written for each trainable `.bin`.
+3. **Emit `weight_handoff_map.json`.** Build one entry per `requires_grad` base layer, using #8's field names exactly: `trainingBaseLayerName`/`checkpointNames`, `mergerOutputNames`, `inferenceInitializerNames`, `externalDataLocation`, `dtype`, `shape`, `quantization` (resolve scale/zero-point names here — fix the `safe_name` vs `.weight_scale` inconsistency), `transposePolicy`. Set `genaiInputNames` only in `model_input` mode. Write the per-role `sha256` of the bytes actually written for each trainable `.bin`.
 
-4. **Add `handoff_mode` switching.** Read from `config.yml`. In `external_initializer` mode: keep initializers external (call `_force_external`), do NOT convert to inputs. In `model_input` mode: call `_convert_initializers_to_inputs` and set `genai_model_input_name = inference_initializer_name` in the map, and stop forcing those particular tensors external (they are now inputs). `adapter` mode: emit a TODO stub + clear NotImplemented error.
+4. **Add `handoff_mode` switching.** Read from `config.yml`. In `external_initializer` mode: keep initializers external (call `_force_external`), do NOT convert to inputs. In `model_input` mode: call `_convert_initializers_to_inputs` and set `genaiInputNames[role] = inferenceInitializerNames[role]` in the map, and stop forcing those particular tensors external (they are now inputs). `adapter` mode: emit a TODO stub + clear NotImplemented error.
 
 5. **Emit genai_config session_options.config_entries.** Extend `make_genai_config` to write the `session.model_external_initializers_file_folder_path` entry plus the harmless ORT entries from Tier-0 (`use_env_allocators`, `qdq_matmulnbits_accuracy_level`, etc.). Gate behind `export_genai_config`.
 
-6. **Offline merge driver -> handoff filenames** (`artifact/merger.py` caller). Build each required merger via `09.build_merger_model(spec, output_path)` (iterating `09.resolve_merger(peft_method, quant_in, quant_out)` — **not** the deleted `create_*_merger_model{,_2}` factories). After running the merger ONNX, do NOT invent `output_path`; look up `external_file` from the handoff map for each `inference_initializer_name`, write to a temp file, `fsync`, atomic `os.replace`, then write `<file>.sha256` and update the map's `sha256`. Quantized outputs (`merged_weight_quantized`/`merged_scale`/`merged_zero_point`) route to the three filenames named in `quantization`.
+6. **Offline merge driver -> handoff filenames** (`artifact/merger.py` caller). Build each required merger via `09.build_merger_model(spec, output_path)` (iterating `09.resolve_merger(peft_method, quant_in, quant_out)` — **not** the deleted `create_*_merger_model{,_2}` factories). After running the merger ONNX, do NOT invent `output_path`; look up `externalDataLocation[role]` from the handoff map for each `inferenceInitializerNames[role]`, write to a temp file, `fsync`, atomic `os.replace`, then write `<file>.sha256` and update the entry's `sha256[role]`. Quantized outputs (`merged_weight_quantized`/`merged_scale`/`merged_zero_point`) route to the three filenames named in `quantization`.
 
-7. **Device merge -> handoff lookup** (`weight_merger.cpp`). Add `load_handoff_map(path)` returning a `param_name -> {external_file, scale_file, zero_point_file, dtype, shape, transpose}` map. In `save_merged_parameters` (lines 815-901), replace the `inference_name(...)` call (line ~826) and the constructed `.tensor` filenames with the map's `external_file` / `scale_file` / `zero_point_file`. **Delete** `inference_name` (lines 904-925) or keep it only behind a `#ifdef LEGACY_NAME_REWRITE` fallback that logs a deprecation warning. Write through a temp path + `rename(2)` (atomic on same filesystem) and emit a checksum file.
+7. **Device merge -> handoff lookup** (`weight_merger.cpp`). Add `load_handoff_map(path)` returning a `trainingBaseLayerName -> HandoffEntry{externalDataLocation, quantization names, dtype, shape, transposePolicy}` map. In `save_merged_parameters` (lines 815-901), replace the `inference_name(...)` call (line ~826) and the constructed `.tensor` filenames with the entry's `externalDataLocation[role]` (quantized roles from `quantization`). **Delete** `inference_name` (lines 904-925) or keep it only behind a `#ifdef LEGACY_NAME_REWRITE` fallback that logs a deprecation warning. Write through a temp path + `rename(2)` (atomic on same filesystem) and emit a checksum file.
 
 8. **Fail closed on mismatch.** Both mergers: if a `requires_grad`/PEFT base layer has no handoff entry, or dtype/shape/transpose disagree, abort with an explicit error (do not silently fall back to string rewrites). On device, surface as a load error consumed by `ORTGeneratorNative`.
 
@@ -129,22 +108,22 @@ This is a real documented ORT key. On a file-path load (`OgaCreateModel(<inferen
 - **`00_code_plans/07`** owns the `weight_handoff_map.json` schema + tensor codec; this plan *writes* the file and *reads* the codec. If field names here differ from 07, 07 wins — align.
 - **File #10 (GenAI spike)** consumes the exact package this builder produces (per-tensor externals + genai_config). The spike's pass/fail depends on step 2 (file split) and step 5 (config entry).
 - **File #11 (engine abstraction)** reads `genai_config.json`'s engine candidate and the handoff map; both engines point at the same `inference/` dir.
-- **`ORTGeneratorNative` `loadMergedWeights`**: currently checks `<cacheDir>/<repoName>/inference/merged` (ORTGeneratorNative.kt:41-48). Under the new layout merged tensors live directly in `inference/` as the canonical `.bin` files, so this check must move to "handoff map present and all `external_file`s exist with matching checksums" rather than a `merged/` dir probe. Coordinate this rename in File #11 / `00_code_plans/06`.
-- **`session_cache.h`**: `AddExternalInitializers` (line ~702) and `session.use_ort_model_bytes_for_initializers=0` (line ~717) stay the native injection path; they now read the handoff map's `external_file` names instead of the old `<layer>/<tensor>.tensor` convention. Native still works even if GenAI never loads.
+- **`ORTGeneratorNative` `loadMergedWeights`**: currently checks `<cacheDir>/<repoName>/inference/merged` (ORTGeneratorNative.kt:41-48). Under the new layout merged tensors live directly in `inference/` as the canonical `.bin` files, so this check must move to "handoff map present and every `externalDataLocation[role]` file exists with matching checksums" rather than a `merged/` dir probe. Coordinate this rename in File #11 / `00_code_plans/06`.
+- **`session_cache.h`**: `AddExternalInitializers` (line ~702) and `session.use_ort_model_bytes_for_initializers=0` (line ~717) stay the native injection path; they now read the handoff map's `externalDataLocation`/`inferenceInitializerNames` instead of the old `<layer>/<tensor>.tensor` convention. Native still works even if GenAI never loads.
 - **Optimum export (#7)** feeds the raw inference graph into `export_inference_package.py`.
 
 ## Tests & acceptance
 
 **Unit (automated)** — small, fast; prove the component wires together and compiles.
-- `pytest tests/inference/test_handoff_map.py` — `handoff_map.py` builder/loader/validator round-trips one entry and `check_compat()` accepts a matching `inference_initializer_name`/`external_file`/dtype/shape.
+- `pytest tests/inference/test_handoff_map.py` — `handoff_map.py` builder/loader/validator round-trips one entry and `check_compat()` accepts a matching `inferenceInitializerNames`/`externalDataLocation`/dtype/shape.
 - **Quantized naming regression** (`pytest tests/inference/test_quant_names.py`): assert merged `weight_quantized` / `weight_zero_point` / `weight_scale` filenames in the map equal what the inference graph references; specifically pin the scale filename to close the `safe_name` vs `.weight_scale` inconsistency.
 - **HandoffMode fail-closed unit**: selecting `model_input` or `adapter` raises the explicit `NotImplementedError` (F7 stub), while `external_initializer` resolves.
 - C++ change site **compiles**: `./gradlew :MobileTransformers:compileDebugKotlin` after the `weight_merger.cpp` handoff-map lookup edits (full link/run is Manual below).
 
 **Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
-- **Handoff-map validation smoke**: export a tiny model; every `requires_grad`/PEFT base layer maps to exactly one `inference_initializer_name` + `external_file`, dtype/shape/transpose/quant fields match the actual ONNX initializer. Fail closed otherwise.
-- **Export-mode parity smoke**: export the same tiny model (SmolLM2-360M) in `external_initializer` and `model_input` modes; assert (a) external mode keeps trainable tensors as external initializers and base in one blob, (b) model_input mode removes them and adds matching graph inputs + sets `genai_model_input_name`.
-- **Base/trainable separation smoke**: assert no merger ever writes into `base/base_weights.onnx.data`; assert each trainable `.bin` has a sibling `.sha256` after the offline merge.
+- **Handoff-map validation smoke**: export a tiny model; every `requires_grad`/PEFT base layer maps to exactly one `inferenceInitializerNames[weight]` + `externalDataLocation[weight]`, dtype/shape/transpose/quant fields match the actual ONNX initializer. Fail closed otherwise.
+- **Export-mode parity smoke**: export the same tiny model (SmolLM2-360M) in `external_initializer` and `model_input` modes; assert (a) external mode keeps trainable tensors as external initializers and base in one blob, (b) model_input mode removes them and adds matching graph inputs + sets `genaiInputNames`.
+- **Base/trainable separation smoke**: assert no merger ever writes into `frozen_base.onnx.data`; assert each trainable `.bin` has a sibling `.sha256` after the offline merge.
 - **Atomic-overwrite smoke (Python)**: kill the offline `artifact/merger.py` driver mid-write; assert either the old valid file or the new valid file is present (never a truncated `.bin`), verified by checksum.
 
 **Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
@@ -153,6 +132,6 @@ This is a real documented ORT key. On a file-path load (`OgaCreateModel(<inferen
 - **Native load smoke (device)**: `ORTGeneratorNative` loads the unified `inference/` package with `loadMergedWeights` and generates one token (the guaranteed-path regression guard before File #10 introduces GenAI).
 
 **Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
-- A single `export_inference_package.py` entry produces `<cacheDir>/<model>/inference/` with `model.onnx` (external refs only), `genai_config.json`, `weight_handoff_map.json`, one immutable `base/base_weights.onnx.data`, and per-tensor `<name>.bin` (+ `.sha256`).
+- A single `export_inference_package.py` entry produces `<cacheDir>/<model>/inference/` with `model.onnx` (external refs only), `genai_config.json`, `weight_handoff_map.json`, one immutable `frozen_base.onnx.data` (flat), and per-tensor `<name>.bin` (+ `.sha256`).
 - Offline (`artifact/merger.py`) and device (`WeightMerger`) both write merged tensors to the **exact** filenames in the handoff map (no `_2`/string-rewrite names); both fail closed on any missing/mismatched entry.
 - The hard-coded merger dispatch (`onnx_builder.py:628-641`) and C++ literal branches (`weight_merger.cpp:476-499, 526-712`) are gone, replaced by registry/handoff-map lookups; `gen_genai` is a deprecated shim or removed.

@@ -54,13 +54,16 @@ Lives at `<package>/.../train/weight_handoff_map.json` and is installed into `<c
   "engines": ["native", "genai"],
   "externalDataLayout": "one_file_per_tensor",
   "frozenBaseBlob": "frozen_base.onnx.data",
+  "mergerModels": {"mars_q": "merger_mars_qin_qout.onnx", "lora": "merger_lora_fp.onnx"},
   "entries": [
     {
       "trainingBaseLayerName": "backbone.model.layers.0.self_attn.q_proj.base_layer",
       "checkpointNames": {"weight": "backbone.model.layers.0.self_attn.q_proj.base_layer.weight"},
+      "mergerOutputNames": {"weight": "merged_weight"},
       "mergedTensorNames": {"weight": "model.layers.0.attn.q_proj.MatMul.weight"},
       "inferenceInitializerNames": {"weight": "model.layers.0.attn.q_proj.MatMul.weight"},
       "externalDataLocation": {"weight": "model.layers.0.attn.q_proj.MatMul.weight.bin"},
+      "sha256": {"weight": "<hex of last-written bytes, updated by each merge>"},
       "genaiInputNames": {},
       "dtype": "float16",
       "shape": [4096, 4096],
@@ -71,20 +74,41 @@ Lives at `<package>/.../train/weight_handoff_map.json` and is installed into `<c
 }
 ```
 
+> **This camelCase `entries[]` shape is the only handoff-map vocabulary.** An earlier draft of `01_code_plans/01` sketched a snake_case `tensors[]` shape (`training_param_names`, `external_file`, …); that sketch is superseded — #9, the #10 spike, #22, and #23 all read/write **this** schema. When any plan mentions "the external file for a role," it means `externalDataLocation[role]`.
+
 Field semantics:
 
 | Field | Meaning |
 | --- | --- |
-| `schemaVersion` / `minReaderVersion` | `"MAJOR.MINOR"` strings (F1). Readers preserve unknown fields and fail closed only when `major` exceeds support or their version is below `minReaderVersion`; one `check_compat()` helper, mirrored Python↔Kotlin/C++. |
+| `schemaVersion` / `minReaderVersion` | `"MAJOR.MINOR"` strings (F1). Readers preserve unknown fields and fail closed only when `major` exceeds support or their version is below `minReaderVersion`; one `check_compat()` helper, mirrored Python↔Kotlin/C++ — **exact algorithm below**. |
+
+### `check_compat()` — the ONE canonical algorithm (F1; every schema-versioned contract uses exactly this)
+
+This plan owns the schema-versioning contract, so the precise semantics live here once. Every reader of a versioned JSON (`weight_handoff_map.json`, `mobiletransformers_manifest.json`, `model_support_matrix.json`, `FederatedAdapterRecord`, generated `schemas/*.schema.json`) declares a compile-time constant `READER_SCHEMA_VERSION: "MAJOR.MINOR"` **per contract** (e.g. `HANDOFF_MAP_READER_VERSION = "1.0"` in Python, the same value in the Kotlin/C++ mirror — bumped only when the reader actually learns a new schema). Then:
+
+```text
+check_compat(docSchemaVersion, docMinReaderVersion, READER_SCHEMA_VERSION) -> accept | fail
+  (docMajor, docMinor) = parse(docSchemaVersion)        # split on "."; both non-negative ints; malformed => fail closed
+  (reqMajor, reqMinor) = parse(docMinReaderVersion)
+  (rdrMajor, rdrMinor) = parse(READER_SCHEMA_VERSION)
+  if docMajor >  rdrMajor:                       fail "document schema vX.Y needs a newer SDK (reader supports major rdrMajor)"
+  if (rdrMajor, rdrMinor) < (reqMajor, reqMinor): fail "document requires reader >= minReaderVersion; this SDK is READER_SCHEMA_VERSION"
+  accept                                          # docMajor < rdrMajor is fine (older doc); docMinor > rdrMinor is fine (additive fields, ignored)
+```
+
+Rules an implementer must not improvise around: comparison is on the **(major, minor) integer tuple**, never string comparison; a doc with a *lower* major than the reader is accepted (readers keep old-major compatibility until a deliberate drop, which is itself a major reader bump); unknown fields never influence the result; the two `fail` messages above are the required "needs newer SDK" wording family. Both mirrors are covered by a shared table-driven test fixture (`check_compat_cases.json`: doc version × min-reader × reader version → expected accept/fail).
 | `handoffMode` | `HandoffMode` value (F7): `external_initializer` (the **only** mode supported in v1; both engines), or `model_input` (GenAI graph-input path) / `adapter` — both registry **stubs that fail closed** until implemented. Controls which name field must resolve. |
 | `engines` | Engines this map is valid for. A consumer not listed must refuse to use it. |
 | `externalDataLayout` | `one_file_per_tensor` — matches `WeightSessionCache` per-tensor `.tensor`/`.bin` files. |
-| `frozenBaseBlob` | Filename of the immutable quantized base external blob; never overwritten on-device merge. |
+| `frozenBaseBlob` | Filename of the immutable quantized base external blob (canonical: `frozen_base.onnx.data`, flat in `inference/`); never overwritten on-device merge. |
+| `mergerModels` | Resolved `MergerVariant` → descriptive merger ONNX filename (emitted by 09's `build_merger_model`, e.g. `merger_mars_qin_qout.onnx` — no `_2` names). The C++ side builds its variant→session map from this instead of the hard-coded paths at `weight_merger.cpp:448-464`. |
 | `entries[].trainingBaseLayerName` | Key into `peft_mapping` from `training_config.json` (`trainer/builder.py:386`); the PEFT base-layer path. |
 | `entries[].checkpointNames` | Role→name as the tensor appears in the ORT `CheckpointState` (what `WeightMerger::extract_base_layer_params`, `weight_merger.cpp:269`, reads). |
+| `entries[].mergerOutputNames` | Role→output tensor name of the merger ONNX graph (e.g. `merged_weight_quantized`); how the merge driver routes merger outputs to roles. |
 | `entries[].mergedTensorNames` | Role→name the merge writer stamps into the saved TensorProto. **MUST equal `inferenceInitializerNames`** for `external_initializer` mode. |
 | `entries[].inferenceInitializerNames` | Role→name the inference ONNX graph consumes (observed from `inference/builder.py`, not re-derived). |
 | `entries[].externalDataLocation` | Role→on-disk per-tensor filename inside `inference/`. |
+| `entries[].sha256` | Role→SHA-256 of the last-written bytes of that role's external file; refreshed by every merge (offline and on-device) and checked by the load-side precondition (#23). |
 | `entries[].genaiInputNames` | Role→graph-input name; required & non-empty iff `handoffMode == model_input`. |
 | `entries[].quantization` | Present iff the entry is quantized. Names for `weight_quantized`/`scale`/`zero_point`. **Resolves the scale-naming bug (see invariant below).** |
 | `entries[].transposePolicy` | `already_transposed_for_inference` (writer must transpose), `no_transpose`, or `transpose_on_load`. Mirrors `force_transpose_inputs` branch in `inference/builder.py:813`. |

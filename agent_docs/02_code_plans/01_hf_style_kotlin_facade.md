@@ -8,27 +8,28 @@ Give Android developers a single HuggingFace-style entry point — `MobileTransf
 
 This is the public surface that Tier 1 docs (`02_tier1_hf_integrated_core.md` §"Kotlin Facade", §"Config Objects", §"PEFT Surface") promise. It assumes #17 has already renamed the SDK module to `:MobileTransformers`, moved the library namespace to `com.martinkorelic.mobiletransformers`, and stood up the manifest-first package validator + cache installer from `00_code_plans/06_manifest_first_package_and_cache_bridge.md`.
 
+> **This plan is a DELTA over #17 (`00_code_plans/05`), not a re-creation.** #17 already created `MobileTransformers.kt`, `MobileTransformerModel.kt`, the public `config/*.kt` classes, `ModelSession`/`RepositoryBackedModelSession`, `ConfigMappers`, and the manifest/package types — and its "FINAL signature set" block is canonical (`generate(...): GenerationResult`, `DatasetConfig`, `cacheDir: String`, `maxNewTokens`, `InferenceEngine` from #11). This plan **edits/extends** those files: it adds `applyPeft` + `pushAdapter` to the model handle, the public callback interfaces, the `MobileTransformersException` hierarchy (canonical definition here), the PEFT mapping/validation, and the sample-app migration. Where a snippet below shows a full class, read it as the post-#19 end state of #17's file, never as a second copy.
+
 ## Touched / new files
 
 All new facade code lives under the post-rename namespace `com.martinkorelic.mobiletransformers` in the SDK module (currently `android/ORTransformer/ORTransformersMobile/`, renamed by #16/#17 to `android/MobileTransformers/MobileTransformers/`).
 
-New files:
+Extended (created by #17, edited here):
 
-- `…/com/martinkorelic/mobiletransformers/MobileTransformers.kt` — the static entry object (`fromPretrained`).
-- `…/com/martinkorelic/mobiletransformers/MobileTransformerModel.kt` — the model handle (instance methods).
-- `…/com/martinkorelic/mobiletransformers/config/TrainConfig.kt`
-- `…/com/martinkorelic/mobiletransformers/config/GenerationConfig.kt`
-- `…/com/martinkorelic/mobiletransformers/config/RagConfig.kt`
-- `…/com/martinkorelic/mobiletransformers/config/PeftConfig.kt`
-- `…/com/martinkorelic/mobiletransformers/config/DeviceConfig.kt`
-- `…/com/martinkorelic/mobiletransformers/config/DatasetConfig.kt`
-- `…/com/martinkorelic/mobiletransformers/config/HubConfig.kt`
-- `…/com/martinkorelic/mobiletransformers/runtime/RepositoryBackedModelRuntime.kt` — the adapter over the four repositories.
-- `…/com/martinkorelic/mobiletransformers/runtime/ConfigMapping.kt` — `ORT*Config` translation (kept `internal`).
-- `…/com/martinkorelic/mobiletransformers/MobileTransformersException.kt` — friendly error hierarchy.
-- `…/com/martinkorelic/mobiletransformers/InferenceEngine.kt` — `enum class InferenceEngine { Native, GenAI }`.
-- `…/com/martinkorelic/mobiletransformers/ModelFeature.kt` — `enum class ModelFeature { Inference, Training, Rag }` (may already exist from #17; reuse).
-- `…/com/martinkorelic/mobiletransformers/compat/LegacyAliases.kt` — deprecated `typealias` shims under `com.martinkorelic.ortmobile`.
+- `…/mobiletransformers/MobileTransformers.kt` — the static entry object (`fromPretrained`) — signature per #17's FINAL set.
+- `…/mobiletransformers/MobileTransformerModel.kt` — the model handle; this plan ADDS `applyPeft` + `pushAdapter` + callback parameters.
+- `…/mobiletransformers/config/{TrainConfig,GenerationConfig,RagConfig,DeviceConfig,DatasetConfig,HubConfig}.kt` — created by #17; this plan fills in the full mapping detail below.
+- `…/mobiletransformers/internal/runtime/RepositoryBackedModelSession.kt` — #17's adapter over the four repositories (do NOT create a `RepositoryBackedModelRuntime`).
+- `…/mobiletransformers/internal/config/ConfigMappers.kt` — `ORT*Config` translation (kept `internal`; #17's file).
+
+New files (this plan):
+
+- `…/mobiletransformers/config/PeftConfig.kt` — the sealed PEFT surface below.
+- `…/mobiletransformers/MobileTransformersException.kt` — friendly error hierarchy (canonical definition — #17 stubs the base + construction-time exceptions; `00_code_plans/10`'s Python `exceptions.py` mirrors these names).
+- `…/mobiletransformers/{TrainCallback,GenerateCallback,RetrieveCallback}.kt` — public callback re-exposures.
+- `…/mobiletransformers/compat/LegacyAliases.kt` — deprecated `typealias` shims under `com.martinkorelic.ortmobile`.
+
+Reused, never re-declared: `runtime/InferenceEngine.kt` (`InferenceEngine { NATIVE, GENAI }`, declared by #11), `packages/ModelFeature.kt` (declared by #17 with the full feature set incl. `Embedding`/`Adapter`).
 
 Touched files:
 
@@ -49,14 +50,15 @@ object MobileTransformers {
         context: Context,
         repoId: String,                      // e.g. "mobiletransformers/Qwen2-0.5B-mobile" OR a local cache folder name
         cacheDir: String = context.filesDir.absolutePath,
-        revision: String? = null,            // Hub revision; ignored for already-cached local packages in this plan
+        revision: String = "main",           // Hub revision; ignored for already-cached local packages in this plan
         variant: String? = null,             // manifest variant id, e.g. "cpu-int4"; null => manifest defaultVariant
         features: Set<ModelFeature> = setOf(ModelFeature.Inference),
-        engine: InferenceEngine = InferenceEngine.Native,
+        engine: InferenceEngine = InferenceEngine.NATIVE,
         hubConfig: HubConfig? = null         // token + endpoint; only needed for remote pull (#21)
     ): MobileTransformerModel
 }
 ```
+(Identical to #17's FINAL signature — restated for readability only.)
 
 In this plan `fromPretrained` resolves an **already-installed** package in `<cacheDir>/<sanitizedRepoId>/` (the cache layout `LLMRepository` discovers via `availableModels` and the `train/ inference/ embedding/` config paths). Remote download is #21; here we validate + wire only. `hubConfig`/`revision` are carried through but a missing local package raises `ModelNotInstalledException` rather than downloading.
 
@@ -64,16 +66,16 @@ In this plan `fromPretrained` resolves an **already-installed** package in `<cac
 
 ```kotlin
 class MobileTransformerModel internal constructor(
-    private val runtime: RepositoryBackedModelRuntime,
+    private val session: ModelSession,   // impl: RepositoryBackedModelSession
     val repoId: String,
     val installedFeatures: Set<ModelFeature>,
     val engine: InferenceEngine
 ) {
-    suspend fun applyPeft(peft: PeftConfig)
-    suspend fun train(dataset: DatasetConfig, config: TrainConfig = TrainConfig(), callback: TrainCallback? = null)
-    suspend fun merge()
-    suspend fun generate(prompt: String, config: GenerationConfig = GenerationConfig(), callback: GenerateCallback? = null): String
-    suspend fun retrieve(query: String, config: RagConfig = RagConfig(), callback: RetrieveCallback? = null): List<RetrievedDocument>
+    suspend fun applyPeft(peft: PeftConfig)                                                    // ADDED by this plan
+    suspend fun train(dataset: DatasetConfig, config: TrainConfig = TrainConfig(), callback: TrainCallback? = null): TrainingResult
+    suspend fun merge(): MergeResult
+    suspend fun generate(prompt: String, config: GenerationConfig = GenerationConfig(), callback: GenerateCallback? = null): GenerationResult  // result.text for plain string
+    suspend fun retrieve(query: String, config: RagConfig = RagConfig(), callback: RetrieveCallback? = null): RetrievalResult
     suspend fun pushAdapter(hubConfig: HubConfig, repoId: String): PushResult   // optional; throws NotImplementedFeature in Tier 1 unless #22 lands
     fun close()
 }
@@ -175,30 +177,24 @@ data class DatasetConfig(
 )
 ```
 
-`GenerationConfig` → `ORTGenerationConfig` (verified):
+`GenerationConfig` → `ORTGenerationConfig` (verified; public names are HF-aligned per #17/#24 — `maxNewTokens`, `SamplingConfig` with the 09 `SamplingMethod` enum; no sealed `Sampling` class):
 
 ```kotlin
 data class GenerationConfig(
-    val maxSequenceLength: Int = 128,
+    val maxNewTokens: Int = 128,                       // → internal maxSequenceLength (#24 verifies new-tokens semantics)
     val systemPrompt: String? = null,
     val trackMetrics: Boolean = true,
-    val sampling: Sampling = Sampling.Greedy,
+    val sampling: SamplingConfig = SamplingConfig(),   // 03_code_plans/02: SamplingConfig(method: SamplingMethod = GREEDY, temperature, topK, topP, seed)
     val device: DeviceConfig = DeviceConfig()
-) {
-    sealed class Sampling {
-        object Greedy : Sampling()                                  // method="greedy"
-        data class TopK(val k: Int = 10, val temperature: Float = 1f, val seed: Int = 42) : Sampling()
-        data class TopP(val p: Float = 0.9f, val temperature: Float = 1f, val seed: Int = 42) : Sampling()
-    }
-}
+)
 ```
 
 | GenerationConfig | ORTGenerationConfig |
 | --- | --- |
-| `maxSequenceLength` | `maxSequenceLength` |
+| `maxNewTokens` | `maxSequenceLength` |
 | `systemPrompt` | `systemPrompt` |
 | `trackMetrics` | `trackMetrics` |
-| `sampling` | `sampling` (`SamplingOptions(method, temperature, topK, topP, seed)`) |
+| `sampling` | `sampling` (`SamplingOptions(method, temperature, topK, topP, seed)`; method via `SamplingMethod.wire`, e.g. `"top_k"`) |
 | `device` | `deviceOptions` |
 | `engine` (from model handle) | `type` = `"native"` or `"genai"` |
 | runtime sets after merge | `loadMergedWeights` (set true once `merge()` has run) |
@@ -254,13 +250,13 @@ Friendly messages name the exact missing path. Examples: `MissingArtifactExcepti
 ## Implementation steps
 
 1. **Feature detection in `fromPretrained`.** Sanitize `repoId` → cache folder, confirm `<cacheDir>/<sanitizedRepoId>/` exists (else `ModelNotInstalledException`). Run the #17 manifest validator. Derive `installedFeatures` from presence of `train/training_config.json`, `inference/generation_config.json`, `embedding/rag_config.json` (the exact paths `LLMRepository` resolves). Intersect with the requested `features`; if a requested feature's artifacts are absent, throw `FeatureNotInstalledException` early so the failure is at construction, not first use.
-2. **Engine selection.** Native is always available. If `engine == GenAI`, verify the package has `inference/genai_config.json` (manifest `downloadPlan.genai` group); else `EngineUnavailableException`. Carry the choice into `RepositoryBackedModelRuntime` so `ORTGenerationConfig.type` is set to `"native"`/`"genai"` per call. (The engine abstraction itself is #11; this facade only selects.)
-3. **Build `RepositoryBackedModelRuntime`.** Construct exactly one `LLMRepository(context, cacheDir, initialModel = sanitizedRepoId)` and the three repositories over it (`TrainingRepository(llm)`, `InferenceRepository(llm)`, `RagRepository(llm)`) — the same objects `MainActivity` builds today. The runtime holds them plus the resolved engine and a mutable `mergedWeightsLoaded: Boolean`.
+2. **Engine selection.** Native is always available. If `engine == InferenceEngine.GENAI`, verify the package has `inference/genai_config.json` (manifest `downloadPlan.genai` group); else `EngineUnavailableException`. Carry the choice into `RepositoryBackedModelSession` so `ORTGenerationConfig.type` is set to `"native"`/`"genai"` per call. (The engine abstraction itself is #11; this facade only selects.)
+3. **Extend `RepositoryBackedModelSession` (#17).** It already constructs exactly one `LLMRepository(context, cacheDir, initialModel = sanitizedRepoId)` and the three repositories over it (`TrainingRepository(llm)`, `InferenceRepository(llm)`, `RagRepository(llm)`) — the same objects `MainActivity` builds today. This plan adds to it the resolved engine and a mutable `mergedWeightsLoaded: Boolean`.
 4. **`applyPeft`.** Read `train/training_config.json` (already parsed by `LLMRepository`) + manifest `peftMethods`. Validate the requested `PeftConfig` variant against `(train_method, optimization_level, rank, alpha)`. Store an effective `ORTTrainingConfig` template (rank/alpha cannot exceed exported shape). No native call here.
 5. **`train`.** Map `TrainConfig` + `DatasetConfig` → `ORTTrainingConfig` via `ConfigMapping`. Call `LLMRepository.prepareTraining(ortTrainingConfig, dataPreprocessFunction = config.customPreprocess?)`, then `TrainingRepository.performTraining(ortTrainingConfig, trainingCallback = adapter, dataPreprocessFunction)`. Wrap the public `TrainCallback` in a `TrainingRepository.TrainingCallback` adapter that maps `TrainingProgress` → `TrainProgress`. If `TrainConfig.mergeAtEnd`, the underlying flow already merges; set `runtime.mergedWeightsLoaded = true` on `onMergeEnd`.
 6. **`merge`.** If training already merged, no-op + log. Otherwise call `TrainingRepository.endTraining(saveModel = true)` (the merge/save path) and set `mergedWeightsLoaded = true`. Map errors to `MissingArtifactException`/generic `MobileTransformersException`.
 7. **`generate`.** Map `GenerationConfig` → `ORTGenerationConfig` (set `type` from engine, `loadMergedWeights = runtime.mergedWeightsLoaded`). Call `LLMRepository.prepareGeneration(cfg)` then `InferenceRepository.generate(prompt, cfg, callback adapter)`. Accumulate streamed `onPartialResult` text and return the final string; still forward each partial to the user callback.
-8. **`retrieve`.** Require `ModelFeature.Rag`. Map `RagConfig` → `ORTRagConfig`, call `LLMRepository.prepareRetriever(cfg)` then `RagRepository.query(query, ragArgs, callback adapter)`; collect `RagResult` → `List<RetrievedDocument>`.
+8. **`retrieve`.** Require `ModelFeature.Rag`. Map `RagConfig` → `ORTRagConfig`, call `LLMRepository.prepareRetriever(cfg)` then `RagRepository.query(query, ragArgs, callback adapter)`; collect `RagResult` → `RetrievalResult` (which carries `documents: List<RetrievedDocument>` — #17's result type wrapping the per-hit records).
 9. **`pushAdapter`.** Tier-1 stub: throw `NotImplementedFeatureException("pushAdapter")` unless #22 has landed; the signature exists so the public API is stable. Wire to #22's adapter export when available.
 10. **`close`.** Call `LLMRepository.resetInference()` and `resetTraining()` to release native sessions.
 11. **Compatibility aliases.** In `compat/LegacyAliases.kt`, under `package com.martinkorelic.ortmobile`, add `@Deprecated("Use com.martinkorelic.mobiletransformers.* facade", level = WARNING) typealias` shims for the moved repository classes if/when their package moves, per `02_tier1_hf_integrated_core.md` §Compatibility. Keep `ORT*Config` names referenced only inside `ConfigMapping`/runtime; do not surface them in facade signatures.
@@ -298,7 +294,7 @@ val model = lifecycleScope.async {
         repoId = "mobiletransformers/Qwen2-0.5B-mobile",
         cacheDir = filesDir.absolutePath,
         features = setOf(ModelFeature.Inference, ModelFeature.Training, ModelFeature.Rag),
-        engine = InferenceEngine.Native
+        engine = InferenceEngine.NATIVE
     )
 }
 // …
@@ -307,12 +303,12 @@ val trainingViewModel = remember { TrainingViewModel(model) }
 val configurationViewModel = remember { ConfigurationViewModel(model) }
 ```
 
-ViewModels are reworked to depend on the single `MobileTransformerModel` and call `model.train/generate/retrieve` with the public config objects, passing the public callbacks (no `ORT*` imports). A typical generate call: `model.generate(prompt, GenerationConfig(sampling = GenerationConfig.Sampling.TopK(k = 10)), callback)`. Keep the old direct-repository path compilable for one release (regression smoke below) so existing demos do not break.
+ViewModels are reworked to depend on the single `MobileTransformerModel` and call `model.train/generate/retrieve` with the public config objects, passing the public callbacks (no `ORT*` imports). A typical generate call: `model.generate(prompt, GenerationConfig(sampling = SamplingConfig(method = SamplingMethod.TOP_K, topK = 10)), callback)`. Keep the old direct-repository path compilable for one release (regression smoke below) so existing demos do not break.
 
 ## Tests & acceptance
 
 **Unit (automated)** — small, fast; prove the component wires together and compiles.
-- **Config mapping unit tests** (`ConfigMappingTest.kt`): assert every public→`ORT*` field maps (e.g. `TrainConfig(epochs=4,batchSize=4)` → `ORTTrainingConfig(numTrainEpochs=4,batchSize=4)`; `Scheduler.Cosine` → `schedulerType="cosine"` + `SchedulerConfig.Cosine`; `Sampling.TopK` → `SamplingOptions(method="topk"|"greedy"…, topK=…)`; `RagConfig` 1:1).
+- **Config mapping unit tests** (`ConfigMappingTest.kt`): assert every public→`ORT*` field maps (e.g. `TrainConfig(epochs=4,batchSize=4)` → `ORTTrainingConfig(numTrainEpochs=4,batchSize=4)`; `Scheduler.Cosine` → `schedulerType="cosine"` + `SchedulerConfig.Cosine`; `SamplingConfig(method = SamplingMethod.TOP_K)` → `SamplingOptions(method="top_k", topK=…)` (wire strings are the 09 enum values: `"greedy"`/`"top_k"`/`"top_p"`); `RagConfig` 1:1).
 - **PEFT mapping unit tests:** `MarsOpt1` → `(train_method="mars", optimization_level=1)`; `MarsQuantized(optimizationLevel=4, quantNBits=4)` → quant level 4 / 4-bit; `PeftMismatchException` when requested method not in manifest `peftMethods`.
 - **Feature-gate tests:** `fromPretrained(features={Training})` over an inference-only fixture throws `FeatureNotInstalledException`; `engine=GenAI` without `genai_config.json` throws `EngineUnavailableException`.
 - **Friendly-error tests:** missing `train/training_config.json` → `MissingArtifactException` whose message contains the exact path.
@@ -323,7 +319,7 @@ ViewModels are reworked to depend on the single `MobileTransformerModel` and cal
 - **Migration regression:** old direct-repository wiring still compiles (`./gradlew :MobileTransformersApp:assembleDebug`); deprecated `com.martinkorelic.ortmobile` aliases resolve with a deprecation warning.
 
 **Manual (user-run)** — long/intensive or device/emulator-specific; the **user** runs these.
-- **Facade smoke (instrumentation, local fixture package):** `fromPretrained` → `applyPeft(MarsOpt1)` → `train(DatasetConfig(maxSamples=…), TrainConfig(maxSteps=1))` → `merge()` → `generate("hi", GenerationConfig(maxSequenceLength=1))` returns a non-empty string; verify `ORTGenerationConfig.loadMergedWeights==true` after merge.
+- **Facade smoke (instrumentation, local fixture package):** `fromPretrained` → `applyPeft(MarsOpt1)` → `train(DatasetConfig(maxSamples=…), TrainConfig(maxSteps=1))` → `merge()` → `generate("hi", GenerationConfig(maxNewTokens=1))` returns a `GenerationResult` with non-empty `text`; verify `ORTGenerationConfig.loadMergedWeights==true` after merge.
 - **Engine-selector smoke:** same flow with `engine=Native` and (if fixture has genai config) `engine=GenAI`; assert `ORTGenerationConfig.type` is `"native"`/`"genai"` respectively.
 - **Migration regression (run leg):** the old direct-repository demo still runs on a device.
 

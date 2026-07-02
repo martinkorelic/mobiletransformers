@@ -153,7 +153,7 @@ Prove that a multi-step training job can:
 - Decide Android 14+ foreground service type and manifest permissions before shipping; do not leave this to the sample app by accident.
 - Add a single model/session lock so a scheduled worker cannot race foreground training, merge, or generation.
 - Check thermal state, battery state, and available storage before each chunk.
-- Use existing `saveSteps`, `loadFromState`, and scheduler state as the resume mechanism.
+- Use existing `saveSteps`, `loadFromState`, and scheduler state as the resume mechanism. (Caveat: `CosineLRScheduler` persists/restores today, but `LinearLRScheduler.stateDict()/loadFromState()` are `TODO` at `ORTScheduler.kt:156-161` — `04_code_plans/02` closes that gap before multi-chunk scheduling ships.)
 - Expose callbacks for paused/resumed/interrupted/completed.
 - Log thermal and battery metrics to the same evaluation style as `docs/mobile_evaluation.md`.
 
@@ -359,7 +359,7 @@ Pass conditions:
 
 - HF model loads.
 - Training artifacts generate (likely already works via `:263`).
-- **Inference graph exports for Gemma-3** (the actual gate; new branch in `inference/builder.py`).
+- **Inference graph exports for Gemma-3** (the actual gate; delivered as a `Gemma3Model` class registered via the architecture registry's `inference_model_class` — a registry entry, **not** a new `elif` branch; see `04_code_plans/05` + `00_code_plans/09`).
 - Android one-step training works or fails with a documented blocker.
 - Inference emits valid structured function-call text. Detailed in `04_code_plans/05`.
 

@@ -29,13 +29,14 @@ This plan replaces all of that with: one typed config layer (Pydantic v2), one m
 ## Touched / new files
 
 **Python — new (the owned contracts):**
-- `config/models.py` — Pydantic v2 models for every config object (A1).
-- `config/registry/__init__.py`, `config/registry/peft.py`, `config/registry/architecture.py`, `config/registry/merger.py` — the three registries (A3/A4/A5). (Co-locate under `config/` so they sit beside `settings.py`/`constants.py` from `02`; `peft_models/registry.py` is an acceptable alternative location if PEFT specs need to import `peft_models` config classes — pick one and reference it everywhere.)
-- `schemas/*.schema.json` — generated JSON Schema per cross-boundary model (A1).
+- `src/mobiletransformers/config/models.py` — Pydantic v2 models for every config object (A1). (All Python config code lives **inside the package** — canonical decision; see `00_code_plans/02`.)
+- `src/mobiletransformers/config/registry/__init__.py`, `.../registry/peft.py`, `.../registry/architecture.py`, `.../registry/merger.py` — the three registries (A3/A4/A5). (Co-located under `mobiletransformers/config/` beside `settings.py`/`constants.py` from `02` so they ship in the wheel; this is the single agreed location — do not place registries under `peft_models/`.)
+- `src/mobiletransformers/codegen/__init__.py`, `src/mobiletransformers/codegen/enums.py` — the **parity generator** invoked as `python -m mobiletransformers.codegen.enums`. Default mode: regenerate `schemas/*.schema.json` (via `model_json_schema(by_alias=True)`) and the golden `schemas/enums.json` (`{enumName: [wire values...]}` from `config/constants.py` — both are **checked in**, per the parity-enforcement section), then parse the checked-in Kotlin `constants/*.kt` files (regex over `SomeEnum("wire")` entries) and diff. `--check` mode: exit non-zero on any drift (schemas differ from checked-in, or Kotlin wire sets ≠ Python enum values) — this is the CI parity gate (`05_code_plans/02`). It does **not** write `.kt` files.
+- `schemas/*.schema.json` — generated JSON Schema per cross-boundary model (A1), emitted by the codegen module above.
 - `tests/unit/test_config_models.py`, `tests/unit/test_registries.py`, `tests/unit/test_enum_parity.py`.
 
 **Python — edit (consume, do not redefine):**
-- `config/constants.py` (from `02`) — add the enums (A2); replace the `SUPPORTED_PEFT_METHODS` tuple with the `PEFTMethod` enum.
+- `src/mobiletransformers/config/constants.py` (from `02`) — add the enums (A2); replace the `SUPPORTED_PEFT_METHODS` tuple with the `PEFTMethod` enum.
 - `trainer/builder.py` — `:260-272` arch dispatch → `architecture_registry`; `:282-346` PEFT config + mapping dispatch → `peft_registry`; `:363-372` JSON emit → `TrainingConfig.model_dump(by_alias=True)`; `:447-462` quantization `extra_options` → typed `QuantizationOptions`.
 - `inference/builder.py` — `:3234-3271` arch dispatch → `architecture_registry`.
 - `artifact/onnx_builder.py` — `:628-641` merger dispatch → `merger_registry` + `build_merger_model`; remove the `_2`-factory imports at `:31`; `:551` `large_model` → config field; `:205` hard-coded dequantize match documented as registry/handoff-driven.
@@ -48,7 +49,7 @@ This plan replaces all of that with: one typed config layer (Pydantic v2), one m
 **Kotlin — new + edit (mirror the vocabulary):**
 - NEW `android/ORTransformer/ORTransformersMobile/src/main/java/com/martinkorelic/ortmobile/constants/*.kt` — `enum class` mirrors of every Python enum (A2), values byte-identical to the `model_dump(by_alias=True)` strings.
 - `ORTGenerationConfig.kt`, `ORTTrainingConfig.kt`, `ORTRagConfig.kt` — typed enum fields replace `String` fields where the set is closed (`SamplingMethod`, `SchedulerType`, `ExecutionProvider`, `CoreConfigId`, `MemoryConfigId`, `SearchType`).
-- `FileUtil.kt` — `when (schedulerType)` / `.optString(...)` parsing validates against the enum + the checked-in JSON Schema (fail-closed on unknown value).
+- `FileUtil.kt` — `when (schedulerType)` / `.optString(...)` parsing goes through the enum `fromWire()` mirrors (fail-closed on unknown value; unknown fields tolerated). No runtime JSON-Schema validation on device — the checked-in schema is a CI artifact.
 - `ORTGeneratorNative.kt:266` `methodMap` → `SamplingMethod.ordinalForNative()` (or an explicit enum→Int map owned by the enum).
 - `app/.../ConfigurationScreen.kt` — `listOf("greedy", …)` etc. → `SamplingMethod.entries` (and siblings).
 
@@ -56,18 +57,22 @@ This plan replaces all of that with: one typed config layer (Pydantic v2), one m
 
 ## Data contracts / interfaces
 
-### A1 — Pydantic config models (`config/models.py`)
+### A1 — Pydantic config models (`mobiletransformers/config/models.py`)
 
 Pydantic v2, alias-driven so the on-disk JSON keeps the existing camelCase the Kotlin side already reads (no on-device migration needed). The scheduler union closes the `cosineLearningRate`-vs-`learningRate` mismatch documented in the config sweep.
 
 ```python
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal, Union, Annotated
-from config.constants import SamplingMethod, SchedulerType, ExecutionProvider, \
+from mobiletransformers.config.constants import SamplingMethod, SchedulerType, ExecutionProvider, \
     CoreConfigId, MemoryConfigId, SearchType, QuantizationType
 
 class _Base(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra="forbid", use_enum_values=True)
+    model_config = ConfigDict(populate_by_name=True, extra="ignore", use_enum_values=True)
+    # extra="ignore", NOT "forbid": the F1 schema-versioning contract requires readers to
+    # tolerate unknown fields so additive minor bumps are non-breaking. Unknown enum VALUES
+    # still fail closed (enum coercion raises). "forbid" may be used only on internal-only
+    # models that never cross the Python boundary.
 
 class SamplingConfig(_Base):
     method: SamplingMethod = SamplingMethod.GREEDY
@@ -112,13 +117,13 @@ class QuantizationOptions(_Base):                       # lifts trainer/builder.
 # TrainingConfig, RagConfig, TrainBuilder, InferenceBuilder, ArtifactBuilder follow the same pattern.
 ```
 
-Cross-boundary rule: export writes `Model.model_dump(by_alias=True, mode="json")`; `schemas/<name>.schema.json` is produced by `Model.model_json_schema(by_alias=True)` and checked in; Kotlin/C++ validate the file they read against that schema before parsing. The Python and Kotlin field vocabularies are tested for parity (see Tests).
+Cross-boundary rule: export writes `Model.model_dump(by_alias=True, mode="json")`; `schemas/<name>.schema.json` is produced by `Model.model_json_schema(by_alias=True)` and checked in **as a CI parity artifact only** — Kotlin/C++ do **not** run JSON-Schema validation at runtime (no schema library, no asset shipping). Device-side enforcement is *typed fail-closed parsing*: Gson into typed classes, closed-set values through enum `fromWire()` (throws on unknown value), `check_compat()` on `schemaVersion`/`minReaderVersion`, unknown fields tolerated. The Python and Kotlin field vocabularies are tested for parity in CI (see Tests).
 
-**Parity enforcement (F2).** The Pydantic models (`config/models.py`) + enums (`config/constants.py`) are the **single source of truth**; the checked-in `schemas/*.schema.json` and a golden `enums.json` are *generated* from them, never hand-edited. A CI `parity` job regenerates and diffs: `python -m mobiletransformers.codegen.enums --check` fails the build if the checked-in Kotlin/C++ mirrors have drifted from the Python source. This is the mechanism behind the enum-parity and grep guards below.
+**Parity enforcement (F2).** The Pydantic models (`mobiletransformers/config/models.py`) + enums (`mobiletransformers/config/constants.py`) are the **single source of truth**; the checked-in `schemas/*.schema.json` and a golden `enums.json` are *generated* from them, never hand-edited. A CI `parity` job regenerates and diffs: `python -m mobiletransformers.codegen.enums --check` fails the build if the checked-in Kotlin/C++ mirrors have drifted from the Python source. This is the mechanism behind the enum-parity and grep guards below.
 
 **Schema versioning (F1).** Each generated cross-boundary schema also carries a `schemaVersion` (`"MAJOR.MINOR"`) + `minReaderVersion` field block — the same contract the manifest (`#13`) and handoff map (`#8`) use — so a reader fails closed on a major it does not support and tolerates additive minor bumps (unknown fields preserved). One `check_compat()` helper, mirrored Python↔Kotlin.
 
-### A2 — Enum vocabulary (`config/constants.py`, mirrored in Kotlin)
+### A2 — Enum vocabulary (`mobiletransformers/config/constants.py`, mirrored in Kotlin)
 
 ```python
 from enum import Enum
@@ -145,13 +150,13 @@ enum class SamplingMethod(val wire: String) {
 ```
 `MergerVariant` is the *resolved* tag the device computes from adapter shape + quantization (today's `"lora"/"lora_q"/"mars_q"`); it is **not** a user choice — it is derived (A5).
 
-### A3 — PEFT method registry (`config/registry/peft.py`)
+### A3 — PEFT method registry (`mobiletransformers/config/registry/peft.py`)
 
 One declarative spec per method replaces both the config-setup branches (`trainer/builder.py:282-346`) and the bespoke adapter-mapping key hardcoding (`trainer/utils.py:533-703`). The `component_schema` is exactly what `00_code_plans/07`'s `TrainableTensorCodec.from_peft_mapping` consumes for tensor naming.
 
 ```python
 from dataclasses import dataclass
-from config.constants import PEFTMethod, MergerVariant
+from mobiletransformers.config.constants import PEFTMethod, MergerVariant
 
 @dataclass(frozen=True)
 class AdapterComponent:
@@ -175,7 +180,7 @@ def build_adapter_mapping(peft_model, spec: PEFTMethodSpec) -> dict:
 ```
 The MARS architecture assumptions flagged in `peft_models/mars/model.py:53,60,75,138` (attention-module name `"self_attn"`, `kwargs['hidden_states']` location) become **spec/architecture-registry data** (per-architecture attention-module name + hidden-state accessor), not in-code assumptions.
 
-### A4 — Architecture registry (`config/registry/architecture.py`)
+### A4 — Architecture registry (`mobiletransformers/config/registry/architecture.py`)
 
 ```python
 @dataclass(frozen=True)
@@ -195,7 +200,7 @@ def resolve_architecture(config) -> ArchitectureSpec:
 ```
 Gemma-3 inference (the FunctionGemma gate, `04_code_plans/05`) and Bert inference/pooling (encoder, `04_code_plans/01`) are added by setting `inference_model_class` on a registry entry — no new `elif` at `inference/builder.py:3234`.
 
-### A5 — Merger registry + unified builder (`config/registry/merger.py`, `artifact/merger.py`)
+### A5 — Merger registry + unified builder (`mobiletransformers/config/registry/merger.py`, `artifact/merger.py`)
 
 ```python
 @dataclass(frozen=True)
@@ -230,22 +235,22 @@ This plan **owns the registry pattern** — a closed set of choices is data (enu
 
 ## Implementation steps
 
-1. **Deps:** confirm `pydantic>=2` lands in the core group (`00_code_plans/03`). Add `config/registry/` package.
-2. **Enums first** (`config/constants.py`): add all enums (A2); replace `SUPPORTED_PEFT_METHODS`. Generate the Kotlin mirrors; add `fromWire`/`entries`-based parsing.
-3. **Pydantic models** (`config/models.py`): author A1; wire `model_dump(by_alias=True)` at the three JSON emit sites; generate + check in `schemas/*.schema.json`.
+1. **Deps:** confirm `pydantic>=2` lands in the core group (`00_code_plans/03`). Add the `src/mobiletransformers/config/registry/` package.
+2. **Enums first** (`mobiletransformers/config/constants.py`): add all enums (A2); replace `SUPPORTED_PEFT_METHODS`. **Hand-write** the Kotlin mirrors (one small `enum class` file each — they are not code-generated; the codegen module only *checks* them against the Python source); add `fromWire`/`entries`-based parsing.
+3. **Pydantic models** (`mobiletransformers/config/models.py`): author A1; wire `model_dump(by_alias=True)` at the three JSON emit sites; add the `codegen/enums.py` module and use it to generate + check in `schemas/*.schema.json`.
 4. **PEFT registry** (A3): build `PEFT_REGISTRY` + `build_adapter_mapping`; replace `trainer/builder.py:282-346` config-setup and mapping dispatch; re-express `trainer/utils.py:533-703` as the single mapping builder; move MARS attention/hidden-state assumptions into architecture-registry data.
 5. **Architecture registry** (A4): build `ARCHITECTURE_REGISTRY`; replace `trainer/builder.py:260-272` and `inference/builder.py:3234-3271`; collapse `mars/utils.py` ≡ `ablation/utils.py` target maps into it.
 6. **Merger unification** (A5): collapse the four factories into `build_merger_model`; replace `onnx_builder.py:628-641` dispatch; emit descriptive merger filenames into the handoff map.
 7. **C++ merger** (with `01_code_plans/01`/`07`): handoff-map/registry-driven `get_merger_type`/`run_merger_model`/session paths.
 8. **Lift code-only config into models:** `QuantizationOptions` (`trainer/builder.py:447-462`), reconstruction config (`peft_models/lora_xs/merger.py:34,42`), session options (`trainer/validator.py:402`), `large_model` (`onnx_builder.py:551`).
-9. **Kotlin typed configs:** swap closed-set `String` fields to enums in the three config data classes; fail-closed parsing in `FileUtil.kt` against the JSON Schema; `methodMap`/`ConfigurationScreen` use enum `entries`.
+9. **Kotlin typed configs:** swap closed-set `String` fields to enums in the three config data classes; fail-closed `fromWire()` parsing in `FileUtil.kt` (typed parse, no on-device JSON-Schema validation); `methodMap`/`ConfigurationScreen` use enum `entries`.
 10. **CI guard:** a parity check (test or script) asserting the Python enum members == the Kotlin enum `wire` values, and that no business module re-introduces an `architectures[0] ==` / `peft_method ==` / `merger_type ==` literal branch (grep guard, like the secrets guard in `02`).
 
 ---
 
 ## Interactions
 
-- **`00_code_plans/02`** — extends `constants.py` (enums) and adds the Pydantic config layer alongside `Settings` (secrets stay stdlib as decided in `02`).
+- **`00_code_plans/02`** — extends `mobiletransformers/config/constants.py` (enums) and adds the Pydantic config layer alongside `Settings` (secrets stay stdlib as decided in `02`); the whole config layer ships inside the wheel.
 - **`00_code_plans/03`** — must list `pydantic>=2` in the core dependency group.
 - **`00_code_plans/07`** — `TrainableTensorCodec.from_peft_mapping` consumes A3's `component_schema`; `canonical_inference_name` consumes A4's per-architecture naming data instead of hardcoded `self_attn→attn`/`base_layer→MatMul`.
 - **`01_code_plans/01`** — consumes A5's `build_merger_model` + merger registry; owns the merge→handoff on-disk filename contract and the C++ merge path; this plan provides the registry/spec, that plan wires the device write/lookup.
@@ -265,11 +270,11 @@ This plan **owns the registry pattern** — a closed set of choices is data (enu
 ## Tests & acceptance
 
 **Unit (automated)** — small, fast; prove the component wires together and compiles.
-- `pytest tests/unit/test_config_models.py`: round-trip each model `model_validate(json) → model_dump(by_alias=True)` is byte-stable; the `SchedulerConfig` discriminated union selects `Linear` vs `Cosine` by `schedulerType`; `extra="forbid"` rejects unknown keys; legacy `config.yml` parses through the models unchanged.
+- `pytest tests/unit/test_config_models.py`: round-trip each model `model_validate(json) → model_dump(by_alias=True)` is byte-stable; the `SchedulerConfig` discriminated union selects `Linear` vs `Cosine` by `schedulerType`; `extra="ignore"` tolerates unknown keys (F1) while unknown enum values still raise; legacy `config.yml` parses through the models unchanged.
 - `pytest tests/unit/test_registries.py`: `resolve_architecture` covers every entry currently in `trainer/builder.py:260-272` + `inference/builder.py:3234-3271` (parametrized) and raises a clear error for unknown architectures; `get_peft_spec` covers `lora/lora-xs/mars/all/nolora`; `resolve_merger` returns the correct `MergerVariant` for each `(method, quant_in, quant_out)` and a descriptive (no-`_2`) filename; `build_adapter_mapping` reproduces the keys the old `create_*_adapter_mapping` produced (golden vs a checked-in fixture).
 - `pytest tests/unit/test_enum_parity.py`: parse the Kotlin `constants/*.kt` `wire` values and assert the set equals the Python enum values for every enum (the cross-language parity guard, F2; equivalently `python -m mobiletransformers.codegen.enums --check`).
 - Grep guard (CI): no `architectures[0] ==`, `train_method ==`/`peft_method ==`, or `merger_type ==` string-literal branch remains in `trainer/`, `inference/`, `artifact/`, or `weight_merger.cpp` business paths (registry lookups only).
-- Kotlin: `SamplingMethod.fromWire("bogus")` throws (fail-closed); `FileUtil` rejects a JSON whose enum value is not in the schema; module compiles (`./gradlew :MobileTransformers:compileDebugKotlin`).
+- Kotlin: `SamplingMethod.fromWire("bogus")` throws (fail-closed); `FileUtil` rejects a JSON with an unknown enum value but tolerates an unknown extra field; module compiles (`./gradlew :MobileTransformers:compileDebugKotlin`).
 
 **Integration (automated)** — runnable; produces a checkable expected output (tiny fixture in, asserted out).
 - Merger-unification golden: `build_merger_model` output ONNX is functionally equivalent (graph structure / IO names within quant tolerance) to the legacy `create_*_merger_model{,_2}` outputs for each variant.
@@ -279,7 +284,7 @@ This plan **owns the registry pattern** — a closed set of choices is data (enu
 - None for this plan (typed config + registries are host-side; the device/export consumers exercise them in their own plans).
 
 **Definition of done** — explicit pass criteria + expected artifacts/behaviour when the plan is finished.
-- One typed config layer (`config/models.py`, Pydantic v2, alias-driven) is the source of truth; the three JSON emit sites write `model_dump(by_alias=True, mode="json")`; `schemas/*.schema.json` (+ a `schemaVersion`/`minReaderVersion` block, F1) and a golden `enums.json` are generated and checked in.
+- One typed config layer (`mobiletransformers/config/models.py`, Pydantic v2, alias-driven) is the source of truth; the three JSON emit sites write `model_dump(by_alias=True, mode="json")`; `schemas/*.schema.json` (+ a `schemaVersion`/`minReaderVersion` block, F1) and a golden `enums.json` are generated and checked in.
 - One mirrored enum vocabulary exists Python↔Kotlin; the CI `parity` job (F2) fails on drift.
 - The three data-driven registries (PEFT, architecture, merger) are the single source of truth for every closed choice; adding a method/architecture/merger is a registry row + enum member with **no** new `if/elif` branch (grep guard passes), and the pattern extends to further registries (F3) as consumers land.
 - The four `create_*_merger_model{,_2}` factories collapse into one `build_merger_model`; the C++ merger dispatch resolves variant/paths from the handoff map/registry, not literals.

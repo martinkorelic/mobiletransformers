@@ -213,7 +213,7 @@ This gives the project a sustainable way to benefit whenever Optimum ONNX adds a
 
 Define a "MobileTransformers-ready" repo as a manifest-first HF model repository. The repo should be readable by standard Hub tools, but MobileTransformers should only require a small manifest fetch before downloading large files.
 
-Recommended repository shape:
+Recommended repository shape (illustrative sketch — the **canonical, current layout and manifest field list live in `02_code_plans/03_hub_model_package_format.md`**, which supersedes details below; notably the variant `inference/` dir is the FLAT canonical layout of `01_code_plans/01` — `model.onnx` + `frozen_base.onnx.data` + per-tensor `.bin`s, no `base/`/`merged/` subdirs — and merger graphs use descriptive registry filenames, not `merger 1/2` names):
 
 ```text
 README.md
@@ -333,7 +333,8 @@ Minimum handoff-map shape:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": "1.0",
+  "minReaderVersion": "1.0",
   "handoffMode": "external_initializer",
   "entries": [
     {

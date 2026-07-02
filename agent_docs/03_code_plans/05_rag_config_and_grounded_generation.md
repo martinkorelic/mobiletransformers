@@ -31,7 +31,7 @@ Kotlin:
 | `minScore` (NEW) | (new internal field; default `0.0`, used by `VectorStore.search`) |
 | `chunkSize` / `chunkOverlap` | `:25` / `:26` |
 | `maxTextLength` | `:24` |
-| `indexingMode` (`precompute`/`dynamic`, NEW) | (new internal field) |
+| `indexingMode` (`precompute`/`dynamic`, NEW) | (new internal field) — **semantics:** `precompute` (default, the only mode implemented in v1) = documents are ingested ahead of query time via `ingestData()` (#26) and `retrieve` only searches the store; `dynamic` = caller-supplied documents would be embedded+stored at query time before retrieval — **a fail-closed stub in v1** (selecting it raises `NotImplementedError`-equivalent, same F7 pattern as unsupported `HandoffMode`s) |
 | `deviceConfig` | `deviceOptions` (`:28`) |
 
 `similarityMetric` is fixed to ObjectBox COSINE for v1 (the only supported metric, #25) — expose it read-only, do not pretend it is configurable.
@@ -46,9 +46,9 @@ data class GroundedResult(
 )
 
 fun generateWithRag(query: String, rag: RagConfig, gen: GenerationConfig): GroundedResult {
-    val matches = retriever.retrieve(query, rag.toInternal())
+    val matches = retriever.retrieve(query, rag.toOrt())     // mapper naming follows #17's ConfigMappers (toOrt), not a new toInternal()
     val prompt  = promptAssembler.assemble(query, matches)   // default OR caller-supplied
-    val text    = runtime.generate(prompt, gen.toInternal())
+    val text    = runtime.generate(prompt, gen.toOrt())
     return GroundedResult(text, matches, prompt)
 }
 ```
@@ -56,7 +56,19 @@ fun generateWithRag(query: String, rag: RagConfig, gen: GenerationConfig): Groun
 ## Implementation steps
 
 1. Add public `RagConfig` (`searchType: SearchType`) + mapper reusing `ORTRagArguments.overwriteWith` (`ORTRagConfig.kt:30-44`); add the two new internal fields (`minScore`, `indexingMode`); wire the override into `LLMRepository.prepareRetriever` (`:306`).
-2. Implement `PromptAssembler` with a sensible default template; allow a caller-supplied lambda/strategy.
+2. Implement `PromptAssembler` with this exact default template (so implementers don't improvise; callers may replace it wholesale via the strategy hook):
+   ```
+   Use the following context to answer the question.
+
+   Context:
+   - {match[0].document.text}
+   - {match[1].document.text}
+   ...
+
+   Question: {query}
+   Answer:
+   ```
+   One `- ` bullet per retrieved match in score order; no truncation beyond what `maxTextLength` already applied at ingestion. Allow a caller-supplied lambda/strategy that receives `(query, matches)` and returns the full prompt string.
 3. `retrieve(...)` delegates to the existing semantic/text paths via `VectorStore` (#25).
 4. `generateWithRag(...)` on the facade returns `GroundedResult` (text + matches + prompt).
 5. Document the default template, override hook, and `precompute` vs `dynamic` indexing in `docs/RAG.md`.

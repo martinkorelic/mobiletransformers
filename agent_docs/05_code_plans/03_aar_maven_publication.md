@@ -8,8 +8,8 @@ Make the Android SDK consumable as a Maven/Gradle AAR (table stakes for "portabl
 
 ## Touched / new files
 
-- `android/ORTransformer/ORTransformersMobile/build.gradle.kts` — add `maven-publish` + `publishing { publications { ... } }`; resolve `implementation(files("./src/main/aarLibs/onnxruntime-genai.aar"))` (currently missing) and the `srcDirs("libs")` JNI dir (currently missing).
-- `android/ORTransformer/CMakeLists.txt` path (`.../cpp/CMakeLists.txt`) — links `onnxruntime` + `onnxruntime-genai` (`CMakeLists.txt:61-62`); ensure the genai lib is actually present or made optional behind Gate 0.1.
+- `android/MobileTransformers/MobileTransformers/build.gradle.kts` (post-#16 rename; the pre-rename path is `android/ORTransformer/ORTransformersMobile/`) — add `maven-publish` + `publishing { publications { ... } }`; resolve `implementation(files("./src/main/aarLibs/onnxruntime-genai.aar"))` (currently missing) and the `srcDirs("libs")` JNI dir (currently missing).
+- the module's `src/main/cpp/CMakeLists.txt` (path moves with the #16 rename) — links `onnxruntime` + `onnxruntime-genai` (`CMakeLists.txt:61-62`); ensure the genai lib is actually present or made optional behind Gate 0.1.
 - NEW `scripts/android_build_aar.sh`, `scripts/publish_local_maven.sh` (stubs from #28).
 - NEW (example) `examples/consumer-app/` — minimal app consuming the local-Maven artifact (CI smoke for #29).
 
