@@ -1,3 +1,5 @@
+# DECOMPOSE(#5): split shared trainer helpers into src/mobiletransformers/{training,utils} by
+# concern as modules migrate. ~26 KB.
 from dataclasses import dataclass
 import inspect
 from typing import Dict, List

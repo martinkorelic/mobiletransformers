@@ -1,3 +1,5 @@
+# DECOMPOSE(#5): split validation rules vs. graph ops vs. quantization into
+# src/mobiletransformers/{training/validators,artifacts/validation} as touched (#6/#9). ~51 KB.
 import argparse
 import random
 import textwrap

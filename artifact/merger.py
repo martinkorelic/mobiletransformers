@@ -1,3 +1,6 @@
+# DECOMPOSE(#5): the hard-coded name-rewrite logic (mirrors C++ weight_merger.cpp replace_prefix)
+# moves behind the weight_handoff_map.json resolver (#8/#9); create_*_merger_model{,_2} collapse into
+# a single parameterized build_merger_model(MergerSpec) via the merger registry (#6/#9). ~44 KB.
 import onnx
 import numpy as np
 from onnx import StringStringEntryProto, helper, TensorProto

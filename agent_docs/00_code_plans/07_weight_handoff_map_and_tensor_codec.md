@@ -226,3 +226,62 @@ Under `external_initializer`, `mergedTensorNames["weight"] == inferenceInitializ
 - The quantized-name invariant holds: `weight_quantized`/`scale`/`zero_point` names come from the observed inference-graph initializers, never from `base_layer_name`; the documented scale-naming bug is resolved.
 - C++ save (`save_merged_parameters`) and load (`WeightSessionCache::init`) are map-driven; `inference_name` (`weight_merger.cpp:904`) remains only as a loud-deprecation fallback when no map is present.
 - `HandoffMode` enumerates `external_initializer`/`model_input`/`adapter`, with `model_input`/`adapter` as fail-closed stubs in v1 (F7).
+
+---
+
+## Implementation notes — Python owner layer done (2026-07-13)
+
+The **Python owner layer is implemented, tested, and green** (`make check`: 108 passed, 6 skipped). The
+cross-boundary consumers (C++ merge/save, C++ load, Kotlin JNI) are deferred to their integration plans,
+exactly as this plan's own Interactions section directs — nothing here was skipped, only sequenced.
+
+### What landed (and where — the file inventory drifted from the plan header)
+- **`src/mobiletransformers/artifacts/handoff_map.py`** — owns the schema + codec. Public surface:
+  - `TensorSpec` (frozen) — as specified.
+  - `HandoffEntry` (mutable dataclass) — snake_case fields; `to_dict()`/`from_dict()` map to/from the
+    canonical **camelCase** wire keys (`trainingBaseLayerName`, `inferenceInitializerNames`, …). Extra
+    helpers: `.roles`, `.is_quantized`, `.tensor_specs()`.
+  - `HandoffMap` — `to_dict()`/`from_dict()`, `to_json()` (**byte-deterministic**: entries sorted by
+    canonical weight name + `sort_keys`), `load(path)` (parse → `check_compat` → `validate`),
+    `save(path)`, `validate()`.
+  - `TrainableTensorCodec` — `canonical_inference_name(base_layer_name, arch_spec)` (the single Python
+    impl of the `weight_merger.cpp:904` rewrite, driven by `ArchitectureSpec.attention_module_name`) and
+    `from_peft_mapping(peft_mapping, requires_grad, observed_inference_inits, peft_spec, arch_spec)`.
+- **`src/mobiletransformers/artifacts/versioning.py`** — the plan pinned the `check_compat` algorithm
+  inline but did not name a module; it was **extracted to its own module** (`check_compat`,
+  `parse_version`, `SchemaVersionError`) so every versioned contract (#13 manifest, #20 support matrix,
+  #35 federated) imports one implementation. `HANDOFF_MAP_READER_VERSION = "1.0"` lives in `handoff_map.py`.
+- **`tests/fixtures/check_compat_cases.json`** — the shared cross-language table fixture (the plan asked
+  for it); consumed by `test_handoff_map.py` and to be mirrored by the Kotlin/C++ readers.
+- **`tests/unit/test_handoff_map.py`** + **`tests/unit/test_tensor_codec.py`** (26 tests).
+
+### Contracts the plan under-specified (now pinned by the implementation)
+- **`ObservedInit`** (new frozen dataclass, `handoff_map.py`) is the codec's ground-truth input for a
+  single emitted inference initializer: `(name, dtype, shape, role, transposed)`. The plan spoke of an
+  `observed_inference_inits` "list of `(name, dtype, shape, role, transposed?)`"; this formalizes it. The
+  inference-export accumulation (deferred) must produce a list of these.
+- **`INFERENCE_SUFFIX_TO_ROLE`** (`handoff_map.py`) pins the inference-graph suffix → handoff role map:
+  `weight→weight`, `qweight→weight_quantized`, `scales→scale`, `qzeros→zero_point`. The deferred
+  accumulation uses this to tag each `ObservedInit.role`; recorded here so both sides share one mapping.
+- **`trainingBaseLayerName` convention:** `from_peft_mapping` derives it as
+  `peft_mapping_key + ".base_layer"` (the `peft_mapping` key is the LoRA/MARS module path without
+  `.base_layer`; the base weight lives at `<key>.base_layer.weight`). This matches the plan's worked
+  example. Revisit if a real device merge shows a different PEFT wrap path — the codec is the only place
+  to change it.
+- **`HandoffMapError`** in the plan text == **`HandoffError`** from `exceptions.py` (the established typed
+  hierarchy). No new exception type was introduced; `validate()` raises `HandoffError`, version gating
+  raises `SchemaVersionError` (both under `MobileTransformersError`).
+- **`model_input`/`adapter` fail-closed:** `validate()` rejects both with "not supported in this version".
+  The `model_input`-requires-`genaiInputNames` structural rule is moot in v1 (the mode can never be
+  used) and lands with the GenAI model-input path (#11).
+
+### Deferred to owning plans (not lost — tracked)
+- **Build-side emit wiring:** accumulate `ObservedInit`s in the inference-graph builder
+  (`make_matmul_fp16_or_fp32`/`make_matmul_int4` sites) and feed `peft_mapping`/`requires_grad` at export
+  time, then `HandoffMap(...).save()` next to `training_config.json`. Blocked on the inference-builder
+  migration (gated by the Optimum-vs-GenAI decision, same gate as #7's `inference/builder.py` rewrite).
+- **C++ save/load** (`weight_merger.cpp` `save_merged_parameters` + `load_handoff_map`;
+  `session_cache.h` map-driven `init`): rides with **#9** (merge/save) and **#23** (native load).
+- **Kotlin JNI** thread-through (`ORTTrainerNative.mergeExportSessionWeights`/`mergeExportWeights`): **#18/#19**.
+- **Integration tests** (C++ smoke; cross-language golden parsed by Python + C++): land with the C++
+  consumers above. `check_compat_cases.json` is ready for the C++/Kotlin mirror side.

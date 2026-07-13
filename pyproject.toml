@@ -1,0 +1,125 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mobiletransformers"
+version = "0.1.0"
+description = "Export and Android runtime tooling for on-device transformer training and inference."
+readme = "README.md"
+# optimum-onnx 0.1.0 supports py 3.9–3.13; cap below 3.14.
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "huggingface-hub>=0.34",
+  "numpy>=1.26",
+  "onnx>=1.16",
+  "pydantic>=2",
+  "pyyaml>=6.0",
+  "python-dotenv>=1.0",
+  "tokenizers>=0.20",
+]
+# license intentionally omitted until the licensing decision (target: Apache-2.0).
+
+[project.scripts]
+mobiletransformers = "mobiletransformers.cli.main:main"
+
+[project.optional-dependencies]
+# Public install surfaces. `export` uses optimum-onnx WITH the [onnxruntime] extra
+# (public onnxruntime). Never co-install with `ort-training-local` (see [tool.uv] conflicts).
+export = ["optimum-onnx[onnxruntime]>=0.1.0", "transformers>=4.45,<4.58", "onnx", "onnxscript>=0.3"]
+train  = ["transformers>=4.45,<4.58", "onnxscript>=0.3", "peft>=0.13", "onnx"]
+rag    = ["langchain-community>=0.3.27", "langchain-huggingface>=0.3", "langchain-objectbox==0.1.0", "sentence-transformers>=5"]
+eval   = ["deepeval>=3.4.7", "matplotlib>=3.10"]
+hub    = ["huggingface-hub>=0.34"]
+
+[dependency-groups]
+# Local-only workflows. Never part of the published install surface.
+dev   = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+docs  = ["mkdocs>=1.6"]
+smoke = ["pytest>=8"]
+android-build = ["pyyaml>=6.0"]
+# onnxruntime-genai>=0.14 pulls onnxruntime>=1.26 which needs Python>=3.11; marker keeps the
+# 3.10 split resolvable (genai smoke requires 3.11+ regardless).
+genai-smoke   = ["onnxruntime-genai>=0.14; python_version >= '3.11'"]
+# Source-built training wheel PROVIDES `onnxruntime`; optimum-onnx here is BARE (no [onnxruntime]
+# extra) so it does not pull a second, colliding onnxruntime over the training wheel's import.
+# The wheel is cp312-only, so this group must be synced under Python 3.12. torch ABI is the
+# resolved 2.7.1 pairing recorded in third_party/onnxruntime/manifest.json (NOT the doc's 2.5.1 guess).
+ort-training-local = [
+  # cp312-only local wheel: marker keeps it out of the 3.10/3.11/3.13 resolution splits so the
+  # universal `uv lock` succeeds. This group is only ever synced under Python 3.12 (see manifest).
+  "onnxruntime-training; python_version == '3.12'",
+  "optimum-onnx>=0.1.0",
+  "peft>=0.13",
+  "onnxscript>=0.3",
+  "torch==2.7.1",
+  "transformers==4.46.2",
+  # The source-built ORT-training wheel's C extension is compiled against the numpy 1.26 ABI
+  # (manifest paired_stack: numpy 1.26.4). numpy 2.x breaks it ("import numpy failed" at
+  # onnxruntime_pybind11_state load). Scope to 3.12 (numpy 1.26.x has no cp313 wheel, and this
+  # group is cp312-only regardless); forked resolution keeps numpy 2.x for the export profile.
+  "numpy<2; python_version == '3.12'",
+  # ORT 1.23 runtime supports max ONNX IR version 11; onnx>=1.19 emits IR 13, which fails to load
+  # in the generated optimizer/training graphs. Pin to the build-paired line (manifest: onnx 1.18.0).
+  "onnx<1.19; python_version == '3.12'",
+]
+# ROCm/CUDA export experiment surface (from requirements-or.txt). Deferred: the ROCm wheels
+# (onnxruntime-rocm==1.18.0, torch*+rocm) require a dedicated AMD/ROCm package index, not PyPI,
+# so wiring them into a resolvable group is out of scope for this foundation pass. Kept as a
+# declared-but-empty group so `uv lock` stays clean; populated when the ROCm index is configured.
+export-rocm = []
+
+[tool.uv.sources]
+# Copied by hand from ../on_device_llm_finetune/dist/ into third_party/wheels/ (git-ignored,
+# 662 MB, cp312). SHA256 recorded in third_party/onnxruntime/manifest.json.
+onnxruntime-training = { path = "third_party/wheels/onnxruntime_training-1.23.0+cpu-cp312-cp312-linux_x86_64.whl" }
+
+[tool.uv]
+# The onnxruntime-import-colliding providers must never resolve into one environment.
+conflicts = [
+  [{ group = "ort-training-local" }, { extra = "export" }],
+  [{ group = "ort-training-local" }, { group = "genai-smoke" }],
+  [{ extra = "export" }, { group = "genai-smoke" }],
+]
+# langchain-objectbox 0.1.0 declares a stale `langchain-core<0.2.0` bound that pip's resolver
+# ignored; the real working env pairs it with langchain-core 0.3.74. Override to that proven line
+# so uv's strict resolver matches production (rag extra).
+override-dependencies = ["langchain-core>=0.3.74,<0.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mobiletransformers"]
+
+[tool.hatch.metadata]
+allow-direct-references = true  # required for the local path wheel source
+
+[tool.ruff]
+line-length = 110
+# Lint/format only the new package + tests. Legacy root packages and research/ are being migrated
+# subsystem-by-subsystem and are out of the gate until they move into src/ (see DECOMPOSE notes).
+src = ["src", "tests"]
+extend-exclude = [
+  "research", "trainer", "artifact", "inference", "tools", "peft_models", "database", "evaluation",
+  "config.py", "tests/fixtures/tiny_trainable.onnx",
+]
+
+[tool.ruff.lint]
+# pyflakes + pycodestyle + import-sort (I) + pyupgrade (UP) + bugbear (B).
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+# An existing untyped codebase can't go strict overnight: start lenient globally, CI-green day one.
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]  # teaches mypy about pydantic model defaults/aliases/factories
+files = ["src/mobiletransformers"]
+exclude = "(^|/)(research|trainer|artifact|inference|tools|peft_models|database|evaluation)/"
+
+[[tool.mypy.overrides]]
+# New package modules are held to strict typing (new code pays the typing tax; legacy is ratcheted).
+module = "mobiletransformers.*"
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The ORT-training integration smoke self-skips (importorskip) unless the ort-training-local
+# profile is active, so a bare `pytest` run in the core env stays green.

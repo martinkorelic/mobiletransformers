@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "1.0",
+  "minReaderVersion": "1.0",
+  "ort_git_sha": "9b25b6a838d83850300afeff37bcd18723f865e3",
+  "ort_git_describe": "v1.19.0-1714-g9b25b6a838",
+  "ort_tag": "v1.23.0",
+  "version": "1.23.0+cpu",
+  "build_flags": ["--enable_training_apis", "--build_wheel", "--config", "Release"],
+  "python_version": "3.12.11",
+  "torch_version": "2.7.1",
+  "torch_build_observed": "2.7.1+cu126",
+  "cmake_version": "3.28.1",
+  "ndk_version": null,
+  "android_api_level": null,
+  "abis": [],
+  "built_on": "2025-07-08",
+  "notes": "Wheel and paired venv (.ort-1.23, Python 3.12.11) were source-built in the sibling repo on_device_llm_finetune. Verified alive (Gate 0.3): `import onnxruntime; from onnxruntime.training import artifacts; from onnxruntime.training.api import CheckpointState, Module, Optimizer`, then generate_artifacts on tests/fixtures/tiny_trainable.onnx produced training/eval/optimizer models + checkpoint and a one-step train yielded a finite loss -> ORT 1.23.0+cpu | torch 2.7.1. cp312-only wheel; sync the ort-training-local group under Python 3.12. RUNTIME ABI CONSTRAINTS (pinned in the ort-training-local group): numpy<2 (the C-extension is built against the numpy 1.26 ABI; numpy 2.x -> 'import numpy failed'); onnx<1.19 (ORT 1.23 runtime supports max ONNX IR version 11, onnx>=1.19 emits IR 13). Android (NDK/ABI/AAR) fields are unpopulated -- the Android training build is a later plan (00_code_plans/04) and was not built in this pass.",
+  "wheel": {
+    "filename": "onnxruntime_training-1.23.0+cpu-cp312-cp312-linux_x86_64.whl",
+    "python_tag": "cp312",
+    "platform_tag": "linux_x86_64",
+    "sha256": "87e6f3c661b0a4c6bcaa347c3abcb9ebe05943e2b44cae04701fca89bd14c65d"
+  },
+  "paired_stack": {
+    "onnx": "1.18.0",
+    "optimum": "1.23.3",
+    "onnxscript": "0.3.1",
+    "peft": "0.13.2",
+    "transformers": "4.46.2",
+    "numpy": "1.26.4"
+  },
+  "android": {
+    "aar_sha256": null,
+    "so_sha256": {}
+  }
+}

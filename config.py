@@ -1,31 +1,54 @@
-import os
-from dotenv import load_dotenv
+"""DEPRECATED compatibility shim.
 
-load_dotenv()
+Import from ``mobiletransformers.config.settings`` (secrets) and
+``mobiletransformers.config.constants`` (experiment constants) instead. This module re-exports the
+legacy names so existing imports (e.g. ``from config import AZURE_API_VERSION``,
+``from config import TASK_EPOCHS``) keep working during migration.
 
-HF_TOKEN = os.environ.get('HF_TOKEN')
+Non-circular: this module is named ``config``; it imports from the ``mobiletransformers.config``
+package path, which is a different name, so there is no shadowing/collision.
+"""
 
-# Azure OpenAI Configuration
-AZURE_OPENAI_ENDPOINT = os.environ.get('AZURE_OPENAI_ENDPOINT')
-AZURE_OPENAI_API_KEY = os.environ.get('AZURE_OPENAI_API_KEY')
-AZURE_DEPLOYMENT_NAME = os.environ.get('AZURE_DEPLOYMENT_NAME')
-AZURE_MODEL_NAME = os.environ.get('AZURE_MODEL_NAME')
-AZURE_API_VERSION = os.environ.get('AZURE_API_VERSION')
+from __future__ import annotations
 
-#### EXPERIMENT CONFIG ####
+import warnings
 
-TASK_EPOCHS = {
-    "boolq": 2,
-    "logiqa": 3,
-    "arc_e": 4,
-    "winogrande": 4,
-    "arc_c": 4,
-    "hellaswag": 1,
-    "mini_personalqa": 6
-}
+from mobiletransformers.config.constants import (
+    BATCH_SIZE,
+    EXPERIMENT_RANKS,
+    GRADIENT_ACCUMULATION,
+    PER_DEVICE_BATCH_SIZE,
+    TASK_EPOCHS,
+)
+from mobiletransformers.config.settings import get_settings as _get_settings
 
-BATCH_SIZE = 32
-PER_DEVICE_BATCH_SIZE = 6
-GRADIENT_ACCUMULATION = 2
+warnings.warn(
+    "Import from mobiletransformers.config.settings / mobiletransformers.config.constants "
+    "instead of the root config.py module.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
-EXPERIMENT_RANKS = [2, 8, 32]
+_settings = _get_settings()
+
+# Secrets (were read from env at import in the old config.py; same behavior via Settings).
+HF_TOKEN = _settings.hf_token
+AZURE_OPENAI_ENDPOINT = _settings.azure_openai_endpoint
+AZURE_OPENAI_API_KEY = _settings.azure_openai_api_key
+AZURE_DEPLOYMENT_NAME = _settings.azure_deployment_name
+AZURE_MODEL_NAME = _settings.azure_model_name
+AZURE_API_VERSION = _settings.azure_api_version
+
+__all__ = [
+    "HF_TOKEN",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_DEPLOYMENT_NAME",
+    "AZURE_MODEL_NAME",
+    "AZURE_API_VERSION",
+    "TASK_EPOCHS",
+    "BATCH_SIZE",
+    "PER_DEVICE_BATCH_SIZE",
+    "GRADIENT_ACCUMULATION",
+    "EXPERIMENT_RANKS",
+]

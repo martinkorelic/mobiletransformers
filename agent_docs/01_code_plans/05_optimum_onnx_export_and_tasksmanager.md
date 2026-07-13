@@ -85,3 +85,55 @@ It also runs **the migration spike** that Tier 0 flagged: under `optimum-onnx 0.
 - A single export front door (`inference_export.py` over `EXPORT_FRONTEND_REGISTRY`) replaces the `trainer/builder.py:261-272` `architectures[0]` ladder: task via `registry.choose_task`, per-architecture `OnnxConfig` via `09.resolve_architecture(...).onnx_config_class`, no ladder remaining.
 - A tiny model exports to a normalized package (canonical IO/KV-cache names, one base `.data`, tokenizer + `generation_config.json`) that File #9 consumes, and `model_support_matrix.json` carries `optimum_exportable` + `mobile_package_exportable` rows.
 - The migration spike's 4-line PASS/FAIL matrix is recorded; if `OnnxConfigWithLoss`/`export` are gone, the documented fallback (torch.onnx frontend, or pinned legacy optimum) is selected via the registry and still feeds `generate_artifacts`.
+
+---
+
+## Implementation notes — done (2026-07-13)
+
+Implemented and proven end-to-end on real models; `make check` green. Env tested: **optimum 2.1.0 /
+optimum-onnx 0.1.0 / transformers 4.46.2 / torch 2.7.1** (the `export` profile, Python 3.12).
+
+### The spike outcome changed the fallback strategy (a better third option)
+The migration spike (`spikes/optimum_migration/check_symbols.py`) found: `main_export`, `TasksManager`,
+the `*OnnxConfig` model_configs, **and `export()` all survive**; only **`OnnxConfigWithLoss` was removed**
+(no replacement anywhere in optimum 2.1). Because `export()` survives *and* its deps
+(`OnnxConfig`/`OnnxConfigWithPast`/`DummyLabelsGenerator`/`DEFAULT_DUMMY_SHAPES`) all survive, the chosen
+resolution is **to vendor `OnnxConfigWithLoss`** (`src/mobiletransformers/export/onnx_config_with_loss.py`,
+adapted from optimum v1.24.0) and keep the training-graph export on the durable `export()`. This is
+strictly better than the plan's menu:
+- **Not Fallback A** (torch.onnx graph reconstruction) — unnecessary; `export()` works.
+- **Not Fallback B** (pin legacy optimum) — unnecessary; no second env.
+- The `torch.onnx` `EXPORT_FRONTEND_REGISTRY` row remains **declared + fail-closed**
+  (`export/torch_frontend.py`), reserved for the day `export()` itself disappears.
+
+Provenance/licensing: the vendored file carries an Apache-2.0 attribution header (optimum, © HuggingFace)
+to be enumerated in `THIRD_PARTY_NOTICES.md` by the relicense pass (#32).
+
+### Two discovery gotchas (handled inside `export/registry.py`)
+- `TasksManager`'s ONNX task map is **empty** unless `optimum.exporters.onnx.model_configs` is imported
+  first (its `@register_tasks_manager_onnx` decorators do the registration). `registry._ensure_onnx_registered()` does this.
+- `get_supported_tasks_for_model_type(model_type, "onnx", library_name="transformers")` — the
+  `library_name` kwarg is now required (deprecation → error path otherwise).
+
+### What landed (file inventory as built)
+- `src/mobiletransformers/export/`: `registry.py` (discovery + `EXPORT_FRONTEND_REGISTRY` keyed by the new
+  **Python-only** `ExportFrontend` enum — deliberately excluded from `ENUM_REGISTRY`, no Kotlin mirror),
+  `inference_export.py` (`export_inference` over `main_export`, captures optimum/optimum-onnx/transformers
+  versions), `normalize.py` (verifies canonical IO/KV names, fail-closed on missing `logits`/`present.*`,
+  consolidates external data to one `model.onnx_data`), `support_matrix.py` (idempotent merge; sets
+  `optimum_exportable` + `mobile_package_exportable`, seeds the 4 deferred statuses `None`, preserves
+  later-plan values), `onnx_config_with_loss.py` (vendored), `torch_frontend.py` (reserved).
+- `trainer/builder.py`: the `architectures[0]` ladder is replaced by
+  `resolve_architecture(config).load_onnx_config_class()` + `choose_task`; the broken
+  `from optimum... import OnnxConfigWithLoss` is repointed to the vendored module. (Also fixed a latent
+  unbound-`ocl` bug on unknown architectures — the old ladder had no `else`.)
+- Tests: `tests/export/{test_registry,test_support_matrix,test_onnx_config_with_loss}.py` — 11 run in
+  core/dev, 6 skip there and pass under `uv run --extra export`.
+
+### Deferred (per plan ownership)
+- Real full-size model export smoke (e.g. SmolLM2-135M) is a user-run manual test (the automated E2E uses
+  `hf-internal-testing/tiny-random-LlamaForCausalLM`).
+- `inference/builder.py` dispatch rewrite stays gated by the Optimum-vs-GenAI decision (not #7).
+- The `torch.onnx` frontend body only if a future optimum removes `export()`.
+- **Env note:** `uv sync --extra export` rebuilds `.venv` on Python 3.12; reset the core/dev env with
+  `uv sync --frozen --group dev --python 3.10` before `make check` (else mypy trips on numpy 3.12 stubs).

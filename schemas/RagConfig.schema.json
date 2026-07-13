@@ -1,0 +1,40 @@
+{
+  "$defs": {
+    "SearchType": {
+      "enum": [
+        "semantic",
+        "text"
+      ],
+      "title": "SearchType",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "embeddingDim": {
+      "default": 384,
+      "title": "Embeddingdim",
+      "type": "integer"
+    },
+    "minReaderVersion": {
+      "default": "1.0",
+      "title": "Minreaderversion",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "default": "1.0",
+      "title": "Schemaversion",
+      "type": "string"
+    },
+    "searchType": {
+      "$ref": "#/$defs/SearchType",
+      "default": "semantic"
+    },
+    "topK": {
+      "default": 5,
+      "title": "Topk",
+      "type": "integer"
+    }
+  },
+  "title": "RagConfig",
+  "type": "object"
+}

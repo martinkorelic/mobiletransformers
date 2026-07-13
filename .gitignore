@@ -15,3 +15,11 @@ experiment/
 dist/
 .deepeval/
 experiment_results/
+
+# Packaging / restructure
+*.egg-info/
+third_party/wheels/*.whl
+third_party/onnxruntime/build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

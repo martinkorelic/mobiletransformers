@@ -11,8 +11,15 @@ from pathlib import Path
 import onnx
 import numpy as np
 from onnx import helper, TensorProto, numpy_helper
-from optimum.exporters.onnx import OnnxConfigWithLoss, export
-from optimum.exporters.onnx.model_configs import LlamaOnnxConfig, GemmaOnnxConfig, Phi3OnnxConfig, BertOnnxConfig, Qwen2OnnxConfig, OPTOnnxConfig
+from optimum.exporters.onnx import export
+# OnnxConfigWithLoss was REMOVED in optimum 2.1 (the optimum-onnx split; verified by
+# spikes/optimum_migration/check_symbols.py). export() survives, so we keep the training-graph export
+# on it with a VENDORED OnnxConfigWithLoss. Per-architecture *OnnxConfig classes now resolve via the
+# architecture registry (#6/#9) — the old architectures[0] ladder is gone.
+from mobiletransformers.config.constants import TaskType
+from mobiletransformers.config.registry.architecture import resolve_architecture
+from mobiletransformers.export.onnx_config_with_loss import OnnxConfigWithLoss
+from mobiletransformers.export.registry import choose_task, supported_onnx_tasks
 
 from transformers import AutoModelForCausalLM, AutoConfig, AutoModel
 from peft import PeftModel, LoraConfig, get_peft_model
@@ -257,19 +264,16 @@ def optimum_hf_export(model_id,
         model = AutoModel.from_pretrained(model_id, trust_remote_code=True, token=os.environ["HF_TOKEN"])
     config = AutoConfig.from_pretrained(model_id, token=os.environ["HF_TOKEN"])
 
-    # TODO: Add support for other architectures
-    if config.architectures[0] == "LlamaForCausalLM":
-        ocl = LlamaOnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
-    elif config.architectures[0] == "GemmaForCausalLM" or config.architectures[0] == "Gemma2ForCausalLM" or config.architectures[0] == "Gemma3ForCausalLM":
-        ocl = GemmaOnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
-    elif config.architectures[0] == "Phi3ForCausalLM":
-        ocl = Phi3OnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
-    elif config.architectures[0] == "Qwen2ForCausalLM":
-        ocl = Qwen2OnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
-    elif config.architectures[0] == "OPTForCausalLM":
-        ocl = OPTOnnxConfig(config, task=task_type, use_past=not training_mode, use_past_in_inputs=not training_mode)
-    elif config.architectures[0] == "BertModel":
-        ocl = BertOnnxConfig(config, task=task_type)
+    # Registry-driven dispatch (no architectures[0] ladder): the architecture registry maps the HF
+    # architecture -> its Optimum OnnxConfig class, and choose_task routes task selection. Unknown
+    # architectures fail closed inside resolve_architecture. Adding one is a registry entry, not an elif.
+    spec = resolve_architecture(config)
+    resolved_task = choose_task(supported_onnx_tasks(config.model_type), override=task_type)
+    onnx_config_class = spec.load_onnx_config_class()
+    if spec.task == TaskType.FEATURE_EXTRACTION:
+        ocl = onnx_config_class(config, task=resolved_task)
+    else:
+        ocl = onnx_config_class(config, task=resolved_task, use_past=not training_mode, use_past_in_inputs=not training_mode)
 
     lora_config = None
     lora_model = None

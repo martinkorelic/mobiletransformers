@@ -1,3 +1,5 @@
+# DECOMPOSE(#5): fold encoder/embedding export into src/mobiletransformers/export behind the
+# task/architecture registry (#6), consumed by encoder support (#33). ~27 KB.
 import json
 import onnx
 from onnx import helper, TensorProto

@@ -1,23 +1,36 @@
+"""DEPRECATED compatibility shim.
+
+The config section names and dataset map moved to ``mobiletransformers.config.constants``.
+This module re-exports them so existing imports (e.g.
+``from tools.parser_config import TRAIN_CONFIG``) keep working during migration.
 """
-File that stores all the section names of the config.yml file.
-"""
 
-ARTIFACT_CONFIG = "ARTIFACT_BUILDER"
-ARTIFACT_VALIDATOR_CONFIG = "ARTIFACT_VALIDATOR"
-TRAIN_CONFIG = "TRAIN_BUILDER"
-INFERENCE_CONFIG = "INFERENCE_BUILDER"
-INFERENCE_ARTIFACT_CONFIG = "inference_config"
-TEST_GENERATION_CONFIG = "test_generation_config"
+from __future__ import annotations
 
-# Boolq: google/boolq
-# HellaSWAG: Rowan/hellaswag
-# ARC: allenai/ai2_arc
-# LogiQA: data/logiqa_train
+import warnings
 
-# If "data" is prefix, the data is loaded from local "data/"" directory
-TASK_NAME_TO_DATASET = {
-    "logiqa": "data/logiqa_train",
-    "hellaswag": "Rowan/hellaswag",
-    "arc": "allenai/ai2_arc",
-    "boolq": "google/boolq"
-}
+from mobiletransformers.config.constants import (
+    ARTIFACT_CONFIG,
+    ARTIFACT_VALIDATOR_CONFIG,
+    INFERENCE_ARTIFACT_CONFIG,
+    INFERENCE_CONFIG,
+    TASK_NAME_TO_DATASET,
+    TEST_GENERATION_CONFIG,
+    TRAIN_CONFIG,
+)
+
+warnings.warn(
+    "Import from mobiletransformers.config.constants instead of tools.parser_config.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+__all__ = [
+    "ARTIFACT_CONFIG",
+    "ARTIFACT_VALIDATOR_CONFIG",
+    "TRAIN_CONFIG",
+    "INFERENCE_CONFIG",
+    "INFERENCE_ARTIFACT_CONFIG",
+    "TEST_GENERATION_CONFIG",
+    "TASK_NAME_TO_DATASET",
+]

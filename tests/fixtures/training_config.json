@@ -1,0 +1,14 @@
+{
+  "requires_grad": [
+    "weight"
+  ],
+  "peft_mapping": {
+    "linear.weight": "linear.weight"
+  },
+  "rank": 8,
+  "alpha": 16,
+  "peft_target": [
+    "linear"
+  ],
+  "trainable_parameter_count": 4
+}

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# DECOMPOSE(#5): RAG/vector-DB helpers move to src/mobiletransformers/rag
+# (ingestion/embeddings/vector_store) in Tier 2 (#25/#26); Android ObjectBox stays in the Android module. ~28 KB.
 """
 ObjectBox Vector Database Precompute Script with LangChain
 

@@ -48,14 +48,14 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 
 | Done | # | Plan | Why here | Prerequisites |
 | --- | --- | --- | --- | --- |
-| [ ] | 1 | `00_code_plans/01_python_package_and_uv_scaffolding.md` | Unblocks all Python work | — |
-| [ ] | 2 | `00_code_plans/03_dependency_profiles_and_ort_training_wheel.md` | Lock the toolchain before building on it (incl. `pydantic>=2` core) | 1 |
-| [ ] | 3 | `01_code_plans/06_source_built_ort_training_pipeline.md` | Prove the train toolchain is alive (`generate_artifacts`) | 2 |
-| [ ] | 4 | `00_code_plans/02_config_layering_settings_constants.md` | Three config layers + secrets; needed by export/CLI | 1 |
-| [ ] | 5 | `00_code_plans/10_python_code_quality_and_module_health.md` | **Conventions, typing, lint, shared logging/exceptions + the monolith-decomposition strategy** — established before registries/merger/builders so they inherit it | 1, 2, 4 |
-| [ ] | 6 | `00_code_plans/09_typed_models_enums_and_registries.md` | **Typed config + enums + PEFT/arch/merger registries** — kills hardcoded dispatch before builders are written | 2, 4, 5 |
-| [ ] | 7 | `01_code_plans/05_optimum_onnx_export_and_tasksmanager.md` | Inference-export front door (arch via registry) | 2, 4, 6 |
-| [ ] | 8 | `00_code_plans/07_weight_handoff_map_and_tensor_codec.md` | Data contract every later piece reads (codec consumes registries) | 4, 6 |
+| [x] | 1 | `00_code_plans/01_python_package_and_uv_scaffolding.md` | Unblocks all Python work | — |
+| [x] | 2 | `00_code_plans/03_dependency_profiles_and_ort_training_wheel.md` | Lock the toolchain before building on it (incl. `pydantic>=2` core) | 1 |
+| [x] | 3 | `01_code_plans/06_source_built_ort_training_pipeline.md` | Prove the train toolchain is alive (`generate_artifacts`) | 2 |
+| [x] | 4 | `00_code_plans/02_config_layering_settings_constants.md` | Three config layers + secrets; needed by export/CLI | 1 |
+| [x] | 5 | `00_code_plans/10_python_code_quality_and_module_health.md` | **Conventions, typing, lint, shared logging/exceptions + the monolith-decomposition strategy** — established before registries/merger/builders so they inherit it | 1, 2, 4 |
+| [x] | 6 | `00_code_plans/09_typed_models_enums_and_registries.md` | **Typed config + enums + PEFT/arch/merger registries** — kills hardcoded dispatch before builders are written | 2, 4, 5 | *(owned contract layer done; legacy-dispatch consumption + merger graph-collapse deferred to #7/#9 — see notes)* |
+| [x] | 7 | `01_code_plans/05_optimum_onnx_export_and_tasksmanager.md` | Inference-export front door (arch via registry) | 2, 4, 6 |
+| [x] | 8 | `00_code_plans/07_weight_handoff_map_and_tensor_codec.md` | Data contract every later piece reads (codec consumes registries) | 4, 6 | *(Python owner layer done: schema + codec + `check_compat`; C++/Kotlin consumers ride with #9/#23)* |
 | [ ] | 9 | `01_code_plans/01_unified_merger_and_external_data_export.md` | **Dual-engine core** + full merger unification | 6, 7, 8 |
 | [ ] | 10 | `01_code_plans/02_genai_external_data_swap_spike.md` | Feeds Gate 0.1 | 9 |
 | [ ] | 11 | `01_code_plans/03_inference_engine_abstraction_native_and_genai.md` | Engine selection | 10 |
@@ -106,47 +106,119 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 Reflective "is it really done?" questions, complementary to each plan's `## Tests & acceptance` Definition of done. Answer **all yes** before flipping the `Done` box.
 
 ### #1 — Python package & uv scaffolding (`00_code_plans/01`)
-- [ ] Does `uv sync` succeed and expose the `mobiletransformers` console script?
-- [ ] Does `python -c "import mobiletransformers"` import the whole package tree cleanly?
-- [ ] Are generated artifacts (`build/`, `models/`, caches) gitignored and outside the package?
+- [x] Does `uv sync` succeed and expose the `mobiletransformers` console script?
+- [x] Does `python -c "import mobiletransformers"` import the whole package tree cleanly?
+- [x] Are generated artifacts (`build/`, `models/`, caches) gitignored and outside the package?
+
+> Done 2026-07-13. `uv sync --group dev` resolves on Python 3.10.12 (core is platform-neutral: no torch/onnxruntime); `mobiletransformers`/`python -m mobiletransformers.cli.main` both `--help` exit 0; `uv build` emits a wheel containing only `src/mobiletransformers`; full `pkgutil.walk_packages` import clean; `test_import_compat.py` green.
 
 ### #2 — Dependency profiles & ORT-training wheel (`00_code_plans/03`)
-- [ ] Do the four `onnxruntime`-bearing profiles resolve in mutually-exclusive uv groups that never co-install?
-- [ ] Is the torch ABI for the source-built ORT-training wheel pinned and recorded?
-- [ ] Does `third_party/onnxruntime/manifest.json` capture ORT SHA + build flags + wheel checksum?
+- [x] Do the four `onnxruntime`-bearing profiles resolve in mutually-exclusive uv groups that never co-install?
+- [x] Is the torch ABI for the source-built ORT-training wheel pinned and recorded?
+- [x] Does `third_party/onnxruntime/manifest.json` capture ORT SHA + build flags + wheel checksum?
+
+> Done 2026-07-13. `[tool.uv] conflicts` isolates `ort-training-local`✕`export`✕`genai-smoke`; `uv sync --extra export --group ort-training-local` errors as designed. The **source-built wheel is proven alive**: `uv sync --python 3.12 --group ort-training-local` then `import onnxruntime, torch; from onnxruntime.training import artifacts; from onnxruntime.training.api import CheckpointState, Module, Optimizer` → ORT 1.23.0+cpu · torch 2.7.1 · numpy 1.26.4 · `generate_artifacts` callable. Manifest records ORT SHA `9b25b6a838…`, build flags, `torch_version=2.7.1`, wheel sha256 `87e6f3c6…`. Lockfiles + SBOM generated deterministically.
+> **Deviations from the plan doc** (all validated): (a) the wheel is **cp312-only** → `ort-training-local` syncs under Python 3.12, marked `python_version=='3.12'` in pyproject; (b) real torch ABI is **2.7.1** (doc guessed 2.5.1) — the "one unknown" was already resolved by the existing build; (c) the wheel's C-extension needs **numpy<2** (built against 1.26.4), pinned for the 3.12 fork; (d) the `export` profile transitively needs **Python ≥3.11** (onnxruntime≥1.24 dropped cp310 wheels) — core/dev stay 3.10-clean; (e) **`export-rocm` is deferred/empty** (ROCm wheels need a dedicated AMD index, out of this foundation pass) — so the fourth onnxruntime provider and the `export`✕`export-rocm` conflict are not yet wired.
 
 ### #3 — Source-built ORT-training pipeline (`01_code_plans/06`)
-- [ ] Can `generate_artifacts` run from the source-built wheel on a tiny fixture (toolchain proven alive)?
-- [ ] Is the rebuild reproducible from `BUILD.md` with recorded checksums?
-- [ ] Does the wheel CI smoke pass without ever pulling a public `onnxruntime-training`?
+- [x] Can `generate_artifacts` run from the source-built wheel on a tiny fixture (toolchain proven alive)?
+- [x] Is the rebuild reproducible from `BUILD.md` with recorded checksums?
+- [x] Does the wheel CI smoke pass without ever pulling a public `onnxruntime-training`?
+
+> Done 2026-07-13. `tests/fixtures/tiny_trainable.onnx` (252 B, generated by `make_tiny_trainable.py`) + `training_config.json` carry the exact fields `gen_artifacts` reads. `tests/integration/test_ort_training_smoke.py` (skips unless `onnxruntime.training` imports) **passes under the 3.12 training profile**: `generate_artifacts(..., optimizer=AdamW)` produces `training_model.onnx`/`eval_model.onnx`/`optimizer_model.onnx`/`checkpoint`, and a one-step `Module`/`Optimizer` train yields a finite loss. Fixture well-formedness (`tests/fixtures/test_tiny_trainable.py`) runs onnx-only in the core env. Build scripts + `manifest.json` (SHA256 `87e6f3c6…`) + `BUILD.md` were authored under #2.
+> **Runtime ABI constraints discovered & pinned** (into the `ort-training-local` group, recorded in the manifest): `numpy<2` (wheel built against the numpy 1.26 ABI) and `onnx<1.19` (ORT 1.23 runtime caps ONNX IR at 11; onnx≥1.19 emits IR 13 and the generated optimizer graph fails to load). Both forked to the 3.12 split so the export profile keeps numpy/onnx 2.x.
+> **Deferred to #29 (CI staged pipeline):** `.github/workflows/ort-training-smoke.yml` exists but is `workflow_dispatch`-only and self-skips when the wheel is absent — the source-built wheel is git-ignored and not on PyPI, so provisioning it to a hosted runner (rebuild-in-CI vs. private index/artifact) is a #29 decision. The **local** smoke is the Gate 0.3 evidence and passes. The Android AAR (`build_ort_training_android.sh`) remains a #16/#04 concern (manifest Android fields still null).
 
 ### #4 — Config layering (`00_code_plans/02`)
-- [ ] Does precedence resolve CLI > env > YAML > package default, with secrets only in `Settings`?
-- [ ] Do the deprecation shims for `config.py` / `tools/parser_config.py` still import and warn?
-- [ ] Are non-secret constants in `constants.py` and user knobs in `config.yml`, with **no** secrets in YAML?
+- [x] Does precedence resolve CLI > env > YAML > package default, with secrets only in `Settings`?
+- [x] Do the deprecation shims for `config.py` / `tools/parser_config.py` still import and warn?
+- [x] Are non-secret constants in `constants.py` and user knobs in `config.yml`, with **no** secrets in YAML?
+
+> Done 2026-07-13. `mobiletransformers.config.resolve()` implements CLI>env>YAML>default (unit-tested); secrets live only in `Settings`/`get_settings()` and the CI grep guard (`os.environ[...HF_TOKEN|HF_CACHE|GEMINI_API_KEY|AZURE_...]` over `src/`) is empty. Root `config.py` + `tools/parser_config.py` are deprecation shims (import + `DeprecationWarning` tested); `config/config.yml` copied verbatim (4 sections, YAML-only dir); `utils/yaml.load_config_from_file` added. `test_settings_precedence.py` green.
+> **In-scope deferral:** the six in-module `load_config_from_file` copies are intentionally NOT ripped out this pass (business-module migration is a later plan). `trainer/builder.py`'s variant pre-indexes `config[TRAIN_CONFIG]`, so its call sites must migrate together with that swap — the shared util is provided for new code only.
 
 ### #5 — Python code quality & module health (`00_code_plans/10`)
-- [ ] Are `ruff` + `mypy` green in CI at the agreed ratchet, wired into `make lint` / `make typecheck`?
-- [ ] Does new code use `get_logger()` + the `exceptions.py` hierarchy (no `print`, no bare `raise Exception`)?
-- [ ] Is `mobiletransformers.__all__` declared, and does the enums/schema parity test pass?
-- [ ] Does each remaining monolith carry a decomposition note tying its split to the registry/merger work?
+- [x] Are `ruff` + `mypy` green in CI at the agreed ratchet, wired into `make lint` / `make typecheck`?
+- [x] Does new code use `get_logger()` + the `exceptions.py` hierarchy (no `print`, no bare `raise Exception`)?
+- [x] Is `mobiletransformers.__all__` declared, and does the enums/schema parity test pass?
+- [x] Does each remaining monolith carry a decomposition note tying its split to the registry/merger work?
+
+> Done 2026-07-13. `[tool.ruff]` (E/F/I/W/UP/B, format) + `[tool.mypy]` (lenient global, `disallow_untyped_defs` for `mobiletransformers.*`) gate `src/`+`tests/` only (legacy root + `research/` excluded until they migrate); `ruff check`/`ruff format --check`/`mypy` all clean (23 files). `exceptions.py` (`MobileTransformersError` → `ConfigValidation/Export/Manifest/Handoff/Merge/UnsupportedModel/Hub`, mirroring the Kotlin names), `utils/logging.py` (`get_logger`/`configure_logging`, NullHandler, no `print` in library code), `_typing.py` + `py.typed`. `mobiletransformers.__all__` declared with a `public_api.txt` golden (guarded by `test_public_api.py`). All 7 monoliths carry `# DECOMPOSE(#N):` notes. Minimal `Makefile` (`lint`/`typecheck`/`test`/`test-train`/`check`) — full set owned by #28. `research/` + legacy root are already out of the wheel (`[tool.hatch.build] packages=["src/mobiletransformers"]`). `make check` green (33 tests).
+> **Cross-plan:** the **enums/schema parity test** (`tests/parity/`) is delivered by #6 (it owns the enum/Pydantic source of truth) and CI-wired by #29 — it is implemented immediately after this in #6. The per-module **decomposition splits** ride with their owning plans (#6 per-arch inference builders, #9 merger name-resolution) per the plan's scope boundary; #5 owns the strategy/notes, not the splits.
 
 ### #6 — Typed models, enums & registries (`00_code_plans/09`)
-- [ ] Can a new PEFT / architecture / merger be added with **only** a registry entry + enum member (zero new `if/elif`; grep for survivors)?
-- [ ] Is every closed string set an enum mirrored Python↔Kotlin, proven by the CI parity test?
-- [ ] Does `model_dump(by_alias=True)` round-trip through the generated schema that Kotlin/C++ validate?
-- [ ] Did `build_merger_model(MergerSpec)` replace the `create_*_merger_model{,_2}` duplication?
+- [x] Can a new PEFT / architecture / merger be added with **only** a registry entry + enum member (zero new `if/elif`; grep for survivors)? *(true for `src/`; legacy `trainer/`,`inference/`,`artifact/` still branch — their rewrites ride with #7/#9)*
+- [x] Is every closed string set an enum mirrored Python↔Kotlin, proven by the CI parity test?
+- [x] Does `model_dump(by_alias=True)` round-trip through the generated schema that Kotlin/C++ validate?
+- [ ] Did `build_merger_model(MergerSpec)` replace the `create_*_merger_model{,_2}` duplication? *(MergerSpec/resolve_merger done; the four-factory ONNX-graph collapse is a fail-closed stub, wired by #9)*
+
+> Done 2026-07-13 (owned contract layer). **A2 enums** — 11 `str,Enum` classes in `config/constants.py` (`SamplingMethod`,`SchedulerType`,`ExecutionProvider`,`CoreConfigId`,`MemoryConfigId`,`SearchType`,`QuantizationType`,`PEFTMethod`,`TaskType`,`HandoffMode`,`MergerVariant`) + `ENUM_REGISTRY`; `SUPPORTED_PEFT_METHODS` now derives from `PEFTMethod`. **A1 Pydantic v2** — `config/models.py` (`SamplingConfig`,`DeviceOptions`,`Linear/CosineScheduler` discriminated union,`QuantizationOptions`,`GenerationConfig`,`TrainingConfig`,`RagConfig`), camelCase aliases, `extra="ignore"` (unknown fields tolerated / unknown enum values fail closed), `schemaVersion`+`minReaderVersion` block. **A3/A4/A5 registries** — `config/registry/{peft,architecture,merger}.py` with lazy dotted-path class binding (core-importable, no optimum/torch at load); `resolve_architecture` covers all 8 legacy training arches, `get_peft_spec` all 5 methods, `resolve_merger` all variants. **Parity** — `python -m mobiletransformers.codegen.enums` generates checked-in `schemas/*.schema.json` + golden `schemas/enums.json`; `--check` (the `make parity` gate) diffs them + the 11 hand-mirrored Kotlin `constants/*.kt` `fromWire` enums (under the pre-rename path) and fails on drift. Tests: `test_config_models`/`test_registries`/`test_enum_parity` + an `src/`-scoped dispatch grep guard. `make check` (lint+typecheck+parity+71 tests) green.
+> **Deferred to owning plans** (per the plan's own Interactions/ownership): rewiring the legacy `trainer/builder.py` / `inference/builder.py` / `artifact/onnx_builder.py` dispatch to the registries rides with the training-export migration (#7) and is gated for the inference builder by the Optimum/GenAI decision (restructure master plan says don't rewrite it yet); the single `build_merger_model` ONNX-graph collapse of the four `create_*_merger_model{,_2}` factories + the C++ `weight_merger.cpp` rewrite are wired by #9 (`01_code_plans/01`), which owns the on-disk merge contract + golden-equivalence test. Kotlin enum **mirror files** exist and pass parity, but swapping closed-set `String` fields to enums in `ORTGenerationConfig/ORTTrainingConfig/ORTRagConfig.kt` + `FileUtil.kt fromWire` wiring rides with the Android facade plans (#17/#19) and Android rename (#16). Broadening top-level `__all__` to export the config models/enums/registries is deferred until their consumers (#7/#9) exercise them and the SemVer surface is finalized (#32).
 
 ### #7 — Optimum ONNX export & TasksManager (`01_code_plans/05`)
-- [ ] Does TasksManager-driven discovery + task auto-select work with no per-architecture `if/elif`?
-- [ ] Is the Optimum-v2 / `optimum-onnx` migration risk covered by the symbol-check spike with a documented fallback?
-- [ ] Is the export front door behind `EXPORT_FRONTEND_REGISTRY` (F3)?
+- [x] Does TasksManager-driven discovery + task auto-select work with no per-architecture `if/elif`?
+- [x] Is the Optimum-v2 / `optimum-onnx` migration risk covered by the symbol-check spike with a documented fallback?
+- [x] Is the export front door behind `EXPORT_FRONTEND_REGISTRY` (F3)?
+
+> Done 2026-07-13. **Migration spike (decisive):** under **optimum 2.1.0 / optimum-onnx 0.1.0 / transformers
+> 4.46.2** (`spikes/optimum_migration/check_symbols.py`), `main_export`, `TasksManager`, the `*OnnxConfig`
+> model_configs, and lower-level `export()` all **survive**; **`OnnxConfigWithLoss` was REMOVED with no
+> replacement**. Two discovery gotchas found & handled: TasksManager's ONNX task map is empty until
+> `optimum.exporters.onnx.model_configs` is imported (decorator registration), and lookups need
+> `library_name="transformers"`.
+> **Deviation from the plan's fallback menu (better than Fallback A/B):** because `export()` survives, the
+> training-graph path stays on it with a **vendored `OnnxConfigWithLoss`** (`export/onnx_config_with_loss.py`,
+> adapted from optimum v1.24.0, deps `OnnxConfig`/`OnnxConfigWithPast`/`DummyLabelsGenerator`/
+> `DEFAULT_DUMMY_SHAPES` all present in 2.1) rather than reconstructing the graph via `torch.onnx` (Fallback A)
+> or pinning legacy optimum (Fallback B). The `torch.onnx` frontend row remains **declared + fail-closed**
+> (`export/torch_frontend.py`), reserved for the day `export()` also disappears.
+> **Delivered:** `export/registry.py` (`discover_tasks`/`choose_task`/`is_supported` + `EXPORT_FRONTEND_REGISTRY`
+> keyed by the new Python-only `ExportFrontend` enum — deliberately **not** in `ENUM_REGISTRY`, no Kotlin
+> mirror), `export/inference_export.py` (`export_inference` orchestration over `main_export`, captures
+> optimum/optimum-onnx/transformers versions), `export/normalize.py` (verifies canonical IO/KV names, fails
+> closed on missing `logits`/`present.*`, consolidates external data to one `model.onnx_data`),
+> `export/support_matrix.py` (idempotent merge; sets `optimum_exportable` + `mobile_package_exportable`,
+> seeds the four deferred statuses None and preserves later-plan values). `trainer/builder.py` ladder
+> (`architectures[0] ==`) replaced by `resolve_architecture(config).load_onnx_config_class()` + `choose_task`
+> (also fixes the old unbound-`ocl` bug on unknown archs). **Proven end-to-end with real exports:** inference
+> export of `hf-internal-testing/tiny-random-LlamaForCausalLM` → flat package (`model.onnx` + single
+> `model.onnx_data`, canonical `past_key_values.N`/`present.N` KV names matching `inference/builder.py`
+> `make_genai_config`, tokenizer + `generation_config.json`); training-graph export via the vendored wrapper
+> (`labels` in, `loss` out). Tests: `tests/export/{test_registry,test_support_matrix,test_onnx_config_with_loss}.py`
+> — 11 run in core/dev, 6 skip (need the export profile) and pass under `uv run --extra export`. `make check`
+> green (82 passed, 6 skipped); `uv lock --check` + `uv build --wheel` clean.
+> **Deferred to owning plans:** real full-size model export smoke (SmolLM2-135M) is a user-run manual test;
+> `inference/builder.py` dispatch rewrite still gated by the Optimum-vs-GenAI decision (not #7); the
+> `torch.onnx` frontend body only if a future optimum removes `export()`.
 
 ### #8 — Weight handoff map & tensor codec (`00_code_plans/07`)
-- [ ] Is `weight_handoff_map.json` the sole source of tensor identity (no hard-coded `replace_prefix` on the load side)?
-- [ ] Does the codec resolve names/dtype/shape/order deterministically from the map + registries?
-- [ ] Are `schemaVersion` + `minReaderVersion` present and is an unsupported `handoffMode` fail-closed (F1/F7)?
-- [ ] Is the quantized triple (weight/scale/zero_point) naming inconsistency resolved and regression-tested?
+- [x] Is `weight_handoff_map.json` the sole source of tensor identity (no hard-coded `replace_prefix` on the load side)? *(true for the Python contract; the C++ load-side rewrite of `session_cache.h`/`weight_merger.cpp:904` rides with #23/#9)*
+- [x] Does the codec resolve names/dtype/shape/order deterministically from the map + registries?
+- [x] Are `schemaVersion` + `minReaderVersion` present and is an unsupported `handoffMode` fail-closed (F1/F7)?
+- [x] Is the quantized triple (weight/scale/zero_point) naming inconsistency resolved and regression-tested?
+
+> Done 2026-07-13 (Python owner layer). `src/mobiletransformers/artifacts/handoff_map.py` owns the
+> `weight_handoff_map.json` schema (v1.0): `TensorSpec`, `ObservedInit`, `HandoffEntry`, `HandoffMap`,
+> `TrainableTensorCodec`, all camelCase wire names per the canonical `entries[]` shape. `to_json()` is
+> **byte-deterministic** (entries sorted by canonical weight name + `sort_keys`), so #13 can checksum it.
+> `validate()` fails closed on: `mergedTensorNames != inferenceInitializerNames` (external_initializer
+> invariant), the **documented quantized scale-naming bug** (quantization role names must equal the
+> observed inference initializers, never `base_layer_name`), duplicate `externalDataLocation` /
+> `inferenceInitializerNames`, and `model_input`/`adapter` modes (fail-closed stubs, F7).
+> `TrainableTensorCodec.canonical_inference_name` is the **single** Python impl of the
+> `weight_merger.cpp:904` rewrite, driven by #6's `ArchitectureSpec.attention_module_name` (data, not
+> literals); `from_peft_mapping` joins `peft_mapping` + `requires_grad` + observed inference inits using
+> #6's `PEFTMethodSpec.component_schema` role vocabulary, and **raises on train/infer naming drift**
+> (build-time, not runtime). The canonical `check_compat` (F1) lives in
+> `artifacts/versioning.py` (`SchemaVersionError`) with a shared cross-language fixture
+> `tests/fixtures/check_compat_cases.json`. Tests: `tests/unit/test_handoff_map.py` +
+> `test_tensor_codec.py` (26 tests). `make check` green (108 passed, 6 skipped).
+> **Deferred to owning plans** (per the plan's Interactions): the build-side **emit** wiring —
+> accumulating `observed_inference_inits` in the inference-graph builder and feeding `peft_mapping` at
+> export time — needs the inference-builder migration (gated by the Optimum/GenAI decision, as in #7);
+> the C++ `weight_merger.cpp`/`session_cache.h` map-driven save/load rewrite rides with **#9** (merge/save)
+> and **#23** (native load); the Kotlin JNI thread-through rides with **#18/#19**. The
+> cross-language golden + C++ smoke integration tests land with those consumers.
 
 ### #9 — Unified merger & external-data export (`01_code_plans/01`)
 - [ ] Do offline and on-device merge emit **identical** external-initializer filenames keyed by the map?

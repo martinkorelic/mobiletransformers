@@ -1,3 +1,5 @@
+# DECOMPOSE(#5): split graph assembly vs. quantization vs. gen_artifacts orchestration into
+# src/mobiletransformers/{export,artifacts} as touched (#7/#9). ~38 KB.
 """
 Script that creates the training and inference model artifacts which can be deployed to the device.
 The models are utilized by the on-device application.

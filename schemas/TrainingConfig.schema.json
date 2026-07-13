@@ -1,0 +1,168 @@
+{
+  "$defs": {
+    "CosineScheduler": {
+      "properties": {
+        "learningRate": {
+          "default": 0.0001,
+          "title": "Learningrate",
+          "type": "number"
+        },
+        "minLearningRate": {
+          "default": 0.0,
+          "title": "Minlearningrate",
+          "type": "number"
+        },
+        "schedulerType": {
+          "const": "cosine",
+          "default": "cosine",
+          "title": "Schedulertype",
+          "type": "string"
+        },
+        "warmupSteps": {
+          "default": 10,
+          "title": "Warmupsteps",
+          "type": "integer"
+        }
+      },
+      "title": "CosineScheduler",
+      "type": "object"
+    },
+    "LinearScheduler": {
+      "properties": {
+        "endFactor": {
+          "default": 0.333,
+          "title": "Endfactor",
+          "type": "number"
+        },
+        "learningRate": {
+          "default": 0.0001,
+          "title": "Learningrate",
+          "type": "number"
+        },
+        "schedulerType": {
+          "const": "linear",
+          "default": "linear",
+          "title": "Schedulertype",
+          "type": "string"
+        },
+        "startFactor": {
+          "default": 1.0,
+          "title": "Startfactor",
+          "type": "number"
+        }
+      },
+      "title": "LinearScheduler",
+      "type": "object"
+    },
+    "PEFTMethod": {
+      "enum": [
+        "lora",
+        "lora-xs",
+        "mars",
+        "all",
+        "nolora"
+      ],
+      "title": "PEFTMethod",
+      "type": "string"
+    },
+    "QuantizationOptions": {
+      "description": "Lifts the ad-hoc quantization ``extra_options`` dict (trainer/builder.py) into typed config.",
+      "properties": {
+        "activationSymmetric": {
+          "default": false,
+          "title": "Activationsymmetric",
+          "type": "boolean"
+        },
+        "enableSubgraph": {
+          "default": false,
+          "title": "Enablesubgraph",
+          "type": "boolean"
+        },
+        "forceQuantizeNoInputCheck": {
+          "default": true,
+          "title": "Forcequantizenoinputcheck",
+          "type": "boolean"
+        },
+        "matMulConstBOnly": {
+          "default": true,
+          "title": "Matmulconstbonly",
+          "type": "boolean"
+        },
+        "weightSymmetric": {
+          "default": false,
+          "title": "Weightsymmetric",
+          "type": "boolean"
+        },
+        "weightType": {
+          "$ref": "#/$defs/QuantizationType",
+          "default": "QInt8"
+        }
+      },
+      "title": "QuantizationOptions",
+      "type": "object"
+    },
+    "QuantizationType": {
+      "enum": [
+        "QInt8",
+        "QUInt8",
+        "int4"
+      ],
+      "title": "QuantizationType",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "alpha": {
+      "default": 16,
+      "title": "Alpha",
+      "type": "integer"
+    },
+    "maxSteps": {
+      "default": 10,
+      "title": "Maxsteps",
+      "type": "integer"
+    },
+    "minReaderVersion": {
+      "default": "1.0",
+      "title": "Minreaderversion",
+      "type": "string"
+    },
+    "peftMethod": {
+      "$ref": "#/$defs/PEFTMethod",
+      "default": "lora"
+    },
+    "quantization": {
+      "$ref": "#/$defs/QuantizationOptions"
+    },
+    "rank": {
+      "default": 8,
+      "title": "Rank",
+      "type": "integer"
+    },
+    "scheduler": {
+      "discriminator": {
+        "mapping": {
+          "cosine": "#/$defs/CosineScheduler",
+          "linear": "#/$defs/LinearScheduler"
+        },
+        "propertyName": "schedulerType"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/LinearScheduler"
+        },
+        {
+          "$ref": "#/$defs/CosineScheduler"
+        }
+      ],
+      "title": "Scheduler"
+    },
+    "schemaVersion": {
+      "default": "1.0",
+      "title": "Schemaversion",
+      "type": "string"
+    }
+  },
+  "title": "TrainingConfig",
+  "type": "object"
+}

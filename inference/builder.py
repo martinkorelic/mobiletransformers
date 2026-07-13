@@ -1,3 +1,6 @@
+# DECOMPOSE(#5): split into inference/graph/<arch>.py per-architecture builders resolved via the
+# architecture registry (#6); the Gemma/Gemma2 inference-model branch becomes registry entries (also
+# unblocks Gemma-3 in #37). ~200 KB monolith — largest file in the repo.
 # -------------------------------------------------------------------------
 # Copyright (c) Microsoft Corporation.  All rights reserved.
 # Licensed under the MIT License.  See License.txt in the project root for
