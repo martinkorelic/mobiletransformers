@@ -1,6 +1,6 @@
 package com.martinkorelic.mobiletransformers
 
-import com.martinkorelic.mobiletransformers.entity.VectorEntityInterface
+import com.martinkorelic.mobiletransformers.rag.RagMatch
 
 data class TrainingProgress(
     val currentStep: Int,
@@ -27,7 +27,7 @@ data class InferenceProgress(
 )
 
 data class RagResult(
-    val documents: List<Pair<VectorEntityInterface, Double>>?,
+    val documents: List<RagMatch>?,
     val embeddingTimeMs : Long = 0L,
     val queryTimeMs : Long = 0L
 )

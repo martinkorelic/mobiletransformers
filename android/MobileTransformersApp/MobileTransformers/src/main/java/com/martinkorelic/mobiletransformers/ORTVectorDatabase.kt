@@ -20,6 +20,7 @@ import com.martinkorelic.mobiletransformers.entity.VectorEntity64_
 import com.martinkorelic.mobiletransformers.entity.VectorEntity768
 import com.martinkorelic.mobiletransformers.entity.VectorEntity768_
 import com.martinkorelic.mobiletransformers.entity.VectorEntityInterface
+import com.martinkorelic.mobiletransformers.rag.DimensionRegistry
 import io.objectbox.*
 import io.objectbox.query.QueryBuilder
 import java.io.File
@@ -44,7 +45,9 @@ class ORTVectorDatabase private constructor(context: Context, cacheDir : String,
         @Volatile
         private var instances = mutableMapOf<String, ORTVectorDatabase>()
 
-        val SUPPORTED_DIMENSIONS = setOf(64, 128, 256, 384, 512, 768, 1024, 1536)
+        // Single declared source of supported dimensions (#25). Adding a dimension is one
+        // DimensionRegistry.register(dim) + its @HnswIndex VectorEntity<dim> entity.
+        val SUPPORTED_DIMENSIONS: Set<Int> get() = DimensionRegistry.SUPPORTED_DIMENSIONS
 
         fun getInstance(
             modelName: String,

@@ -30,6 +30,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
         "--out", default="build/support/model_support_matrix.json", help="Full matrix output path."
     )
     parser.add_argument("--docs", default=None, help="Optional filtered user-facing matrix output path.")
+    parser.add_argument(
+        "--md", default=None, help="Optional COMPATIBILITY_MATRIX.md render output path (#31, F6)."
+    )
     parser.add_argument("--generated-at", default=None, help="ISO timestamp to stamp into the matrix.")
     parser.set_defaults(func=run)
     return parser
@@ -49,4 +52,11 @@ def run(args: argparse.Namespace) -> int:
     if args.docs:
         docs = write_filtered_docs(matrix, args.docs)
         print(f"wrote filtered user-facing matrix -> {docs}")
+    if args.md:
+        from mobiletransformers.support.render import render_matrix_markdown
+
+        md_path = Path(args.md)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(render_matrix_markdown(matrix), encoding="utf-8")
+        print(f"wrote compatibility matrix doc -> {md_path}")
     return 0

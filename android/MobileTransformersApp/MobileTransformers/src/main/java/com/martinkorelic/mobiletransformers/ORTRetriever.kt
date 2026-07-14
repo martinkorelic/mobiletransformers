@@ -1,6 +1,8 @@
 package com.martinkorelic.mobiletransformers
 
 import android.content.Context
+import com.martinkorelic.mobiletransformers.rag.ObjectBoxVectorStore
+import com.martinkorelic.mobiletransformers.rag.VectorStore
 import com.martinkorelic.mobiletransformers.repository.RagCallback
 
 class ORTRetriever(val cacheDir : String, val applicationContext: Context, var _ragConfig : ORTRagConfig) {
@@ -62,6 +64,9 @@ class ORTRetriever(val cacheDir : String, val applicationContext: Context, var _
         }
     }
 
+    // The active VectorStore boundary over the live ObjectBox database (#25). Null until the DB exists.
+    private fun vectorStore(): VectorStore? = vectorDatabase?.let { ObjectBoxVectorStore(it) }
+
     fun query(queryText : String, ragArgs : ORTRagConfig, ragCallback: RagCallback? = null) {
         // Generate input tokens, but do not add if we already have past attention mask
         ragCallback?.onQueryStart()
@@ -99,7 +104,8 @@ class ORTRetriever(val cacheDir : String, val applicationContext: Context, var _
                     if (embeddings != null) {
 
                         val queryStartTimeMs = System.currentTimeMillis()
-                        val documents = vectorDatabase?.queryDocuments(embeddings, ragArgs.topK)
+                        // Retrieval routes through the VectorStore boundary (#25), not ObjectBox directly.
+                        val documents = vectorStore()?.search(embeddings, ragArgs.topK)
                         val queryTimeMs = System.currentTimeMillis() - queryStartTimeMs
 
                         ragCallback?.onQueryResults(
@@ -115,7 +121,7 @@ class ORTRetriever(val cacheDir : String, val applicationContext: Context, var _
                 }
                 "text" -> {
                     val queryStartTimeMs = System.currentTimeMillis()
-                    val documents = vectorDatabase?.queryByContent(queryText, ragArgs.topK.toLong())?.map { it to 1.0 }
+                    val documents = vectorStore()?.textSearch(queryText, ragArgs.topK)
                     val queryTimeMs = System.currentTimeMillis() - queryStartTimeMs
 
                     ragCallback?.onQueryResults(

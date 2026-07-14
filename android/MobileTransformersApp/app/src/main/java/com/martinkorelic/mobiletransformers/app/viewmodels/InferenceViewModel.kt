@@ -6,7 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.martinkorelic.mobiletransformers.InferenceProgress
 import com.martinkorelic.mobiletransformers.repository.InferenceRepository
 import com.martinkorelic.mobiletransformers.RagResult
-import com.martinkorelic.mobiletransformers.entity.VectorEntityInterface
+import com.martinkorelic.mobiletransformers.rag.RagMatch
 import com.martinkorelic.mobiletransformers.repository.GenerationCallback
 import com.martinkorelic.mobiletransformers.repository.LLMRepository
 import com.martinkorelic.mobiletransformers.repository.RagCallback
@@ -200,9 +200,9 @@ class InferenceViewModel(private val llmRepository: LLMRepository, private val i
                         // Add Rag results to history
                         _chatHistory.value += RagMessage(
                             documents = queryResult.documents?.map { d -> ChunkDetails(
-                                content = d.first.content,
-                                file = d.first.document,
-                                score = d.second
+                                content = d.document.text,
+                                file = d.document.id,
+                                score = d.score
                             ) } ?: listOf()
                         )
 
@@ -237,7 +237,7 @@ class InferenceViewModel(private val llmRepository: LLMRepository, private val i
      */
     fun insertContextIntoMessage(
         prompt: String,
-        documents: List<Pair<VectorEntityInterface, Double>>?,
+        documents: List<RagMatch>?,
         maxContextLength: Int = 2000,
         contextTemplate: String = "\nContext: {context}\n\nQuestion: {question}"
     ): String {
@@ -248,14 +248,14 @@ class InferenceViewModel(private val llmRepository: LLMRepository, private val i
         }
 
         // Sort documents by relevance score (higher scores first)
-        val sortedDocuments = documents.sortedByDescending { it.second }
+        val sortedDocuments = documents.sortedByDescending { it.score }
 
         // Build context string from documents
         val contextBuilder = StringBuilder()
         var currentLength = 0
 
-        for ((document, score) in sortedDocuments) {
-            val content = document.content.trim()
+        for ((document, _) in sortedDocuments) {
+            val content = document.text.trim()
 
             // Check if adding this document would exceed max length
             val additionalLength = content.length + 2 // +2 for newlines

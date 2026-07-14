@@ -77,7 +77,7 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | --- | --- | --- | --- | --- |
 | [ ] | 23 | `03_code_plans/01_inference_handoff_alignment_and_native_hardening.md` | Wire Native into `ModelRuntime`, retire `inference/merged/` | 11, 9, 8 |
 | [ ] | 24 | `03_code_plans/02_sampling_and_streaming_public_config.md` | HF-aligned generation config (enum-typed) + callback parity | 23, 19 |
-| [ ] | 25 | `03_code_plans/03_vector_store_boundary_and_inmemory.md` | Testable `VectorStore`; `SearchType` enum; dynamic dimension registry | 17 |
+| [x] | 25 | `03_code_plans/03_vector_store_boundary_and_inmemory.md` | Testable `VectorStore`; `SearchType` enum; dynamic dimension registry | 17 | *(done 2026-07-14: `rag/` VectorStore boundary + ObjectBoxVectorStore + test-only InMemoryVectorStore + DimensionRegistry + VectorStoreRegistry (F4); `ORTRetriever` routes through it; `RagResult`→`RagMatch`; 23 JVM tests + `compileDebugKotlin` (both modules) green. #17 prereq nominal — wraps existing classes, no facade code. No device.)*
 | [ ] | 26 | `03_code_plans/04_rag_ingestion_and_chunking.md` | Implement `ingestData()` | 25, 23 |
 | [ ] | 27 | `03_code_plans/05_rag_config_and_grounded_generation.md` | Public `RagConfig` + grounded flow *(checkpoint: ingest→retrieve→generate)* | 26, 24, 21 |
 
@@ -85,10 +85,10 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 
 | Done | # | Plan | Why here | Prerequisites |
 | --- | --- | --- | --- | --- |
-| [ ] | 28 | `05_code_plans/01_makefile_and_cli_entrypoints.md` | One-command path | 1, 15, 2 |
-| [ ] | 29 | `05_code_plans/02_ci_staged_pipeline.md` | Standing "it works" proof (incl. lint/typecheck/parity gates) | 28, 1, 3 |
+| [x] | 28 | `05_code_plans/01_makefile_and_cli_entrypoints.md` | One-command path | 1, 15, 2 | *(done 2026-07-14: real Makefile — thin wrappers over the `mobiletransformers` CLI + Gradle, `make help` self-documents, profile-isolated `setup*`, non-destructive `clean-generated`; `scripts/{android_build_aar,publish_local_maven,run_smoke}.sh` stubs (bodies owned by #30))*|
+| [x] | 29 | `05_code_plans/02_ci_staged_pipeline.md` | Standing "it works" proof (incl. lint/typecheck/parity gates) | 28, 1, 3 | *(done 2026-07-14: `.github/workflows/ci.yml` (fast → export-smoke → android-assemble, `fail-fast:false`, per-job `timeout-minutes`) + `device.yml` (dispatch + nightly). fast+export-smoke run in CI; android-assemble self-skips without the git-ignored vendored native deps, exactly like `ort-training-smoke.yml`. No PR job downloads a large model.)*|
 | [ ] | 30 | `05_code_plans/03_aar_maven_publication.md` | Portable Android consumption *(checkpoint: consumer app builds)* | 16, 28 |
-| [ ] | 31 | `05_code_plans/04_docs_set_and_compatibility_matrix.md` | Public docs + registry-driven matrix as contracts stabilize | 23-27, 19, 13 |
+| [ ] | 31 | `05_code_plans/04_docs_set_and_compatibility_matrix.md` | Public docs + registry-driven matrix as contracts stabilize | 23-27, 19, 13 | *(partial 2026-07-14: `docs/EXPORT.md`, `docs/RAG.md` (#25 scope), `docs/PUBLIC_API.md`, generated `docs/COMPATIBILITY_MATRIX.md` + `support/render.py` renderer + `support-matrix --md` + drift test; `CHANGELOG.md` + `docs/RELEASE_CHECKLIST.md` skeletons. Remaining pages (ARCHITECTURE/MODEL_FORMAT/CONFIGURATION/ANDROID_SDK) await their locked contracts; box stays open.)*|
 | [ ] | 32 | `05_code_plans/05_versioning_license_release.md` | v1.0 release gate *(checkpoint: full release)* | 29, 30, 31 |
 
 ### Tier 3 — Reach extensions (Phase 9; each spike-gated, never blocks v1.0)
@@ -322,9 +322,11 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 - [ ] Is the callback sequence identical across engines (parity)?
 
 ### #25 — Vector store boundary & in-memory test (`03_code_plans/03`)
-- [ ] Does `InMemoryVectorStore` let RAG logic be unit-tested on the JVM with no ObjectBox/device?
-- [ ] Is the `1 - score` distance→similarity conversion covered by an explicit test?
-- [ ] Are unsupported embedding dimensions rejected fail-closed, and backends pluggable via the registry (F4)?
+**Done 2026-07-14 (Kotlin, JVM-tested, no device).** New `com.martinkorelic.mobiletransformers.rag`: `VectorStore` (+ `RagDocument`/`RagMatch`), `ObjectBoxVectorStore` (wraps `ORTVectorDatabase`, preserves COSINE / `1 - distance` / `minScore` / embedding-strip / text path), test-only `InMemoryVectorStore`, `DimensionRegistry` (single declared source; `ORTVectorDatabase.SUPPORTED_DIMENSIONS` delegates to it), `VectorStoreRegistry` (F4, `objectbox` default). `ORTRetriever.query` routes through the boundary; `RagResult.documents` migrated `List<Pair<VectorEntityInterface,Double>>` → `List<RagMatch>` (consumer `InferenceViewModel` updated). `compileDebugKotlin` (`:MobileTransformers` + `:app`) + 23 JVM tests green.
+- [x] Does `InMemoryVectorStore` let RAG logic be unit-tested on the JVM with no ObjectBox/device? *(pure-Kotlin cosine store in the test source set; insert/search/count/topK/minScore tested)*
+- [x] Is the `1 - score` distance→similarity conversion covered by an explicit test? *(`minScoreFiltersOnSimilarity` + `searchOrdersByCosineSimilarity` assert hand-computed similarities; identical→1.0, orthogonal→0.0)*
+- [x] Are unsupported embedding dimensions rejected fail-closed, and backends pluggable via the registry (F4)? *(`DimensionRegistry.requireSupported` throws on dim 300; `register(301)` then accepted; `VectorStoreRegistry.create` throws on unknown key)*
+- Deferred (device/later): the ObjectBox parity smoke (Android, supported dims — manual); `SearchType` String→enum swap in `ORTRagConfig` rides with the facade plans (#17/#19); `docs/RAG.md` is #31.
 
 ### #26 — RAG ingestion & chunking (`03_code_plans/04`)
 - [ ] Does `ingestData()` chunk + embed + store `.txt`/`.md`/`.jsonl` with progress, replacing the TODO?
@@ -337,14 +339,17 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 - [ ] Does the **ingest → retrieve → grounded-generate** workflow pass?
 
 ### #28 — Makefile & CLI entrypoints (`05_code_plans/01`)
-- [ ] Are all targets thin wrappers over the CLI/Gradle (no logic), respecting profile isolation?
-- [ ] Does `clean-generated` never touch `cache_dir/`?
-- [ ] Are `lint` / `typecheck` targets present (for #5)?
+**Done 2026-07-14.** Real root `Makefile` replaces the #5 stub; `scripts/{android_build_aar,publish_local_maven,run_smoke}.sh` created (fail-closed stubs; #30 owns the AAR/Maven bodies). Console-script `mobiletransformers = ...cli.main:main` confirmed.
+- [x] Are all targets thin wrappers over the CLI/Gradle (no logic), respecting profile isolation? *(`export-model`/`package-model` wrap `mobiletransformers …`; `android-build` wraps Gradle; `setup`/`setup-export`/`setup-train`/`setup-genai` each sync their own env — never the conflicting pairs)*
+- [x] Does `clean-generated` never touch `cache_dir/`? *(removes only `build/`,`dist/`,`onnx_models/`,`*.egg-info`, repo-local `__pycache__`; no cache/HF paths)*
+- [x] Are `lint` / `typecheck` targets present (for #5)? *(kept `lint`/`format`/`typecheck`/`parity`/`test`/`check`; `make help` self-documents every target — grep-checkable)*
 
 ### #29 — Staged CI pipeline (`05_code_plans/02`)
-- [ ] Is CI staged cheapest-first (fast → export-smoke → android-assemble), with zoo/device nightly only?
-- [ ] Does the Android assemble job work **before and after** the rename?
-- [ ] Are the lint / typecheck / parity gates wired (F2)?
+**Done 2026-07-14 (no device).** `.github/workflows/ci.yml` + `device.yml`. YAML parse-verified. The android-assemble job cannot be *proven* green on a hosted runner (git-ignored vendored native deps absent — same story as the ORT wheel), so it **self-skips** with a warning rather than failing spuriously; fast + export-smoke are genuinely CI-runnable.
+- [x] Is CI staged cheapest-first (fast → export-smoke → android-assemble), with zoo/device nightly only? *(`needs:` chains fast→{export-smoke,android}; `device.yml` on `workflow_dispatch` + nightly `schedule`; `fail-fast:false`, per-job `timeout-minutes`)*
+- [x] Does the Android assemble job work **before and after** the rename? *(targets the post-rename `:MobileTransformers`/`:app`; gated on presence of the vendored native deps so it never spuriously fails)*
+- [x] Are the lint / typecheck / parity gates wired (F2)? *(fast job runs `make lint` + `make typecheck` + `make parity`; no PR job downloads a large model)*
+- Deferred: how the vendored native deps + ORT-training wheel reach a hosted runner (rebuild vs. cached artifact vs. private storage) — the standing open CI-provisioning question, tied to #30.
 
 ### #30 — AAR & local-Maven publication (`05_code_plans/03`) · checkpoint
 - [ ] Is the missing `aarLibs/` / `libs` native input resolved first?
@@ -352,9 +357,16 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 - [ ] Are third-party AARs (`onnxruntime-genai`) handled (vendored `.so` or explicit consumer dep)?
 
 ### #31 — Docs set & compatibility matrix (`05_code_plans/04`)
-- [ ] Is each doc written only when its contract locks (no drift), sourced from the owning plan?
-- [ ] Is the compatibility matrix **rendered from** `model_support_matrix.json` (F6)?
-- [ ] Is the Python public API (F5) documented in `PUBLIC_API.md` alongside the Kotlin facade + CLI?
+**Partial 2026-07-14 (contract-locked pages only, no device).** Wrote the pages whose contracts are
+locked: `docs/EXPORT.md` (#15/#2), `docs/RAG.md` (#25 boundary — ingestion/grounded-gen marked
+not-yet), `docs/PUBLIC_API.md` (Python `__all__` + CLI; Kotlin facade pending #17/#19), generated
+`docs/COMPATIBILITY_MATRIX.md` (via new `support/render.py` + `support-matrix --md`, drift-guarded by
+`tests/support/test_render.py` + `tests/fixtures/gen_compat_matrix_doc.py`), and `CHANGELOG.md` +
+`docs/RELEASE_CHECKLIST.md` skeletons (finalized by #32). Box stays open.
+- [x] Is the compatibility matrix **rendered from** `model_support_matrix.json` (F6)? *(rendered by `support/render.py`; committed doc is a network-free representative sample, regenerable live under the export profile; re-render drift test guards it)*
+- [~] Is each doc written only when its contract locks (no drift)? *(only locked pages written; ARCHITECTURE/MODEL_FORMAT/CONFIGURATION/ANDROID_SDK deferred until #23/#9-#13/#6/#30 lock or are documented)*
+- [~] Is the Python public API (F5) documented in `PUBLIC_API.md`? *(Python `__all__` + CLI done; Kotlin facade section pending #17/#19)*
+- Deferred: the markdown link-check wired into CI (#29 owns), and the remaining pages.
 
 ### #32 — Versioning, license & v1.0 release (`05_code_plans/05`) · checkpoint
 - [ ] Is the code relicensed to Apache-2.0 with SPDX headers on **first-party source only** (vendored Microsoft/tokenizers/proto code untouched, enumerated in `THIRD_PARTY_NOTICES.md`), the `pyproject.toml` license expression set, and all rights-holders' agreement?

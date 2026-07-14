@@ -291,3 +291,72 @@ Landed the **Python Hub round-trip** (Python-first, no device). Full gate green 
 **Tier-1 Python surface is now complete** (#1–#9 done/code-complete, #13/#14/#15/#16/#20/#21/#22 done).
 Remaining: the device track (#10/#11/#12 engine, #23 native load, on-device #9 manual tests) and the
 Android facade (#17/#19), all gated on device testing; then Tier-2/3 (#23–#37).
+
+## Session close (2026-07-14, cont. — #28/#29/#25 release-foundation + RAG boundary)
+
+Landed a **no-device release-foundation + RAG-boundary phase** (user-confirmed bundle). All three legs
+verified: Python `make check` **196 passed, 8 skipped**; Kotlin `:MobileTransformers` + `:app`
+`compileDebugKotlin` green; **23 JVM unit tests** green (`JAVA_HOME=/opt/android-studio/jbr`, JDK 17;
+Android SDK at `~/Android/Sdk`).
+- **#28** Real root `Makefile` (replaces the #5 stub) — thin wrappers over the `mobiletransformers` CLI
+  + Gradle; `make help` self-documents; profile-isolated `setup`/`setup-export`/`setup-train`/`setup-genai`;
+  non-destructive `clean-generated`. New `scripts/{android_build_aar,publish_local_maven,run_smoke}.sh`
+  (fail-closed stubs; the AAR/Maven bodies are #30's). Console-script already wired in `pyproject.toml`.
+- **#29** `.github/workflows/ci.yml` (fast → export-smoke → android-assemble; `fail-fast:false`,
+  per-job `timeout-minutes`) + `device.yml` (`workflow_dispatch` + nightly `schedule`). Fast runs
+  lint/typecheck/parity + tests; export-smoke installs the export profile (3.12) and runs the
+  wiring smoke. **android-assemble self-skips** without the git-ignored vendored native deps
+  (`aarLibs/`,`jniLibs/`), mirroring `ort-training-smoke.yml` — it is authored + gated, not proven on a
+  hosted runner. YAML parse-verified. The CI-provisioning of those native deps + the ORT wheel stays
+  the open question (tied to #30).
+- **#25** New `com.martinkorelic.mobiletransformers.rag` package: `VectorStore` (+ `RagDocument`/`RagMatch`),
+  `ObjectBoxVectorStore` (wraps `ORTVectorDatabase`, preserves COSINE / `1 - distance` similarity /
+  `minScore` / embedding-strip / non-ranked text path), test-only `InMemoryVectorStore` (pure cosine),
+  `DimensionRegistry` (single declared dimension source — `ORTVectorDatabase.SUPPORTED_DIMENSIONS`
+  delegates to it; fail-closed on unsupported), `VectorStoreRegistry` (F4 pluggable backends, `objectbox`
+  default). `ORTRetriever.query` now routes through the boundary; **`RagResult.documents` migrated
+  `List<Pair<VectorEntityInterface,Double>>` → `List<RagMatch>`** and its one consumer (sample-app
+  `InferenceViewModel`) updated in lockstep (`RagMatch` destructures as `(document, score)`).
+  - *Gotcha:* Android unit-test classpath has **no `kotlin-reflect`** — a `::class.members` assertion
+    threw `KotlinReflectionNotSupportedError`; replaced with a reflection-free behavioral check
+    (returned `RagMatch.document` equals the inserted `RagDocument`, proving no embedding leaks).
+  - #17 is a *nominal* prereq only — #25 wraps existing RAG classes and needs no facade code; done ahead
+    of #17 as a no-device slice (consistent with the prior no-device phases).
+- **Deferred:** #25 ObjectBox parity smoke (Android, manual); `SearchType` String→enum swap in
+  `ORTRagConfig` rides with #17/#19; `docs/EXPORT.md`/`docs/RAG.md` are #31. **Nothing committed** (human commits).
+
+**No-device surface now covers #28/#29 (release foundation) + #25 (RAG boundary) on top of Tier-1.** The
+next genuinely-CI/no-device candidate is thin (parts of #31 docs); everything else substantial —
+#10/#11/#12 engine, #17/#18/#19 facade, #23 native load, #24 sampling, #26/#27 RAG ingest/grounded,
+#30 AAR consumer build — needs a device or the on-device engine, which the user has deferred.
+
+## Session close (2026-07-14, cont. — #31 docs (partial) + Mac work plan)
+
+Landed the **contract-locked slice of #31** (pure Python/markdown, no device) plus a Mac cold-start
+guide, ahead of the user moving to a **macOS box without a device** for a few days. Python gate green
+(**198 passed, 8 skipped** — 2 new render tests).
+- **#31 (partial)** — `docs/EXPORT.md` (#15/#2 CLI + profiles; flags verified against `cli/export.py` +
+  `cli/push.py --repo`/`cli/pull.py --repo-id`), `docs/RAG.md` (scoped to the locked #25 `VectorStore`
+  boundary; #26 ingestion + #27 grounded-gen marked not-yet), `docs/PUBLIC_API.md` (Python `__all__`
+  from `public_api.txt` + CLI subcommands; Kotlin facade pending #17/#19). New `support/render.py`
+  (`render_matrix_markdown`) + `support-matrix --md` flag emit **`docs/COMPATIBILITY_MATRIX.md`
+  rendered from the matrix** (F6, axis legend enumerated from the #6 enums so it can't drift); the
+  committed doc is a network-free representative sample from
+  `tests/fixtures/gen_compat_matrix_doc.py`, drift-guarded by `tests/support/test_render.py`
+  (regenerate live under the export profile). `CHANGELOG.md` + `docs/RELEASE_CHECKLIST.md` skeletons
+  created (finalized by #32). #31 box stays **open** — device/facade-gated pages
+  (ARCHITECTURE/MODEL_FORMAT/CONFIGURATION/ANDROID_SDK) + the CI link-check remain.
+- **`agent_docs/MAC_WORKPLAN.md`** (expanded) — now carries **prerequisites** (Track A Python-only;
+  Track B full Android with pinned versions: AGP 8.5.1 / Kotlin 1.9.0 / Gradle 8.7 / compileSdk 34 /
+  NDK r26.x / CMake 3.22.1 / JDK 17), a **"what to move to the Mac"** table (the Android vendored deps
+  `aarLibs`/`jniLibs`/protobuf headers are host-OS-agnostic → copy via Drive/zip and Android builds work;
+  the ORT-training wheel is linux/cp312 → cannot move), and a **per-plan coverage map**. Headline: with
+  Track B, ~80% of the remaining implementation across Tiers 1–3 is Mac-doable (implement + compile/type +
+  unit/integration mock tests); the **device is only the final acceptance leg** per plan. Genuinely
+  out of reach on Mac: real ORT training-artifact gen / real generate (Linux/device), and the #10/#12
+  measurement spikes. **Top Mac tasks:** #22 `materialize_peft_weights` (cache `.bin`→safetensors, torch
+  CPU — **no ORT-training needed**, the stub docstring is pessimistic), #31 `MODEL_FORMAT.md`+
+  `CONFIGURATION.md` (locked), and **#35 federated Flower sim (entirely host Python)**.
+
+**Nothing committed** (human commits) — and note the Mac plan hinges on committing + pushing this work
+first, since the tree is the only copy.

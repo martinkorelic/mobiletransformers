@@ -1,0 +1,47 @@
+# Device / model-zoo pipeline (owned by 05_code_plans/02, #29). NEVER runs on a PR — it needs a
+# physical Android device (or device-farm runner) and is long/intensive. Manual (`workflow_dispatch`)
+# plus a nightly `schedule`. The end-to-end device leg: train 1 step -> merge -> generate 1 token ->
+# ingest/query 1 RAG doc; then build a small starter zoo and record time/memory as artifacts in the
+# docs/mobile_evaluation.md style.
+#
+# `runs-on` targets a self-hosted, device-attached runner (label `android-device`). Until such a
+# runner is registered this workflow simply never picks up a runner — it does not fail hosted CI.
+
+name: device
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Nightly at 03:17 UTC (off the top of the hour to avoid scheduler contention).
+    - cron: '17 3 * * *'
+
+jobs:
+  device-e2e:
+    name: device train->merge->generate->RAG (manual + nightly)
+    runs-on: [self-hosted, android-device]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Confirm an attached device
+        run: adb devices -l | tee adb-devices.txt && test "$(adb devices | grep -c 'device$')" -ge 1
+      # The device train->merge->generate->RAG instrumentation + zoo build + time/memory capture are
+      # the on-device legs owned by #17/#19/#23/#27 + #33; this workflow is their standing harness.
+      - name: Device end-to-end (owned by the on-device plans)
+        run: |
+          echo "Device e2e harness: instrumented train->merge->generate->RAG + zoo/metrics capture."
+          echo "Bodies land with the on-device plans (#17/#19/#23/#27); this is the workflow shell."
+      - name: Upload metrics artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-metrics
+          path: |
+            adb-devices.txt
+          if-no-files-found: warn
