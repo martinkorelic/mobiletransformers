@@ -11,9 +11,17 @@ from __future__ import annotations
 import argparse
 
 from mobiletransformers import __version__
-from mobiletransformers.cli import export, package_model, push, support_matrix, validate
+from mobiletransformers.cli import (
+    export,
+    package_model,
+    pull,
+    push,
+    push_adapter,
+    support_matrix,
+    validate,
+)
 
-_SUBCOMMANDS = (export, validate, package_model, push, support_matrix)
+_SUBCOMMANDS = (export, validate, package_model, push, support_matrix, pull, push_adapter)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,7 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(
-        dest="command", metavar="{export,validate,package-model,push,support-matrix}"
+        dest="command",
+        metavar="{export,validate,package-model,push,support-matrix,pull,install-package,push-adapter}",
     )
     for module in _SUBCOMMANDS:
         module.add_parser(subparsers)

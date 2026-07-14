@@ -266,3 +266,28 @@ gate green (**176 passed, 8 skipped**); Kotlin `compileDebugKotlin` (both module
 - **Deferred (not this phase):** #15 real full-model export (env-gated); the single on-device
   install→generate smoke (#13); #10/#11/#12 (device/GenAI-gated engine track); #21 hub pull + #22 adapter
   push-back (Python-first, now unblocked by #13/#14). **Nothing committed** (human commits).
+
+## Session close (2026-07-14, cont. — #21/#22 Hub round-trip)
+
+Landed the **Python Hub round-trip** (Python-first, no device). Full gate green (**196 passed, 8 skipped**).
+- **#21** `src/mobiletransformers/hub/variant_select.py` (`Constraints` + `select_variant`: soft quant
+  preference, download-size tie-break, 0.9× storage-budget ceiling, layered over #13's hard-filter) +
+  `hub/pull.py` (`pull_package` manifest-first `snapshot_download` + sha256-verify; `install_package` =
+  the Python cache-bridge — mirror of #13's Kotlin `ModelPackageInstaller` — with tokenizer flattening +
+  atomic `.partial`→`os.replace`). `cli/pull.py` registers `pull` + `install-package`. `downloader`
+  injectable → pull/install smokes run offline over `tests/fixtures/tiny_package`.
+- **#22** `src/mobiletransformers/adapter/{export,convert,model_card}.py` + `cli/push_adapter.py`.
+  `export_adapter_from_cache` (pure) → `AdapterPackage`; `to_peft_layout` gate (pure metadata): clean LoRA
+  → Mode-1 `adapter_config.json`, else (all MARS, factor-less LoRA) → Mode-2 native subtree +
+  `mobiletransformers_adapter.json`; `--peft-only` errors. Card carries a bold privacy warning + exact
+  base license, asserted before upload; `uploader` injectable.
+- **Guard note:** `test_no_string_literal_dispatch_in_src` bans `peft_method == "..."` — used
+  `PEFTMethod.MARS.value`/`.LORA.value` comparisons instead of raw literals.
+- **Makefile** `test` now also collects `tests/adapter`.
+- **Deferred:** #21 Android downloader (OkHttp/WorkManager) + `fromPretrained` device load; #22 PEFT
+  `adapter_model.safetensors` materialization (torch/peft, `train` extra — `convert.materialize_peft_weights`
+  raises until run under that profile) + on-device `AdapterUploader.kt`. **Nothing committed** (human commits).
+
+**Tier-1 Python surface is now complete** (#1–#9 done/code-complete, #13/#14/#15/#16/#20/#21/#22 done).
+Remaining: the device track (#10/#11/#12 engine, #23 native load, on-device #9 manual tests) and the
+Android facade (#17/#19), all gated on device testing; then Tier-2/3 (#23–#37).

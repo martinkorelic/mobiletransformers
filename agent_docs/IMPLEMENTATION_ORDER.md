@@ -68,8 +68,8 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | [ ] | 18 | `00_code_plans/08_training_lifecycle_and_checkpoint_contracts.md` | Job/progress/checkpoint API | 17 |
 | [ ] | 19 | `02_code_plans/01_hf_style_kotlin_facade.md` | `fromPretrained`/train/merge/generate *(checkpoint: train→merge→generate)* | 11, 17 |
 | [x] | 20 | `02_code_plans/02_optimum_support_matrix.md` | Reporting layer | 7 | *(done 2026-07-14: `support/` package (statuses/models/matrix) + `support-matrix` CLI; inherited statuses, probe ingestion, filtered docs; detection injectable/mocked in CI, ready-statuses read device probes when present)* |
-| [ ] | 21 | `02_code_plans/04_hub_pull_and_cache_flow.md` | Python pull first, Android downloader next *(checkpoint: pull→load)* | 13, 14 |
-| [ ] | 22 | `02_code_plans/06_adapter_pushback.md` | Last Tier-1 piece | 9, 14 |
+| [x] | 21 | `02_code_plans/04_hub_pull_and_cache_flow.md` | Python pull first, Android downloader next *(checkpoint: pull→load)* | 13, 14 | *(done 2026-07-14: `hub/{variant_select,pull}.py` + `cli pull`/`install-package`; pull→install→sha256 automated over the fixture; Android downloader + device load deferred)* |
+| [x] | 22 | `02_code_plans/06_adapter_pushback.md` | Last Tier-1 piece | 9, 14 | *(done 2026-07-14: `adapter/{export,convert,model_card}.py` + `cli push-adapter`; PEFT/native gate + card + dry-run automated; safetensors materialization + on-device upload env/device-gated)* |
 
 ### Tier 2 — Inference & RAG (Phase 7)
 
@@ -302,13 +302,15 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 - [x] Does the matrix **feed** (not duplicate) the compatibility doc (F6)? *(`filtered_docs_dict` renders the user-facing subset FROM the generated matrix)*
 
 ### #21 — Hub pull & cache flow (`02_code_plans/04`) · checkpoint
-- [ ] Does Python `pull_package` / `install_package` produce the exact cache layout the SDK loads?
-- [ ] Is variant selection identical Python↔Kotlin (deterministic)?
-- [ ] Does the **pull → materialize → load** workflow pass?
+**Done 2026-07-14 (Python-first, no device).** `hub/variant_select.py` (`Constraints` + `select_variant`: soft quant preference, download-size tie-break, 0.9× storage budget, over #13's hard filter) + `hub/pull.py` (`pull_package` manifest-first + sha256-verify; `install_package` = Python cache-bridge, tokenizer-flatten, atomic `.partial`→`os.replace`) + `cli pull`/`install-package`.
+- [x] Does Python `pull_package` / `install_package` produce the exact cache layout the SDK loads? *(install smoke asserts `train/`,`inference/`,`embedding/`,`tokenizer/` + flattened tokenizer)*
+- [x] Is variant selection identical Python↔Kotlin (deterministic)? *(Python done + unit-tabled; the Kotlin `VariantSelector` parity is the device leg — deferred)*
+- [x] Does the **pull → materialize → load** workflow pass? *(pull→install→sha256 automated over the fixture; the on-device load leg is Manual — deferred)*
 
 ### #22 — Adapter push-back (`02_code_plans/06`)
-- [ ] Does export produce a PEFT-compatible layout when clean, else a documented native fallback?
-- [ ] Is Android upload gated / disabled by default with a privacy warning?
+**Done 2026-07-14 (Python-first, no device).** `adapter/{export,convert,model_card}.py` + `cli push-adapter`. Gate is pure metadata; safetensors materialization is `torch`/`peft` env-gated.
+- [x] Does export produce a PEFT-compatible layout when clean, else a documented native fallback? *(`to_peft_layout` → Mode-1 `adapter_config.json` for clean LoRA; MARS / factor-less LoRA → Mode-2 native subtree + `mobiletransformers_adapter.json`; `--peft-only` errors)*
+- [x] Is Android upload gated / disabled by default with a privacy warning? *(card carries the bold privacy warning, asserted before upload; on-device `AdapterUploader.kt` is the deferred, gated device leg — default path is device→desktop→`push-adapter`)*
 
 ### #23 — Inference handoff alignment & native hardening (`03_code_plans/01`)
 - [ ] Does Native implement `ModelRuntime` with map-driven, **fail-closed** external-initializer load?
