@@ -17,7 +17,7 @@ from mobiletransformers.config.registry import (
     resolve_merger,
 )
 from mobiletransformers.config.registry.architecture import ARCHITECTURE_REGISTRY
-from mobiletransformers.exceptions import MergeError, UnsupportedModelError
+from mobiletransformers.exceptions import UnsupportedModelError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -78,10 +78,15 @@ def test_resolve_merger_no_merger_methods_fail_closed(method):
         resolve_merger(method, quant_in=True, quant_out=True)
 
 
-def test_build_merger_model_deferred_to_hash9():
+def test_build_merger_model_emits_valid_graph(tmp_path):
+    """build_merger_model is wired (#9); byte-equivalence to the legacy factories lives in
+    tests/unit/test_merger_builder.py. Here we just confirm it emits a checkable graph."""
+    import onnx
+
     spec = resolve_merger(PEFTMethod.LORA, quant_in=True, quant_out=True)
-    with pytest.raises(MergeError):
-        build_merger_model(spec, "/tmp/out.onnx")
+    out = tmp_path / "out.onnx"
+    build_merger_model(spec, out)
+    onnx.checker.check_model(str(out))
 
 
 def test_architecture_registry_nonempty_and_consistent():

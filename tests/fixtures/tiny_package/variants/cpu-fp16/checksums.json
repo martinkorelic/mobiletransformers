@@ -1,0 +1,10 @@
+{
+  "variants/cpu-fp16/inference/frozen_base.onnx.data": "3b9d3e0ca40fedc16823b2a0d15ebb760aa9b1c2f68ce2fe229688cf36a4b42d",
+  "variants/cpu-fp16/inference/generation_config.json": "1d985e40e0f3c082e41afef928f2c2d2362acae574b1b0e5550de0d51edef52f",
+  "variants/cpu-fp16/inference/model.layers.0.attn.q_proj.MatMul.weight.bin": "b39a7c6175b60a789569dd83dafebc0ef35cd78d53f955bdcd05fd8142895da3",
+  "variants/cpu-fp16/inference/model.layers.0.attn.q_proj.MatMul.weight.bin.sha256": "827d096d92f3deeaa0e8070d79f45beb176768e57a958a1cd325f5f4b754b048",
+  "variants/cpu-fp16/inference/model.onnx": "f41027621d842764ef7f3b12331cec51ede487a823c41b445cc84d1414030147",
+  "variants/cpu-fp16/inference/weight_handoff_map.json": "f8208cd160431f9942a4c4d9487a59ebc91dad9b3a0e739519e72964bbc1f452",
+  "variants/cpu-fp16/train/training_config.json": "b19bcfdda05b80cca28138805de0fd2480fa673684cf6d13baa7b13aea1c04c0",
+  "variants/cpu-fp16/train/weight_handoff_map.json": "f8208cd160431f9942a4c4d9487a59ebc91dad9b3a0e739519e72964bbc1f452"
+}

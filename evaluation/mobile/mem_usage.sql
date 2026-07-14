@@ -6,6 +6,6 @@ SELECT
 FROM counter as c
 LEFT JOIN process_counter_track as t ON c.track_id = t.id
 LEFT JOIN process as p USING (upid)
-WHERE p.name = 'com.martinkorelic.ortmobile'
+WHERE p.name = 'com.martinkorelic.mobiletransformers.app'
 AND t.name = 'mem.rss'
 ORDER BY timestamp_sec;

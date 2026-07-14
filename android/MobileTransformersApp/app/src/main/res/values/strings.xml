@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">MobileTransformers</string>
+    <string name="title_activity_inference_screen">InferenceScreen</string>
+    <string name="title_activity_training_screen">TrainingScreen</string>
+</resources>

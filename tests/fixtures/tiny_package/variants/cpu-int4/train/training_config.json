@@ -1,0 +1,4 @@
+{
+  "peftMethod": "lora",
+  "rank": 8
+}

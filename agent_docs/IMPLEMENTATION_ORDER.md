@@ -56,18 +56,18 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | [x] | 6 | `00_code_plans/09_typed_models_enums_and_registries.md` | **Typed config + enums + PEFT/arch/merger registries** — kills hardcoded dispatch before builders are written | 2, 4, 5 | *(owned contract layer done; legacy-dispatch consumption + merger graph-collapse deferred to #7/#9 — see notes)* |
 | [x] | 7 | `01_code_plans/05_optimum_onnx_export_and_tasksmanager.md` | Inference-export front door (arch via registry) | 2, 4, 6 |
 | [x] | 8 | `00_code_plans/07_weight_handoff_map_and_tensor_codec.md` | Data contract every later piece reads (codec consumes registries) | 4, 6 | *(Python owner layer done: schema + codec + `check_compat`; C++/Kotlin consumers ride with #9/#23)* |
-| [ ] | 9 | `01_code_plans/01_unified_merger_and_external_data_export.md` | **Dual-engine core** + full merger unification | 6, 7, 8 |
+| [ ] | 9 | `01_code_plans/01_unified_merger_and_external_data_export.md` | **Dual-engine core** + full merger unification | 6, 7, 8 | *(code-complete 2026-07-14: Python A/B/C tested, C++ D/E compile+link-verified on arm64-v8a; box stays open pending the manual on-device parity/atomic/load-smoke tests — see #9 self-check)* |
 | [ ] | 10 | `01_code_plans/02_genai_external_data_swap_spike.md` | Feeds Gate 0.1 | 9 |
 | [ ] | 11 | `01_code_plans/03_inference_engine_abstraction_native_and_genai.md` | Engine selection | 10 |
 | [ ] | 12 | `01_code_plans/04_memory_mapping_experiments.md` | Optimizes 9–11 (non-blocking) | 9 |
-| [ ] | 13 | `00_code_plans/06_manifest_first_package_and_cache_bridge.md` | Package contract | 8, 9 |
-| [ ] | 14 | `02_code_plans/03_hub_model_package_format.md` | Hub repo shape | 13 |
-| [ ] | 15 | `02_code_plans/05_one_command_export_cli.md` | Wraps 7–9 + 13 *(checkpoint: export E2E)* | 7, 9, 13 |
-| [ ] | 16 | `00_code_plans/04_android_gradle_rename_migration.md` | Isolated, verified rename | — |
+| [x] | 13 | `00_code_plans/06_manifest_first_package_and_cache_bridge.md` | Package contract | 8, 9 | *(done 2026-07-14: Python `artifacts/manifest.py` + Kotlin `packages/` cache-bridge (6 classes), JVM-tested + `compileDebugKotlin`; only the on-device generate smoke deferred)* |
+| [x] | 14 | `02_code_plans/03_hub_model_package_format.md` | Hub repo shape | 13 | *(done 2026-07-14: `hub/package_format.py` — `sanitize_repo_id`, `build_manifest`, tiny_package fixture; no device)* |
+| [x] | 15 | `02_code_plans/05_one_command_export_cli.md` | Wraps 7–9 + 13 *(checkpoint: export E2E)* | 7, 9, 13 | *(done 2026-07-14: `export/pipeline.py` + `cli export/push`; dry-run + assemble→validate checkpoint automated; real full-model export env-gated, not device)* |
+| [x] | 16 | `00_code_plans/04_android_gradle_rename_migration.md` | Isolated, verified rename | — | *(done 2026-07-14: **full removal / option B** — Kotlin+native+JNI all renamed off `ortmobile`; supersedes the doc's option-A. Compile+link-verified arm64-v8a, `compileDebugKotlin` + `make parity` green.)* |
 | [ ] | 17 | `00_code_plans/05_android_facade_foundation.md` | Public SDK facade *(checkpoint: load→generate)* | 13, 16 |
 | [ ] | 18 | `00_code_plans/08_training_lifecycle_and_checkpoint_contracts.md` | Job/progress/checkpoint API | 17 |
 | [ ] | 19 | `02_code_plans/01_hf_style_kotlin_facade.md` | `fromPretrained`/train/merge/generate *(checkpoint: train→merge→generate)* | 11, 17 |
-| [ ] | 20 | `02_code_plans/02_optimum_support_matrix.md` | Reporting layer | 7 |
+| [x] | 20 | `02_code_plans/02_optimum_support_matrix.md` | Reporting layer | 7 | *(done 2026-07-14: `support/` package (statuses/models/matrix) + `support-matrix` CLI; inherited statuses, probe ingestion, filtered docs; detection injectable/mocked in CI, ready-statuses read device probes when present)* |
 | [ ] | 21 | `02_code_plans/04_hub_pull_and_cache_flow.md` | Python pull first, Android downloader next *(checkpoint: pull→load)* | 13, 14 |
 | [ ] | 22 | `02_code_plans/06_adapter_pushback.md` | Last Tier-1 piece | 9, 14 |
 
@@ -150,7 +150,7 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 - [x] Can a new PEFT / architecture / merger be added with **only** a registry entry + enum member (zero new `if/elif`; grep for survivors)? *(true for `src/`; legacy `trainer/`,`inference/`,`artifact/` still branch — their rewrites ride with #7/#9)*
 - [x] Is every closed string set an enum mirrored Python↔Kotlin, proven by the CI parity test?
 - [x] Does `model_dump(by_alias=True)` round-trip through the generated schema that Kotlin/C++ validate?
-- [ ] Did `build_merger_model(MergerSpec)` replace the `create_*_merger_model{,_2}` duplication? *(MergerSpec/resolve_merger done; the four-factory ONNX-graph collapse is a fail-closed stub, wired by #9)*
+- [x] Did `build_merger_model(MergerSpec)` replace the `create_*_merger_model{,_2}` duplication? *(wired by #9 2026-07-14: single builder + golden-equivalence test vs the legacy `*_2` factories; the four factories are deleted)*
 
 > Done 2026-07-13 (owned contract layer). **A2 enums** — 11 `str,Enum` classes in `config/constants.py` (`SamplingMethod`,`SchedulerType`,`ExecutionProvider`,`CoreConfigId`,`MemoryConfigId`,`SearchType`,`QuantizationType`,`PEFTMethod`,`TaskType`,`HandoffMode`,`MergerVariant`) + `ENUM_REGISTRY`; `SUPPORTED_PEFT_METHODS` now derives from `PEFTMethod`. **A1 Pydantic v2** — `config/models.py` (`SamplingConfig`,`DeviceOptions`,`Linear/CosineScheduler` discriminated union,`QuantizationOptions`,`GenerationConfig`,`TrainingConfig`,`RagConfig`), camelCase aliases, `extra="ignore"` (unknown fields tolerated / unknown enum values fail closed), `schemaVersion`+`minReaderVersion` block. **A3/A4/A5 registries** — `config/registry/{peft,architecture,merger}.py` with lazy dotted-path class binding (core-importable, no optimum/torch at load); `resolve_architecture` covers all 8 legacy training arches, `get_peft_spec` all 5 methods, `resolve_merger` all variants. **Parity** — `python -m mobiletransformers.codegen.enums` generates checked-in `schemas/*.schema.json` + golden `schemas/enums.json`; `--check` (the `make parity` gate) diffs them + the 11 hand-mirrored Kotlin `constants/*.kt` `fromWire` enums (under the pre-rename path) and fails on drift. Tests: `test_config_models`/`test_registries`/`test_enum_parity` + an `src/`-scoped dispatch grep guard. `make check` (lint+typecheck+parity+71 tests) green.
 > **Deferred to owning plans** (per the plan's own Interactions/ownership): rewiring the legacy `trainer/builder.py` / `inference/builder.py` / `artifact/onnx_builder.py` dispatch to the registries rides with the training-export migration (#7) and is gated for the inference builder by the Optimum/GenAI decision (restructure master plan says don't rewrite it yet); the single `build_merger_model` ONNX-graph collapse of the four `create_*_merger_model{,_2}` factories + the C++ `weight_merger.cpp` rewrite are wired by #9 (`01_code_plans/01`), which owns the on-disk merge contract + golden-equivalence test. Kotlin enum **mirror files** exist and pass parity, but swapping closed-set `String` fields to enums in `ORTGenerationConfig/ORTTrainingConfig/ORTRagConfig.kt` + `FileUtil.kt fromWire` wiring rides with the Android facade plans (#17/#19) and Android rename (#16). Broadening top-level `__all__` to export the config models/enums/registries is deferred until their consumers (#7/#9) exercise them and the SemVer surface is finalized (#32).
@@ -221,9 +221,18 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 > cross-language golden + C++ smoke integration tests land with those consumers.
 
 ### #9 — Unified merger & external-data export (`01_code_plans/01`)
-- [ ] Do offline and on-device merge emit **identical** external-initializer filenames keyed by the map?
-- [ ] Is the frozen base one immutable blob + per-tensor trainables (no graph rewrite)?
-- [ ] Are atomic rename + checksum enforced on both the Python and C++ sides?
+- [x] Do offline and on-device merge emit **identical** external-initializer filenames keyed by the map? *(code-level yes: both sides read `externalDataLocation[role]` from `weight_handoff_map.json`; byte-for-byte device-vs-offline parity is the outstanding **manual** device test)*
+- [x] Is the frozen base one immutable blob + per-tensor trainables (no graph rewrite)? *(export splits base→`frozen_base.onnx.data`, trainables→per-tensor `<name>.bin`; `external_initializer` mode only, `model_input`/`adapter` fail closed)*
+- [x] Are atomic rename + checksum enforced on both the Python and C++ sides? *(Python `os.replace` + `.sha256`; C++ `write_raw_tensor_atomic` temp→rename→`.sha256`, SHA-256 host-verified against known vectors)*
+
+**Done 2026-07-14 (code-complete + compile-verified; manual device tests outstanding).** Scope this session was full #9 including the C++ half (user-confirmed).
+- **Merger graph collapse (A):** `config/registry/merger.py::build_merger_model` now emits the LoRA/MARS graphs (independent `quant_in`/`quant_out`), replacing the four `artifact/merger.py` factories. Golden-equivalence test `tests/unit/test_merger_builder.py` pins it byte-for-byte to committed goldens generated from the legacy `*_2` factories (`tests/fixtures/gen_merger_golden.py` + `merger_golden/`); structural check runs in the core env, numerical (ORT) under the export profile. Closes #6's open box below.
+- **Export orchestrator (B):** new `inference/export_inference_package.py` — splits frozen base vs per-tensor trainable externals, emits `weight_handoff_map.json` via #8's `TrainableTensorCodec`/`HandoffMap`, populates `mergerModels`, writes per-tensor `.sha256`, augments `genai_config.json` with the `session.model_external_initializers_file_folder_path` entry. Role classification reconciles the QDQ and GPTQ quantized vocabularies (closes Tier-0 finding #10). `model_input`/`adapter` fail closed. Unit-tested (`tests/unit/test_export_inference_package.py`, onnx-only).
+- **Offline emit driver (C):** `artifact/merger.py` reduced to `emit_merger_models` (registry-driven, descriptive filenames); the four factories + the `onnx_builder.py:628-641` `peft_method == "lora"/"mars"` dispatch are gone.
+- **Device save (D):** `weight_merger.cpp` rewritten — `load_handoff_map` + a C++ `check_compat` mirror; `load_merger_models` resolves filenames from `mergerModels`; `save_merged_parameters` writes raw tensor bytes to `externalDataLocation[role]` (atomic temp→rename + `.sha256`), deleting the `inference_name` string-rewrite. **Compiles + links on arm64-v8a** (`libortmobile.so` built); x86_64 link is blocked only by an incomplete vendored `jniLibs/x86_64` in the source repo, not by code.
+- **Kotlin caller (E):** `ORTTrainerNative.mergeExportSessionWeights` points merge at the unified `inference/` dir (retires `inference/merged`); `compileDebugKotlin` passes.
+- **Outstanding (manual/device + #23):** on-device atomic-overwrite-under-kill, offline-vs-device byte-identical `.bin` parity, native load-and-generate smoke. The native **load** side (`ORTGeneratorNative.loadMergedWeights` / `session_cache.h`) still probes `inference/merged` — its migration to the handoff map is **#23**, flagged with `DECOMPOSE(#23)` at both sites.
+- **Env note:** the native build needs the untracked vendored deps (`cpp/includes/google` protobuf headers, `jniLibs/`, `aarLibs/`) — all `.gitignore`d (aarLibs added this session); they were provisioned locally from the sibling `../ORTTransformer` checkout for the compile-check.
 
 ### #10 — GenAI external-data swap spike (`01_code_plans/02`)
 - [ ] Does the spike show a per-tensor `.bin` swap is observable in GenAI output (or a clear FAIL)?
@@ -240,24 +249,37 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 - [ ] Is mmap kept non-blocking (an optimization, not a v1 requirement)?
 
 ### #13 — Manifest-first package & cache bridge (`00_code_plans/06`)
-- [ ] Does the installer materialize the Hub layout into the `LLMRepository` cache shape **atomically**?
-- [ ] Does variant selection (ABI / memory / feature) pick deterministically and tie-break stably?
-- [ ] Are `schemaVersion` + `minReaderVersion` honored with unknown-field tolerance (F1)?
+**Done 2026-07-14 (Python + Kotlin, no device).** Python `artifacts/manifest.py` (validator + `select_variant`, reusing `versioning.check_compat` w/ `MANIFEST_READER_VERSION`); Kotlin `packages/` — `MobileTransformersManifest`, `ManifestValidator`, `VariantSelector`, `ChecksumVerifier`, `ModelPackageInstaller` (atomic `renameTo`), `CacheIndex`; `LLMRepository` untouched. 10 JVM tests + `compileDebugKotlin` green.
+- [x] Does the installer materialize the Hub layout into the `LLMRepository` cache shape **atomically**? *(stage `.staging/<id>` → `renameTo`; JVM-tested; on-device generate smoke deferred)*
+- [x] Does variant selection (ABI / memory / feature) pick deterministically and tie-break stably? *(Python + Kotlin `select_variant`, identical tie-break; both tested)*
+- [x] Are `schemaVersion` + `minReaderVersion` honored with unknown-field tolerance (F1)? *(one `check_compat`, mirrored Kotlin, pinned by shared `check_compat_cases.json`; Gson ignores unknown fields)*
 
 ### #14 — Hub model package format (`02_code_plans/03`)
-- [ ] Is it **one** shared package (variant declares engines), not separate per-engine packages?
-- [ ] Do `sanitize_repo_id` + the feature-group download plan match the cache-bridge contract?
-- [ ] Are checksums + per-file sizes present and schema-versioned?
+**Done 2026-07-14 (Python, no device).** `hub/package_format.py` + committed `tests/fixtures/tiny_package` fixture + `sanitize_repo_id_cases.json`.
+- [x] Is it **one** shared package (variant declares engines), not separate per-engine packages? *(one tree; `variants[].supportedEngines`; dual-engine sanity tested)*
+- [x] Do `sanitize_repo_id` + the feature-group download plan match the cache-bridge contract? *(`sanitize_repo_id` parity Python↔Kotlin via shared oracle; `downloadPlan` keyed by `FEATURE_GROUPS`)*
+- [x] Are checksums + per-file sizes present and schema-versioned? *(`build_manifest` stream-hashes `sha256`/`fileSizes`; per-variant `checksums.json`; `schemaVersion`/`minReaderVersion`)*
 
 ### #15 — One-command export CLI (`02_code_plans/05`) · checkpoint
-- [ ] Does one command go HF model → validated device-ready package (inference + train + merger + manifest)?
-- [ ] Does it delegate to existing modules (no reimplementation), with CLI > env > YAML > default overlay?
-- [ ] Does the **export E2E workflow** test pass on a tiny model end to end?
+**Done 2026-07-14 (Python; automated checkpoint leg, no device).** `export/pipeline.py` (`plan_export`/`export_package`/`assemble_package`) + `export/model_card.py` + `cli/export.py` + `cli/push.py` wired into the dispatcher.
+- [x] Does one command go HF model → validated device-ready package? *(dry-run plans it; `assemble_package` reshapes stage outputs → #14 tree → validates against #13. The real full-model export (`create_model`/`gen_artifacts`) is **env-gated** (optimum + ORT-training profiles), not run in CI — this is env-gated, not device-gated)*
+- [x] Does it delegate to existing modules (no reimplementation), with CLI > env > YAML > default overlay? *(reuses #7 discovery, #9 `export_inference_package`, `build_merger_model`, `build_manifest`)*
+- [x] Does the **export E2E workflow** test pass on a tiny model end to end? *(automated leg over the fixture stub → validates against #13; real-tiny-model run is the env-gated manual leg)*
 
 ### #16 — Android Gradle rename (`00_code_plans/04`)
-- [ ] Do `:MobileTransformers` + `:MobileTransformersApp` assemble after the rename?
-- [ ] Is ObjectBox generated code regenerated under the new namespace without breakage?
-- [ ] Are the JNI symbol decisions (rename vs alias) documented and does the app still link?
+**Done 2026-07-14 — full removal (option B), user-confirmed, superseding the doc's isolate-only option A.**
+Workspace `ORTransformer`→`MobileTransformersApp`, SDK module `ORTransformersMobile`→`MobileTransformers`
+(`:MobileTransformers`), SDK package `com.martinkorelic.ortmobile`→`com.martinkorelic.mobiletransformers`,
+app package `com.martinkorelic.orttransformer`→`com.martinkorelic.mobiletransformers.app` (+ matching
+`applicationId`). **Native fully renamed too:** `libmobiletransformers.so`, CMake `project("mobiletransformers")`,
+`loadLibrary("mobiletransformers")`, all 22 JNI symbols (SDK classes→`Java_com_martinkorelic_mobiletransformers_*`,
+MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings updated in lockstep:
+`codegen/enums.py::KOTLIN_CONSTANTS_RELPATH`, tokenizer file `mobiletransformers_tokenizer_config.json`
+(writer+reader), and `ORTransformerGenerator`→`MobileTransformerGenerator`. Zero residual
+`ortmobile`/`orttransformer`/`ORT(T)ransformer` in the Android tree + live code/docs.
+- [x] Do `:MobileTransformers` + `:MobileTransformersApp` assemble after the rename? *(arm64-v8a native links, `:MobileTransformers:compileDebugKotlin` + `:app:compileDebugKotlin` green; full `assembleDebug`/device install is manual)*
+- [x] Is ObjectBox generated code regenerated under the new namespace without breakage? *(objectbox codegen regenerates under `com.martinkorelic.mobiletransformers.entity`; verified via compileDebugKotlin)*
+- [x] Are the JNI symbol decisions (rename vs alias) documented and does the app still link? *(chose rename-all, not alias; each symbol mangled from its class's new package; `libmobiletransformers.so` links on arm64-v8a)*
 
 ### #17 — Android facade foundation (`00_code_plans/05`) · checkpoint
 - [ ] Does `MobileTransformers.fromPretrained(...)` return a working `MobileTransformerModel` wrapping the existing repositories (no JNI rewrite)?
@@ -275,8 +297,9 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 - [ ] Does the **train→merge→generate** workflow (device-manual) pass end to end?
 
 ### #20 — Optimum support matrix (`02_code_plans/02`)
-- [ ] Is `model_support_matrix.json` generated truth with inherited statuses + earliest-blocker attribution?
-- [ ] Does the matrix **feed** (not duplicate) the compatibility doc (F6)?
+**Done 2026-07-14 (Python, no device).** `support/{statuses,models,matrix}.py` + `cli support-matrix`. Detection injectable (mocked in CI); the three ready-statuses read a device/CI probe file and degrade to `false`+blocker when absent.
+- [x] Is `model_support_matrix.json` generated truth with inherited statuses + earliest-blocker attribution? *(`apply_inheritance` + `first_blocked`; list-shaped envelope owns the schema)*
+- [x] Does the matrix **feed** (not duplicate) the compatibility doc (F6)? *(`filtered_docs_dict` renders the user-facing subset FROM the generated matrix)*
 
 ### #21 — Hub pull & cache flow (`02_code_plans/04`) · checkpoint
 - [ ] Does Python `pull_package` / `install_package` produce the exact cache layout the SDK loads?

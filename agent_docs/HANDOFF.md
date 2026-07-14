@@ -7,7 +7,7 @@ records what is done, the environment/gotchas a cold agent needs, and the next s
 
 ---
 
-## Status: plans #1–#8 done (global order)
+## Status: plans #1–#8 done, #9 code-complete (global order)
 
 | # | Plan | State |
 | --- | --- | --- |
@@ -16,9 +16,10 @@ records what is done, the environment/gotchas a cold agent needs, and the next s
 | 3 | `01_code_plans/06` source-built ORT training pipeline | ✅ done (Gate 0.3 proven) |
 | 4 | `00_code_plans/02` config layering | ✅ done |
 | 5 | `00_code_plans/10` code quality & module health | ✅ done |
-| 6 | `00_code_plans/09` typed models/enums/registries | ✅ owned contract layer done; consumption wiring deferred to #7/#9 |
+| 6 | `00_code_plans/09` typed models/enums/registries | ✅ contract layer done; `build_merger_model` graph-collapse closed by #9 |
 | 7 | `01_code_plans/05` optimum ONNX export & TasksManager | ✅ done (inference + training export proven E2E; `OnnxConfigWithLoss` vendored — see below) |
 | 8 | `00_code_plans/07` weight handoff map & tensor codec | ✅ Python owner layer done (schema + codec + `check_compat`); C++/Kotlin consumers ride #9/#23/#18 |
+| 9 | `01_code_plans/01` unified merger & external-data export | 🟡 code-complete 2026-07-14 (Python A/B/C tested; C++ D/E compile+link-verified on arm64-v8a). **Manual on-device tests outstanding**; native *load* side is #23. |
 
 Per-plan detail + every deviation is in `IMPLEMENTATION_ORDER.md` under each plan's self-check block
 (dated `Done 2026-07-13` notes). Read those first.
@@ -172,6 +173,39 @@ both the Python owner layers, fully tested. Highlights for the next agent:
 **Next: #9** (`01_code_plans/01`) — Python merger graph-builder + emit is the automatable core; the C++
 `weight_merger.cpp` rewrite is device-tested — confirm scope before starting the Android/C++ half.
 
+## Session close (2026-07-14)
+
+Landed **#9** (unified merger & external-data export) — **full scope incl. the C++ half** (user-confirmed).
+Code-complete: Python A/B/C fully tested (core gate green: **122 passed, 8 skipped**; numerical merger
+tests pass under the export profile), C++ D + Kotlin E compile+link-verified. Details in the #9 self-check
+note in `IMPLEMENTATION_ORDER.md`. Highlights for the next agent:
+- **`build_merger_model`** (`config/registry/merger.py`) is wired; `tests/unit/test_merger_builder.py` pins
+  it byte-for-byte to committed goldens (`tests/fixtures/gen_merger_golden.py` → `merger_golden/`).
+  Regenerate goldens with `python tests/fixtures/gen_merger_golden.py` (core env, onnx-only; it stubs the
+  legacy module's unused onnxruntime import).
+- **`inference/export_inference_package.py`** is the single export entry: base/trainable external split +
+  `weight_handoff_map.json` emit (via #8's codec) + `mergerModels` + `genai_config` session entry. Uses it,
+  don't add a second handoff_map module. `model_input`/`adapter` modes fail closed (v1).
+- **C++ `weight_merger.cpp`**: `load_handoff_map` + a C++ `check_compat` mirror; save writes raw bytes to
+  `externalDataLocation[role]` (atomic rename + `.sha256`; compact SHA-256 host-verified). `inference_name`
+  string-rewrite deleted.
+- **Native build deps are untracked & were missing from this checkout** — `cpp/includes/google` (protobuf
+  headers), `jniLibs/`, `aarLibs/`. All `.gitignore`d (added `aarLibs/` this session). I provisioned them
+  locally from the sibling **`../ORTTransformer`** checkout to run the arm64-v8a native build. **They are
+  intentionally NOT committed** (policy: large vendored native artifacts stay out-of-band, like the ORT
+  wheel). A provisioning README for these belongs with the Android rename/CI plans (#16/#29). x86_64 native
+  link can't be verified here — the source repo's `jniLibs/x86_64` is itself incomplete.
+- **Outstanding for #9 (manual/device):** on-device atomic-overwrite-under-kill, offline-vs-device
+  byte-identical `.bin` parity, native load-and-generate smoke. The native **load** side
+  (`ORTGeneratorNative.loadMergedWeights` / `session_cache.h`) still probes `inference/merged` — its
+  migration to the handoff map is **#23** (flagged `DECOMPOSE(#23)` at both sites); until then a device
+  build won't *see* the in-place merges. Do #23 before expecting merged-weight generation on device.
+
+**Repo left clean:** env reset to core/dev on Python 3.10 (`make check` green: **122 passed, 8 skipped**);
+`uv lock --check` + `uv build --wheel` clean; `dist/` removed. **Nothing committed** (human commits).
+**Next: #10** (`01_code_plans/02`, GenAI external-data swap spike) — or complete #9's manual device tests +
+#23 (native load) first if a real merged-weight device run is needed.
+
 ## Validation commands (paste-run)
 ```bash
 uv sync --frozen --group dev && make check          # lint + typecheck + parity + 71 tests
@@ -180,3 +214,55 @@ uv sync --python 3.12 --group ort-training-local && make test-train   # ORT tool
 uv build --wheel                                    # wheel = only src/mobiletransformers (+ py.typed, public_api.txt)
 uv lock --check                                     # lock consistent with pyproject
 ```
+
+## Session close (2026-07-14, cont. — #16 Android rename)
+
+Landed **#16 as a FULL rename (option B)** — user-confirmed, superseding the doc's isolate-only option A.
+Everything renamed off the legacy brand; **zero `ortmobile`/`orttransformer`/`ORT(T)ransformer` in live
+code/config** (historical `agent_docs/*` migration docs intentionally left as records — 19 files).
+- **Structure:** `android/ORTransformer` → `android/MobileTransformersApp`; SDK module
+  `ORTransformersMobile` → `MobileTransformers` (`:MobileTransformers`); sample `app` unchanged.
+- **Packages:** SDK `com.martinkorelic.ortmobile` → `com.martinkorelic.mobiletransformers`; app
+  `com.martinkorelic.orttransformer` → `com.martinkorelic.mobiletransformers.app` (+ matching `applicationId`).
+- **Native (lockstep):** `libmobiletransformers.so`, CMake `project("mobiletransformers")`,
+  `loadLibrary("mobiletransformers")`, all 22 JNI symbols (SDK→`Java_com_martinkorelic_mobiletransformers_*`,
+  MainActivity→`..._mobiletransformers_app_MainActivity_*`).
+- **Python lockstep:** `codegen/enums.py::KOTLIN_CONSTANTS_RELPATH` (new path), tokenizer file
+  `mobiletransformers_tokenizer_config.json` (writer+reader), `ORTransformerGenerator`→`MobileTransformerGenerator`,
+  `ORTMobileObjectBoxProcessor`→`MobileTransformersObjectBoxProcessor`, and the `evaluation/mobile/*.sql`
+  process names → new applicationId.
+- **Verified:** arm64-v8a native links `libmobiletransformers.so` (JNI symbols confirmed via `llvm-nm`);
+  `:MobileTransformers:compileDebugKotlin` + `:app:compileDebugKotlin` green; `make parity` OK (walks the
+  new Kotlin constants path); `make check` green (122 passed, 8 skipped). x86_64 native link still blocked
+  by the upstream-incomplete `jniLibs/x86_64` (pre-existing). Full `assembleDebug` + device install are manual.
+- **Note:** directory moves used plain `mv` (not `git mv`) so the untracked vendored deps
+  (`jniLibs/`, `cpp/includes/google`, `aarLibs/`) travelled with the tree; git will see renames at commit.
+  **Nothing committed** (human commits). **Next: #13** (manifest/cache bridge) or **#23**+#9 manual device
+  tests — see `plans/read-through-the-recent-sunny-turtle.md` "Next phases".
+
+## Session close (2026-07-14, cont. — #14/#13/#15/#20 package+export+matrix phase)
+
+Landed a **four-plan no-device phase** (user-confirmed: Python + Kotlin, no physical device). Full Python
+gate green (**176 passed, 8 skipped**); Kotlin `compileDebugKotlin` (both modules) + **10 JVM tests** green.
+- **#14** `src/mobiletransformers/hub/package_format.py` — owns the manifest schema: `sanitize_repo_id`,
+  `build_manifest` (stream-hashed `sha256`/`fileSizes` + `downloadPlan`), `write_manifest`/`write_variant_checksums`.
+  Committed shared fixture `tests/fixtures/tiny_package/` (+ generator `make_tiny_package.py`) and
+  `tests/fixtures/sanitize_repo_id_cases.json`.
+- **#13** Python `src/mobiletransformers/artifacts/manifest.py` (`MobileTransformersManifest.validate` +
+  `select_variant`, reusing `versioning.check_compat` w/ `MANIFEST_READER_VERSION`); Kotlin cache-bridge
+  `android/.../mobiletransformers/packages/` — `PackageFormat` (sanitize + `checkCompat` mirrors),
+  `MobileTransformersManifest`, `ManifestValidator`, `VariantSelector`, `ChecksumVerifier`,
+  `ModelPackageInstaller` (atomic `renameTo`), `CacheIndex`. `LLMRepository` untouched (#13's design).
+  Cross-language parity pinned by the shared `check_compat_cases.json` / `sanitize_repo_id_cases.json`.
+- **#15** `export/pipeline.py` (`plan_export`/`export_package`/`assemble_package`) + `export/model_card.py`
+  + `cli/export.py` + `cli/push.py` wired into the dispatcher. The export-E2E **checkpoint automated leg**
+  (dry-run plan + `assemble_package` → validates against #13) is CI-covered; the **real full-model export**
+  (`create_model`/`gen_artifacts`) is **env-gated** (optimum + ORT-training profiles) — `_full_export`
+  raises a clear message until run under those profiles. NOT device-gated.
+- **#20** `src/mobiletransformers/support/` (`statuses`/`models`/`matrix`) + `cli support-matrix`. Detection
+  (`AutoConfig`/`TasksManager`) is injectable (mocked in CI); the three `android_*`/`rag` ready-statuses
+  read `android_probes.json` and honestly degrade to `false`+blocker when absent.
+- **Makefile** `test` target extended to collect `tests/hub tests/support tests/cli`.
+- **Deferred (not this phase):** #15 real full-model export (env-gated); the single on-device
+  install→generate smoke (#13); #10/#11/#12 (device/GenAI-gated engine track); #21 hub pull + #22 adapter
+  push-back (Python-first, now unblocked by #13/#14). **Nothing committed** (human commits).

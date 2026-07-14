@@ -24,6 +24,10 @@ class ManifestError(MobileTransformersError):
     """A ``mobiletransformers_manifest.json`` is missing, malformed, or version-incompatible."""
 
 
+class NoCompatibleVariant(ManifestError):
+    """No package variant satisfies the requested device capabilities / features / engine."""
+
+
 class HandoffError(MobileTransformersError):
     """A ``weight_handoff_map.json`` lookup/contract could not be satisfied."""
 
@@ -45,6 +49,7 @@ __all__ = [
     "ConfigValidationError",
     "ExportError",
     "ManifestError",
+    "NoCompatibleVariant",
     "HandoffError",
     "MergeError",
     "UnsupportedModelError",

@@ -3,7 +3,7 @@ SLM_MODEL_NAME = "quant_model.onnx"
 SLM_MODEL_DIR = "build/inference-arc-e"
 MERGED_WEIGHTS_DIR = "build/train-arc-e/merged"
 
-from inference.validator import ORTransformerGenerator
+from inference.validator import MobileTransformerGenerator
 from deepeval.benchmarks.arc.template import ARCTemplate
 
 test_arc = {
@@ -24,7 +24,7 @@ test_arc = {
 q = ARCTemplate.format_question(test_arc, include_answer=False) + "\n\n "
 
 # Initialize models
-slm_generator = ORTransformerGenerator(
+slm_generator = MobileTransformerGenerator(
     model_id=SLM_MODEL_ID,
     model_name=SLM_MODEL_NAME, 
     model_dir=SLM_MODEL_DIR,

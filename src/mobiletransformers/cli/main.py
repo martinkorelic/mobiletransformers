@@ -11,9 +11,9 @@ from __future__ import annotations
 import argparse
 
 from mobiletransformers import __version__
-from mobiletransformers.cli import export, package_model, validate
+from mobiletransformers.cli import export, package_model, push, support_matrix, validate
 
-_SUBCOMMANDS = (export, validate, package_model)
+_SUBCOMMANDS = (export, validate, package_model, push, support_matrix)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,7 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Export and Android runtime tooling for on-device transformers.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    subparsers = parser.add_subparsers(dest="command", metavar="{export,validate,package-model}")
+    subparsers = parser.add_subparsers(
+        dest="command", metavar="{export,validate,package-model,push,support-matrix}"
+    )
     for module in _SUBCOMMANDS:
         module.add_parser(subparsers)
     return parser

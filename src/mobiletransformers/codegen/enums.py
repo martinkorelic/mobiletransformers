@@ -35,9 +35,10 @@ def find_repo_root(start: Path | None = None) -> Path:
     raise FileNotFoundError("could not locate repo root (no pyproject.toml found)")
 
 
-# Kotlin enum mirrors live under the (pre-rename) library module. Updated by the Android rename (#16).
+# Kotlin enum mirrors live under the MobileTransformers library module (Android rename #16, done 2026-07-14).
 KOTLIN_CONSTANTS_RELPATH = (
-    "android/ORTransformer/ORTransformersMobile/src/main/java/com/martinkorelic/ortmobile/constants"
+    "android/MobileTransformersApp/MobileTransformers/src/main/java/"
+    "com/martinkorelic/mobiletransformers/constants"
 )
 
 _KOTLIN_ENTRY_RE = re.compile(r'\b([A-Z][A-Z0-9_]*)\s*\(\s*"([^"]*)"\s*\)')

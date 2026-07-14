@@ -30,7 +30,8 @@ from tools.utils import move_files_excluding, delete_directory, load_and_save_da
 from tools.parser_config import ARTIFACT_CONFIG, TRAIN_CONFIG, INFERENCE_CONFIG, TASK_NAME_TO_DATASET
 from tools.tokenizer_export import export_tokenizer_config
 
-from artifact.merger import create_mars_merger_model, create_lora_merger_model, create_mars_merger_model_2, create_lora_merger_model_2
+from artifact.merger import emit_merger_models
+from mobiletransformers.config.constants import PEFTMethod
 
 def gen_artifacts(train_dir,
                   artifact_dir="artifacts",
@@ -627,20 +628,21 @@ def convert_pipeline(model_id,
             load_and_save_dataset(TASK_NAME_TO_DATASET[train_config["taskName"]], train_path, train_config["trainFile"], split='train', max_dataset_length=train_config['maxDatasetLength'])
 
     if export_merger:
-        if peft_method == "lora":
-            create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx', quantized=True)
-            create_lora_merger_model(f'{build_dir}/train/lora_merger_model.onnx', quantized=False)
-        elif peft_method == "mars":
-            # We need both quantized and non-quantized merger models
-            if 'optimization_level' in kwargs["train_builder_config"][peft_method] and kwargs["train_builder_config"][peft_method]['optimization_level'] <= 1:
-                create_mars_merger_model_2(f'{build_dir}/train/mars_merger_model.onnx', quantized_inputs=False, quantized_outputs=inference_export_config["quantized_merged_output"])
-            create_mars_merger_model_2(f'{build_dir}/train/mars_qmerger_model.onnx', quantized_inputs=True, quantized_outputs=inference_export_config["quantized_merged_output"])
-
-            # We also need basic LoRA merger models for this PEFT method
-            create_lora_merger_model_2(f'{build_dir}/train/lora_qmerger_model.onnx', quantized_inputs=True, quantized_outputs=inference_export_config["quantized_merged_output"])
-            create_lora_merger_model_2(f'{build_dir}/train/lora_merger_model.onnx', quantized_inputs=False, quantized_outputs=inference_export_config["quantized_merged_output"])
+        # Registry-driven merger emit (#9): build_merger_model via resolve_merger, descriptive filenames
+        # recorded in the handoff map's mergerModels — replaces the four hand-picked factory calls +
+        # the peft_method == "lora"/"mars" string dispatch. resolve_merger fails closed on unknown method.
+        train_dir = f'{build_dir}/train'
+        quant_out = inference_export_config["quantized_merged_output"]
+        method = PEFTMethod(peft_method)
+        if method is PEFTMethod.MARS:
+            build_cfg = kwargs["train_builder_config"].get(peft_method, {})
+            keep_fp_in = build_cfg.get('optimization_level', 99) <= 1
+            emit_merger_models(train_dir, PEFTMethod.MARS, quant_out=quant_out,
+                               quant_ins=((True, False) if keep_fp_in else (True,)))
+            # MARS packages also carry LoRA mergers for their non-MARS layers (device mixes per-layer).
+            emit_merger_models(train_dir, PEFTMethod.LORA, quant_out=quant_out, quant_ins=(True, False))
         else:
-            raise ValueError("Unsupported PEFT method.")
+            emit_merger_models(train_dir, method, quant_out=quant_out, quant_ins=(True, False))
         
     if gen_rag_config:
         embedding_model_metadata = get_all_metadata_from_onnx(embedding_model_path)

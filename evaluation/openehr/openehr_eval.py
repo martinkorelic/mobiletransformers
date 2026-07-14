@@ -7,7 +7,7 @@ import gc
 import json
 import os
 import time
-from inference.validator import ORTransformerGenerator
+from inference.validator import MobileTransformerGenerator
 from deepeval import evaluate
 from deepeval.metrics import FaithfulnessMetric, GEval
 from deepeval.test_case import LLMTestCase, LLMTestCaseParams
@@ -188,7 +188,7 @@ gc.collect()
 
 
 # Initialize models
-slm_generator = ORTransformerGenerator(
+slm_generator = MobileTransformerGenerator(
     model_id=SLM_MODEL_ID,
     model_name=SLM_MODEL_NAME, 
     model_dir=SLM_MODEL_DIR

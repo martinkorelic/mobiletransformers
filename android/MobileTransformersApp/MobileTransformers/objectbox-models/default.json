@@ -1,0 +1,402 @@
+{
+  "_note1": "KEEP THIS FILE! Check it into a version control system (VCS) like git.",
+  "_note2": "ObjectBox manages crucial IDs for your object model. See docs for details.",
+  "_note3": "If you have VCS merge conflicts, you must resolve them according to ObjectBox docs.",
+  "entities": [
+    {
+      "id": "1:6312292868835490962",
+      "lastPropertyId": "7:2218360321370171021",
+      "name": "VectorEntity1024",
+      "properties": [
+        {
+          "id": "1:6129838102769740405",
+          "name": "id",
+          "type": 6,
+          "flags": 1
+        },
+        {
+          "id": "2:8342299575047072091",
+          "name": "name",
+          "type": 9
+        },
+        {
+          "id": "3:3121322145205345580",
+          "name": "document",
+          "type": 9
+        },
+        {
+          "id": "4:6634216677500241695",
+          "name": "content",
+          "indexId": "1:5628541363907386903",
+          "type": 9,
+          "flags": 8
+        },
+        {
+          "id": "5:4591825907158956682",
+          "name": "embedding",
+          "indexId": "2:877155294817586044",
+          "type": 28,
+          "flags": 8
+        },
+        {
+          "id": "6:5883788455774084256",
+          "name": "metadata",
+          "type": 9
+        },
+        {
+          "id": "7:2218360321370171021",
+          "name": "timestamp",
+          "type": 6
+        }
+      ],
+      "relations": []
+    },
+    {
+      "id": "2:6283381358651374286",
+      "lastPropertyId": "7:1968848852841404956",
+      "name": "VectorEntity128",
+      "properties": [
+        {
+          "id": "1:5769841030064880069",
+          "name": "id",
+          "type": 6,
+          "flags": 1
+        },
+        {
+          "id": "2:6555651120977614822",
+          "name": "name",
+          "type": 9
+        },
+        {
+          "id": "3:456208777151447776",
+          "name": "document",
+          "type": 9
+        },
+        {
+          "id": "4:3060836635260339617",
+          "name": "content",
+          "indexId": "3:1867038497503126389",
+          "type": 9,
+          "flags": 8
+        },
+        {
+          "id": "5:1640322023827419600",
+          "name": "embedding",
+          "indexId": "4:4086334271468083426",
+          "type": 28,
+          "flags": 8
+        },
+        {
+          "id": "6:6205081604583971125",
+          "name": "metadata",
+          "type": 9
+        },
+        {
+          "id": "7:1968848852841404956",
+          "name": "timestamp",
+          "type": 6
+        }
+      ],
+      "relations": []
+    },
+    {
+      "id": "3:7717907702316138682",
+      "lastPropertyId": "7:1219754983200035250",
+      "name": "VectorEntity1536",
+      "properties": [
+        {
+          "id": "1:5505097755916856544",
+          "name": "id",
+          "type": 6,
+          "flags": 1
+        },
+        {
+          "id": "2:623977696493542085",
+          "name": "name",
+          "type": 9
+        },
+        {
+          "id": "3:4996201321097165490",
+          "name": "document",
+          "type": 9
+        },
+        {
+          "id": "4:5322504698064582815",
+          "name": "content",
+          "indexId": "5:4118868854556448382",
+          "type": 9,
+          "flags": 8
+        },
+        {
+          "id": "5:4409986798134442027",
+          "name": "embedding",
+          "indexId": "6:6181707195042117522",
+          "type": 28,
+          "flags": 8
+        },
+        {
+          "id": "6:6940435668724064808",
+          "name": "metadata",
+          "type": 9
+        },
+        {
+          "id": "7:1219754983200035250",
+          "name": "timestamp",
+          "type": 6
+        }
+      ],
+      "relations": []
+    },
+    {
+      "id": "4:1812728196995434090",
+      "lastPropertyId": "7:3169912114904751056",
+      "name": "VectorEntity256",
+      "properties": [
+        {
+          "id": "1:6603725897690470701",
+          "name": "id",
+          "type": 6,
+          "flags": 1
+        },
+        {
+          "id": "2:8671809677384943785",
+          "name": "name",
+          "type": 9
+        },
+        {
+          "id": "3:7861886281468689310",
+          "name": "document",
+          "type": 9
+        },
+        {
+          "id": "4:2408473297796407407",
+          "name": "content",
+          "indexId": "7:8483254081747776322",
+          "type": 9,
+          "flags": 8
+        },
+        {
+          "id": "5:8471718958668191294",
+          "name": "embedding",
+          "indexId": "8:4704596766946123242",
+          "type": 28,
+          "flags": 8
+        },
+        {
+          "id": "6:4939862528551864585",
+          "name": "metadata",
+          "type": 9
+        },
+        {
+          "id": "7:3169912114904751056",
+          "name": "timestamp",
+          "type": 6
+        }
+      ],
+      "relations": []
+    },
+    {
+      "id": "5:6067543743343676272",
+      "lastPropertyId": "7:2961836472113766158",
+      "name": "VectorEntity384",
+      "properties": [
+        {
+          "id": "1:2899273423030577360",
+          "name": "id",
+          "type": 6,
+          "flags": 1
+        },
+        {
+          "id": "2:9144298715894567040",
+          "name": "name",
+          "type": 9
+        },
+        {
+          "id": "3:2362135959314486625",
+          "name": "document",
+          "type": 9
+        },
+        {
+          "id": "4:2036477865185213428",
+          "name": "content",
+          "indexId": "9:5052229234386694185",
+          "type": 9,
+          "flags": 8
+        },
+        {
+          "id": "5:6335798492258790404",
+          "name": "embedding",
+          "indexId": "10:1221859485491922065",
+          "type": 28,
+          "flags": 8
+        },
+        {
+          "id": "6:713220216528469622",
+          "name": "metadata",
+          "type": 9
+        },
+        {
+          "id": "7:2961836472113766158",
+          "name": "timestamp",
+          "type": 6
+        }
+      ],
+      "relations": []
+    },
+    {
+      "id": "6:5337009284482186103",
+      "lastPropertyId": "7:4056392251129713943",
+      "name": "VectorEntity512",
+      "properties": [
+        {
+          "id": "1:4213890617344099142",
+          "name": "id",
+          "type": 6,
+          "flags": 1
+        },
+        {
+          "id": "2:5114585404654391641",
+          "name": "name",
+          "type": 9
+        },
+        {
+          "id": "3:7890430420743054553",
+          "name": "document",
+          "type": 9
+        },
+        {
+          "id": "4:2373272805557915468",
+          "name": "content",
+          "indexId": "11:9121122965285287426",
+          "type": 9,
+          "flags": 8
+        },
+        {
+          "id": "5:3538155769260542229",
+          "name": "embedding",
+          "indexId": "12:8537982803655308597",
+          "type": 28,
+          "flags": 8
+        },
+        {
+          "id": "6:528837246711124491",
+          "name": "metadata",
+          "type": 9
+        },
+        {
+          "id": "7:4056392251129713943",
+          "name": "timestamp",
+          "type": 6
+        }
+      ],
+      "relations": []
+    },
+    {
+      "id": "7:2482969880891003204",
+      "lastPropertyId": "7:7009293217781797530",
+      "name": "VectorEntity64",
+      "properties": [
+        {
+          "id": "1:6778584485307928481",
+          "name": "id",
+          "type": 6,
+          "flags": 1
+        },
+        {
+          "id": "2:9178692164283023757",
+          "name": "name",
+          "type": 9
+        },
+        {
+          "id": "3:9015651743332472421",
+          "name": "document",
+          "type": 9
+        },
+        {
+          "id": "4:5088832391211888614",
+          "name": "content",
+          "indexId": "13:9206244627906675234",
+          "type": 9,
+          "flags": 8
+        },
+        {
+          "id": "5:7988884859475187274",
+          "name": "embedding",
+          "indexId": "14:8896430678575507920",
+          "type": 28,
+          "flags": 8
+        },
+        {
+          "id": "6:2659216331489370261",
+          "name": "metadata",
+          "type": 9
+        },
+        {
+          "id": "7:7009293217781797530",
+          "name": "timestamp",
+          "type": 6
+        }
+      ],
+      "relations": []
+    },
+    {
+      "id": "8:3777768982988066495",
+      "lastPropertyId": "7:5759813725018074825",
+      "name": "VectorEntity768",
+      "properties": [
+        {
+          "id": "1:4523762841307426321",
+          "name": "id",
+          "type": 6,
+          "flags": 1
+        },
+        {
+          "id": "2:8318212713625604469",
+          "name": "name",
+          "type": 9
+        },
+        {
+          "id": "3:1393590073543014237",
+          "name": "document",
+          "type": 9
+        },
+        {
+          "id": "4:8080388202965929501",
+          "name": "content",
+          "indexId": "15:3321529416306103978",
+          "type": 9,
+          "flags": 8
+        },
+        {
+          "id": "5:8658000558972963672",
+          "name": "embedding",
+          "indexId": "16:330532365559818907",
+          "type": 28,
+          "flags": 8
+        },
+        {
+          "id": "6:3210152950802036889",
+          "name": "metadata",
+          "type": 9
+        },
+        {
+          "id": "7:5759813725018074825",
+          "name": "timestamp",
+          "type": 6
+        }
+      ],
+      "relations": []
+    }
+  ],
+  "lastEntityId": "8:3777768982988066495",
+  "lastIndexId": "16:330532365559818907",
+  "lastRelationId": "0:0",
+  "lastSequenceId": "0:0",
+  "modelVersion": 5,
+  "modelVersionParserMinimum": 5,
+  "retiredEntityUids": [],
+  "retiredIndexUids": [],
+  "retiredPropertyUids": [],
+  "retiredRelationUids": [],
+  "version": 1
+}

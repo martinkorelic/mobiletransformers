@@ -5,7 +5,7 @@ WITH process_activity AS (
  FROM sched_slice
  LEFT JOIN thread USING (utid)  
  LEFT JOIN process USING (upid)
- WHERE process.name = 'com.martinkorelic.ortmobile'
+ WHERE process.name = 'com.martinkorelic.mobiletransformers.app'
 )
 SELECT 
  CAST(c.ts/1e9 AS INT) as timestamp_sec,

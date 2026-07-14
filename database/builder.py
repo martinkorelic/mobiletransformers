@@ -59,7 +59,7 @@ except ImportError as e:
     exit(1)
 
 
-class ORTMobileObjectBoxProcessor:
+class MobileTransformersObjectBoxProcessor:
     def __init__(self, database_dir: str, embedding_dim: Optional[int] = None, model_name: str = "all-MiniLM-L6-v2", no_embed: bool = False):
         self.database_dir = Path(database_dir)
         self.model_name = model_name
@@ -410,7 +410,7 @@ def process_documents_with_custom_entities(input_dir: Path, output_dir: Path, em
     """Main processing function using custom ObjectBox entities."""
     
     # Initialize processor (embedding_dim can be None for auto-inference)
-    processor = ORTMobileObjectBoxProcessor(str(output_dir), embedding_dim, model_name, no_embed)
+    processor = MobileTransformersObjectBoxProcessor(str(output_dir), embedding_dim, model_name, no_embed)
     
     try:
         # Load documents using LangChain loaders

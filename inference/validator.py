@@ -122,7 +122,7 @@ def validate_generation(model_id, model_name, model_dir, test_generation, test_g
                              with_labels=any("labels" in inpn for inpn in input_names),
                              **test_generation_config)
 
-class ORTransformerGenerator:
+class MobileTransformerGenerator:
     """
     A reusable class for ONNX model generation that loads configuration once
     and allows multiple generation calls.
@@ -164,7 +164,7 @@ class ORTransformerGenerator:
         self.input_names = [input_name.name for input_name in self.session.get_inputs()]
         self.input_config = self._determine_input_config()
         
-        print(f"[INFO] ORTransformerGenerator initialized successfully")
+        print(f"[INFO] MobileTransformerGenerator initialized successfully")
         print(f"[INFO] Model: {model_name}")
     
     def _load_generation_config(self, test_generation_config):

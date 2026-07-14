@@ -4,12 +4,12 @@ DEEPEVAL Adapter for loading PEFT ONNX models and performing inference for evalu
 
 from transformers import AutoTokenizer
 from deepeval.models import DeepEvalBaseLLM
-from inference.validator import ORTransformerGenerator
+from inference.validator import MobileTransformerGenerator
 
 class CustomPeftONNXModel(DeepEvalBaseLLM):
     def __init__(self, model_id, model_name, model_dir, load_merged_weights=False, merged_weights_dir=None):
 
-        self.model = ORTransformerGenerator(
+        self.model = MobileTransformerGenerator(
             model_id=model_id,
             model_name=model_name, 
             model_dir=model_dir,

@@ -42,7 +42,7 @@ def export_tokenizer_config(model_name_or_path, output_dir="build", hf_token=Non
         model_type = config.model_type if hasattr(config, 'model_type') else 'unknown'
 
         # Create the config structure
-        ortmobile_config = {
+        mobiletransformers_config = {
             "model": {
                 "bos_token_id": getattr(config, 'bos_token_id', tokenizer.bos_token_id or 1),
                 "context_length": getattr(config, 'max_position_embeddings', 
@@ -59,10 +59,10 @@ def export_tokenizer_config(model_name_or_path, output_dir="build", hf_token=Non
         }
         
         # Save the main config file
-        config_path = Path(output_dir) / "tokenizer" / "ortmobile_tokenizer_config.json"
+        config_path = Path(output_dir) / "tokenizer" / "mobiletransformers_tokenizer_config.json"
         print(f"Saving main config to {config_path}...")
         with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(ortmobile_config, f, indent=4, ensure_ascii=False)
+            json.dump(mobiletransformers_config, f, indent=4, ensure_ascii=False)
         
         print("Export completed successfully!")
         print(f"Files saved:")
@@ -74,7 +74,7 @@ def export_tokenizer_config(model_name_or_path, output_dir="build", hf_token=Non
         for file in tokenizer_files:
             print(f"    - {file.name}")
         
-        return ortmobile_config
+        return mobiletransformers_config
         
     except Exception as e:
         print(f"Error exporting tokenizer: {str(e)}")
@@ -106,7 +106,7 @@ def export_tokenizer_config_advanced(model_name_or_path, output_dir="build", hf_
                 print(f"Override applied: {key} = {value}")
         
         # Save updated config
-        config_path = Path(output_dir) / "ortmobile_tokenizer_config.json"
+        config_path = Path(output_dir) / "mobiletransformers_tokenizer_config.json"
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4, ensure_ascii=False)
     

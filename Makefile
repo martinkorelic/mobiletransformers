@@ -20,7 +20,7 @@ parity:
 	uv run python -m mobiletransformers.codegen.enums --check
 
 test:
-	uv run pytest tests/unit tests/fixtures tests/export
+	uv run pytest tests/unit tests/fixtures tests/export tests/hub tests/support tests/cli
 
 # ORT-training smoke — requires the cp312 source-built wheel (ort-training-local, Python 3.12).
 test-train:
