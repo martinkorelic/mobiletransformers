@@ -14,10 +14,18 @@ android {
         }
     }
 
+    buildFeatures {
+        // #22: BuildConfig carries the default-off on-device adapter-upload security flag.
+        buildConfig = true
+    }
+
     defaultConfig {
         minSdk = 24
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+        // #22: on-device Hub adapter upload is disabled by default (privacy-gated); flip only behind a
+        // security review. Product path is device -> desktop sync -> Python `push-adapter`.
+        buildConfigField("boolean", "ADAPTER_UPLOAD_ENABLED", "false")
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
@@ -74,11 +82,22 @@ dependencies {
     implementation(libs.pebble)
     implementation(libs.gson)
 
+    // #21/#22: Hub network half — OkHttp (streaming GET/Range), WorkManager (background download), and an
+    // EXPLICIT coroutines dependency (was previously only transitive).
+    implementation(libs.okhttp)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.coroutines.android)
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }

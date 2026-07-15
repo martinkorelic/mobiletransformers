@@ -603,9 +603,9 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
         // #9 unified layout: the merger ONNX models + weight_handoff_map.json live in the inference
         // package dir, and merged trainable tensors overwrite their per-tensor <name>.bin in place there
         // (atomic rename + checksum on the native side). The old inference/merged subdir is retired.
-        // DECOMPOSE(#23): the native LOAD side (ORTGeneratorNative.loadMergedWeights / session_cache.h)
-        // must migrate to "handoff map present + every externalDataLocation .bin exists" — until it does,
-        // it still probes inference/merged and will not see these in-place merges.
+        // #23: the native LOAD side (ORTGeneratorNative + session_cache.h) now consumes the handoff map
+        // (map present + every externalDataLocation .bin exists + checksum valid), so these in-place
+        // merges are seen fail-closed at load time.
         val inferenceDir = "$cacheDirPath/${trainingConfig.repoName}/inference"
         mergeExportWeights(
             model,

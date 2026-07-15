@@ -111,28 +111,7 @@ std::string sha256_file(const std::string& path) {
     return h.hex();
 }
 
-// ---- Semver gate mirroring mobiletransformers/artifacts/versioning.py::check_compat (F1). ----
-bool parse_version(const std::string& v, int& major, int& minor) {
-    auto dot = v.find('.');
-    if (dot == std::string::npos) return false;
-    try {
-        major = std::stoi(v.substr(0, dot));
-        minor = std::stoi(v.substr(dot + 1));
-    } catch (...) { return false; }
-    return major >= 0 && minor >= 0;
-}
-
-bool check_compat(const std::string& docSchema, const std::string& docMinReader,
-                  const std::string& readerSchema) {
-    int dMaj, dMin, rqMaj, rqMin, rMaj, rMin;
-    if (!parse_version(docSchema, dMaj, dMin) || !parse_version(docMinReader, rqMaj, rqMin) ||
-        !parse_version(readerSchema, rMaj, rMin)) {
-        return false;
-    }
-    if (dMaj > rMaj) return false;                                   // doc needs a newer major SDK
-    if (rMaj < rqMaj || (rMaj == rqMaj && rMin < rqMin)) return false; // reader below doc minReaderVersion
-    return true;
-}
+// parse_version / check_compat now live inline in handoff_io.h (shared with the load side, #23).
 
 size_t dtype_byte_size(ONNXTensorElementDataType t) {
     switch (t) {
@@ -601,58 +580,12 @@ void WeightMerger::extract_adapter_params(Ort::CheckpointState& checkpoint_state
     }
 }
 
-// Load ONNX merger models
-// Load + version-gate weight_handoff_map.json — the single source of tensor identity (#8/#9).
+// Load + version-gate weight_handoff_map.json — the single source of tensor identity (#8/#9/#23).
+// Delegates to the ONE shared reader in handoff_io.h (also used by the load side, session_cache.h).
 bool WeightMerger::load_handoff_map(const std::string& json_path) {
-    try {
-        std::ifstream file(json_path);
-        if (!file.is_open()) {
-            LOGE("Failed to open handoff map: %s", json_path.c_str());
-            return false;
-        }
-        json j;
-        file >> j;
-
-        // Fail closed on an incompatible schema (mirror of artifacts/versioning.py::check_compat).
-        const std::string docSchema = j.value("schemaVersion", "");
-        const std::string docMinReader = j.value("minReaderVersion", "");
-        if (!check_compat(docSchema, docMinReader, /*readerSchema=*/"1.0")) {
-            LOGE("handoff map schema %s (minReader %s) incompatible with reader 1.0",
-                 docSchema.c_str(), docMinReader.c_str());
-            return false;
-        }
-
-        // Resolved MergerVariant -> descriptive ONNX filename (replaces hard-coded merger paths).
-        merger_models_.clear();
-        if (j.contains("mergerModels")) {
-            for (const auto& [variant, filename] : j["mergerModels"].items()) {
-                merger_models_[variant] = filename.get<std::string>();
-            }
-        }
-
-        handoff_map_.clear();
-        for (const auto& entry_json : j.value("entries", json::array())) {
-            HandoffEntry entry;
-            entry.trainingBaseLayerName = entry_json.value("trainingBaseLayerName", "");
-            entry.dtype = entry_json.value("dtype", "");
-            entry.transposePolicy = entry_json.value("transposePolicy", "no_transpose");
-            entry.has_quantization = entry_json.contains("quantization") && !entry_json["quantization"].is_null();
-            if (entry_json.contains("externalDataLocation")) {
-                for (const auto& [role, loc] : entry_json["externalDataLocation"].items())
-                    entry.externalDataLocation[role] = loc.get<std::string>();
-            }
-            if (entry_json.contains("inferenceInitializerNames")) {
-                for (const auto& [role, name] : entry_json["inferenceInitializerNames"].items())
-                    entry.inferenceInitializerNames[role] = name.get<std::string>();
-            }
-            handoff_map_[entry.trainingBaseLayerName] = entry;
-        }
-        LOGI("Loaded handoff map: %zu entries, %zu merger model(s)", handoff_map_.size(), merger_models_.size());
-        return !handoff_map_.empty();
-    } catch (const std::exception& e) {
-        LOGE("Error loading handoff map: %s", e.what());
-        return false;
-    }
+    bool ok = load_handoff_entries(json_path, /*readerVersion=*/"1.0", handoff_map_, &merger_models_);
+    LOGI("Loaded handoff map: %zu entries, %zu merger model(s)", handoff_map_.size(), merger_models_.size());
+    return ok;
 }
 
 const HandoffEntry* WeightMerger::find_handoff_entry(const std::string& base_layer_name) const {

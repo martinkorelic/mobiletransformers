@@ -31,16 +31,41 @@ class ORTConversationState(
     }
 
     /**
-     * Adds a new assistant message after the LLM has stopped computing
+     * Adds a new assistant message after the LLM has stopped computing.
+     *
+     * #23: advance the consumed-prefix marker by the assistant content's RENDERED offset, not the
+     * decoded `content.length`. `currentConversationLength` is an index into the chat-template's
+     * rendered text (used by [buildNewUserMessageTemplate] to slice the next-turn delta); chat templates
+     * routinely add/trim whitespace around a turn's content, so the decoded length under/over-counts the
+     * rendered position and the next delta starts mid-content — the "one token from the previous
+     * assistant message keeps prepending" bug. Locating the content inside the re-rendered history
+     * anchors the marker exactly at the end of the rendered content (before the turn's closing markup),
+     * so the next user delta cleanly re-feeds the closer the KV cache does not yet hold.
      */
     fun addAssistantMessage(content: String) {
+        // `currentConversationLength` here is the sent prefix ending at the assistant generation opener.
+        val openerPrefixLen = currentConversationLength
 
-        // Add what the newly produced message length
-        currentConversationLength += content.length
-
-        // Create the full conversation history
         conversationHistory.add(mapOf("role" to "assistant", "content" to content))
 
+        val rendered = renderHistory(addGenerationPrompt = false)
+        currentConversationLength = if (rendered.length > openerPrefixLen) {
+            val tail = rendered.substring(openerPrefixLen)
+            val idx = tail.indexOf(content)
+            if (idx >= 0) openerPrefixLen + idx + content.length
+            else openerPrefixLen + content.length // fallback: template transformed the content
+        } else {
+            openerPrefixLen + content.length
+        }
+    }
+
+    private fun renderHistory(addGenerationPrompt: Boolean): String {
+        val context = mutableMapOf<String, Any>(
+            "messages" to conversationHistory,
+            "add_generation_prompt" to addGenerationPrompt
+        )
+        context.putAll(specialTokens)
+        return templateHandler?.buildInput(context) ?: ""
     }
 
     /**

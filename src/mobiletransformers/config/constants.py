@@ -48,6 +48,13 @@ class SearchType(str, Enum):
     TEXT = "text"
 
 
+class IndexingMode(str, Enum):
+    """RAG indexing strategy (#27). v1 supports ``precompute`` only; ``dynamic`` is a fail-closed stub."""
+
+    PRECOMPUTE = "precompute"
+    DYNAMIC = "dynamic"
+
+
 class QuantizationType(str, Enum):
     QINT8 = "QInt8"
     QUINT8 = "QUInt8"
@@ -104,6 +111,7 @@ ENUM_REGISTRY: dict[str, type[Enum]] = {
     "CoreConfigId": CoreConfigId,
     "MemoryConfigId": MemoryConfigId,
     "SearchType": SearchType,
+    "IndexingMode": IndexingMode,
     "QuantizationType": QuantizationType,
     "PEFTMethod": PEFTMethod,
     "TaskType": TaskType,

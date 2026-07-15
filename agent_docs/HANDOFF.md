@@ -511,3 +511,148 @@ separate profile run. Output must carry the mobiletransformers tokenizer (`mobil
 
 Once a real package exists: push it (internal filesDir), add a `ModelRuntime`/`ORTGeneratorGenAI` instrumented
 test that loads it under each engine and asserts the same token (Gate 0.1 #1) + RSS within threshold (#4).
+
+## Session close (2026-07-15, cont. — #23 native load hardening + #19 HF facade + #24 sampling)
+
+Landed the **Tier-2-inference + Tier-1-facade-completion** phase (user-confirmed scope #23+#19+#24), all
+host-verified: **87 SDK JVM tests** green (was 48), `:MobileTransformers:compileDebugKotlin` +
+`:app:compileDebugKotlin` green, **arm64-v8a `assembleDebug` links** (C++ + Kotlin), enum **parity OK**.
+Only device-acceptance legs deferred. **Nothing committed** (human commits).
+
+- **#23 code-complete (box open)** — the load-side counterpart to #9's save side. New
+  `internal/runtime/HandoffPrecondition.kt` (fail-closed, map-driven gate: `weight_handoff_map.json`
+  present + every `externalDataLocation[role]` `.bin` present + checksum via map-`sha256` **or** sibling
+  `<name>.bin.sha256`) + `packages/WeightHandoffMap.kt` (Gson read model). Wired into
+  `ORTGeneratorNative.createInferenceModel` (retired the `inference/merged` probe — no silent downgrade)
+  and `EngineCapabilities.supportsLoadMergedWeights` (cheap presence query). **C++:** new shared
+  `cpp/handoff_io.h` is now the ONE reader (`HandoffEntry` + `load_handoff_entries` + `check_compat`,
+  moved out of `weight_merger.cpp` so both the merger write-side and `session_cache.h` load-side share it);
+  `WeightSessionCache::init` rewritten to load flat `<name>.bin` keyed by `inferenceInitializerNames[role]`
+  (no `<dirname>.<filestem>` reconstruction) with dtype/shape fail-closed validation before
+  `AddExternalInitializers`; `getSessionOptions` loads from the inference dir (dropped `/merged`).
+  Conversation-reset prepend bug fixed in `ORTConversationState.addAssistantMessage` (advance the
+  consumed-prefix marker by the assistant content's **rendered** offset, not decoded `content.length`);
+  `resetConversation()` now runs at the top of `load()`. Tests: `HandoffPreconditionTest` (11),
+  `ORTConversationStateTest` (2), `NativeLoadRegressionTest` (3 greps). **Deferred (device):** map-driven
+  load-and-generate over a real #9 package; two-prompt no-leak smoke; train→merge→generate.
+  - *Cross-plan debt closed:* both `DECOMPOSE(#23)` sites retired; #8/#9's "C++ load-side rewrite rides
+    with #23" is done. **A device build now sees #9's in-place merges** (previously it could not).
+- **#19 code-complete (box open)** — DELTA over #17. `MobileTransformerModel` gained
+  `applyPeft`/`pushAdapter` + public `callback:` params; `MobileTransformersException.kt` is now the full
+  **sealed** hierarchy (`PeftMismatch`/`FeatureNotInstalled`/`EngineUnavailable`/`NotImplementedFeature`
+  + the #17 base/`ModelNotInstalled`/`MissingArtifact`, both keeping their string ctors so existing
+  callers compile); flat `PeftConfig` → **sealed** `config/PeftConfig.kt`; pure
+  `internal/config/PeftSupport.kt` (taxonomy + `packageTaxonomy` Gson-parse + fail-closed `validate`);
+  public `TrainCallback`/`GenerateCallback`/`RetrieveCallback` + 1:1 payloads (streaming = callback,
+  tokens forwarded while accumulated into `GenerationResult.text`); `ConfigMappers` drives
+  `ORTGenerationConfig.type` from the engine + `loadMergedWeights` from merge state (+ `DatasetConfig.toOrt`);
+  `fromPretrained` adds construction-time feature-gate + GenAI-config gate. `pushAdapter` is a
+  `NotImplementedFeatureException` stub (rides #22). Tests: `PeftMappingTest`, `ConfigMappingDeltaTest`,
+  `ExceptionMessageTest`, updated `FacadeDelegationTest`.
+  - *Scope calls:* manifest has no `peftMethods` → PEFT support derived from `train/training_config.json`
+    alone. `compat/LegacyAliases.kt` **skipped** — #16 fully retired the `ortmobile` brand, no consumers
+    to alias. Sample-app ViewModel migration to the facade **deferred** (app builds unchanged; facade is
+    additive). **Deferred (device):** the train→merge→generate workflow (merged output diverges).
+- **#24 code-complete (box open)** — `SamplingMethod.nativeOrdinal` added as a `when` (NOT a constructor
+  arg — a constructor arg breaks the `NAME("wire")` parity regex; learned the hard way);
+  `updateSamplingOptions` dropped `methodMap` for `SamplingMethod.fromWire(...).nativeOrdinal` (fail-closed);
+  `maxNewTokens → maxSequenceLength` locked; `DECOMPOSE(#24)` retired. `SamplingMappingTest` green.
+  **Deferred (device):** cross-engine callback-parity smoke (needs a real #9 dual-engine package; shared
+  with #11).
+
+**Next:** the **real File #9 package** (`export/pipeline.py::_full_export`, the deferred #15 leg) turns all
+the above device legs (and Gate 0.1 #1/#4) green — scope it next. Then **#26/#27 RAG** (ingestion +
+grounded generation), now unblocked by #23/#24. **Nothing committed** (human commits).
+
+## Session close (2026-07-15, cont. — real `_full_export` inference+GenAI package (#15 leg))
+
+Implemented the deferred `_full_export` real export — the artifact every device leg was blocked on — and
+**verified it on-box**. Core gate green (**215 passed, 10 skipped**, mypy/lint/parity clean). **Nothing
+committed** (human commits).
+
+- **`export/pipeline.py::_full_export` is now a stage-gated orchestrator** (`inference | training |
+  embedding`), replacing the `NotImplementedError` stub. Injectable stage builders (mirrors
+  `plan_export(discover=…)`/#22 `factor_reader`), effective features **and engines** computed from what's
+  actually on disk (never advertises a missing subtree/engine), then delegates the #14 reshape + #13
+  manifest to the already-CI-tested `assemble_package`. Stage selection auto-detects by request +
+  importable deps; `--stages` overrides; skipped stages are logged (no silent truncation). Idempotent:
+  a later `stages={"training"}` run under ort-training re-assembles into the same `output`.
+- **Inference stage is real (`export` profile):** optimum `export_inference` → normalized
+  `model.onnx`/`model.onnx_data` (canonical HF IO) + tokenizer + `generation_config.json`; an **empty**
+  (all-frozen) `weight_handoff_map.json` — the #13 validator *requires* the handoff file to exist +
+  resolve, and empty entries are valid + read by the Native `HandoffPrecondition` as "not merged"; and a
+  self-contained `genai_config.json`.
+  - **Key finding:** the vendored `inference.builder` (`create_model`) **cannot import under the `export`
+    profile** — it does `from onnxruntime.quantization.matmul_4bits_quantizer import …`, a symbol absent
+    from the export profile's public onnxruntime. So `genai_config.json` is built **directly from HF
+    `AutoConfig`** + the fixed canonical KV/IO scheme (`_emit_genai_config`), not via the builder. This is
+    lighter and correct (genai_config is model-intrinsic).
+- **On-box verification (the payoff):** `mobiletransformers export --model
+  HuggingFaceTB/SmolLM2-135M-Instruct --output build/pkg --genai` (export profile, py3.12) produced a
+  real package; `MobileTransformersManifest.validate()` passes (`features=[core,inference,genai]`,
+  `genai_config` present, 30 layers/9 heads, `filename=model.onnx`); and under the **genai-smoke**
+  profile `spikes/genai_external_swap/desktop_spike.py --dir build/pkg/variants/cpu-int4/inference`
+  shows **`OgaCreateModel` loads the exported `inference/` dir and produces logits** — dual-engine load
+  proven on desktop. (The spike's external-swap *perturbation* step needs a trainable `.bin` and correctly
+  no-ops on an all-frozen base — that's the training stage.) Env reset to core/dev py3.10 after; `build/`
+  artifacts removed.
+- **CI:** `tests/export/test_full_export_orchestration.py` (orchestration over injected fake builders:
+  inference-only features, genai gating, fail-closed unavailable stage, #13-valid output); retired
+  `test_full_export_is_env_gated`. `cli/export.py` gained `--stages` and drops the
+  `NotImplementedError`→exit-2 catch (fail-closed is now `MobileTransformersError`).
+- **Staged (seams, this phase):** `_build_training_stage` (`gen_artifacts` + `export_inference_package`
+  trainable split/handoff map) and `_build_embedding_stage` — fail closed naming the profile; bodies land
+  in the follow-on `ort-training-local` run, which is what unblocks **#19 train→merge→generate** and the
+  handoff-mapped merged-weight device legs.
+
+**Next:** push `build/pkg` to the device for the #11 dual-engine smoke (same token Native vs GenAI = Gate
+0.1 #1) + #23 base load-and-generate + #24 callback parity; then the **training-stage** ort-training run
+(fills `train/` + the real handoff map), then **#26/#27 RAG**. **Nothing committed** (human commits).
+
+## Session close (2026-07-15, cont. — #1–#29 code-complete + device-test-ready sweep)
+
+Six-workstream push making **all of #1–#29 code-complete with device-time testing staged**. All host gates
+green: Python `make check` **215 passed**, enum parity OK, Android **125 SDK JVM tests**, both modules +
+`androidTest` compile, arm64 `assembleDebug` links. **Nothing committed** (human commits).
+
+- **W1 — #26 RAG ingestion** (Kotlin): `rag/DocumentChunker` (pure char windowing), `DocumentSource` +
+  `DOCUMENT_LOADER_REGISTRY` (F3: txt/md/jsonl; PDF/Word rejected fail-closed), `IngestionProgress`, pure
+  `IngestionPipeline` (injectable embedder → JVM-testable), `ORTRetriever.ingestData` binds the real
+  embedder, `RagRepository.ingest` + facade `ingest`. Tests: `DocumentChunkerTest`/`DocumentSourceTest`/
+  `IngestionPipelineTest`.
+- **W2 — #27 grounded generation** (Kotlin, checkpoint): `rag/PromptAssembler` (overridable), `GroundedResult`,
+  facade `generateWithRag` (retrieve→assemble→generate, inspectable prompt). Config: `RagConfig`/`ORTRagConfig`
+  +`minScore`/`indexingMode`; new **`IndexingMode`** enum (Python `constants.py` + Kotlin mirror + `enums.json`,
+  parity); F7 `dynamic` fail-closed. Fixed the latent `makeOrtRag` (ignored its param) + `prepareRetriever`
+  override (the `:300` TODO) + `minScore` threading into `search`. Tests: `RagConfigMapperTest`/
+  `PromptAssemblerTest`/`GroundedFlowTest`.
+- **W3 — #15 training stage** (Python): `_build_training_stage` implemented (`optimum_hf_export` →
+  `gen_artifacts` → `export_inference_package` into the assembled `inference/`, overwriting the empty handoff
+  map with the real trainable split); `_effective_features` unions on-disk state (training-only re-assembly
+  keeps inference/genai). Env-gated `test_training_stage_smoke.py`. **mypy fix:** added
+  `follow_imports=skip`/`ignore_errors` overrides for the legacy roots (`artifact.*`/`trainer.*`/`inference.*`/
+  …) so `src`'s new lazy imports of them don't drag their un-gated source into the gate.
+- **W4 — #12 mmap** (C++, full into load path, default-off): `cpp/mem_probe.h` (RSS) + `cpp/mmap_tensor.h`
+  (RAII map/unmap) + a `MTF_MMAP_WEIGHTS`-gated zero-copy branch in `session_cache.h` (**copy path stays the
+  shipping default — #23 untouched unless the env var is set**; mmap only for well-shaped non-quantized
+  tensors); `mmap_regions_` freed in `clearWeights`. `spikes/mmap/{measure_rss(re-export),base_blob_mmap_spike}.py`
+  (desktop byte-identical correctness invariant). arm64 links. Device 4-point RSS table = manual Gate 0.2.
+- **W5 — #21 downloader + #22 uploader** (Kotlin + gradle): new deps (OkHttp, WorkManager, explicit
+  coroutines, mockwebserver, test-runner; `buildConfig=true`). `hub/`: `HubResolver`, `DownloadPlanner`
+  (glob→file list), `PackageDownloader` (OkHttp stream + Range-resume + sha256 + retry, MockWebServer-tested),
+  `HubDownloader` (manifest-first → verify → `ModelPackageInstaller.install`), `PackageDownloadWorker`
+  (CoroutineWorker); `fromPretrained` now pulls-then-loads when not installed. `hub/AdapterUploader`
+  (cache→AdapterPackage, Mode-1/2 gate, privacy-gated card, default-off `BuildConfig.ADAPTER_UPLOAD_ENABLED`)
+  fills the `pushAdapter` stub. Tests: `DownloadPlannerTest`/`PackageDownloaderTest`/`AdapterUploaderTest`.
+  (Base exception made `open` — subclasses now span packages, e.g. `hub.AdapterUploadDisabledException`.)
+- **W6 — device readiness**: `androidTest/DeviceModel` (locate + `assumeTrue`-skip) + per-plan instrumented
+  classes — `FacadeLoadGenerateTest` (#17), `DualEngineParityTest` (#11/#24), `TrainMergeGenerateTest`
+  (#18/#19), `ConversationResetTest` (#23), `RagDeviceTest` (#26/#27) — all skip without a pushed package.
+  One-command provisioning: `scripts/device_package.sh` + `make device-package [TRAIN=1]` (export → reshape →
+  `adb push` to `/data/local/tmp/mt_pkg`) and `make device-test` (`connectedDebugAndroidTest`).
+
+**State of #1–#29:** every plan is code-complete with host tests green; the only remaining legs are
+**device runs**, now one command away: `make device-package [TRAIN=1] MODEL=<id>` then `make device-test`
+(a device is connected). Boxes stay `[ ]` until their device legs run. **Deferred/manual:** the full
+`optimum_hf_export` real-model training run, WorkManager scheduling + real Hub network, real authenticated
+adapter upload, and the Gate 0.2 device RSS table. **Nothing committed** (human commits).

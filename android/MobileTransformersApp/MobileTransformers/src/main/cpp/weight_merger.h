@@ -17,6 +17,7 @@
 #include <android/log.h>
 #include <nlohmann/json.hpp>
 #include "logging.h"
+#include "handoff_io.h"  // #23: shared HandoffEntry + load_handoff_entries + check_compat (one reader)
 
 struct PeftMapping {
     std::string adapter_B;
@@ -28,17 +29,8 @@ struct PeftMapping {
     std::string adapter_A; // For LoRA
 };
 
-// One entry of weight_handoff_map.json (#8 schema / #9 consumer): the SINGLE source of tensor identity
-// for the on-device merge. externalDataLocation[role] is the per-tensor .bin the merger overwrites; the
-// role names come straight from the map (no string-rewrite on device — closes the inference_name path).
-struct HandoffEntry {
-    std::string trainingBaseLayerName;
-    std::unordered_map<std::string, std::string> externalDataLocation; // role -> "<name>.bin"
-    std::unordered_map<std::string, std::string> inferenceInitializerNames; // role -> canonical name
-    std::string dtype;
-    std::string transposePolicy;
-    bool has_quantization = false;
-};
+// HandoffEntry (one entry of weight_handoff_map.json, #8 schema) now lives in handoff_io.h so the merger
+// WRITE side and the session_cache LOAD side share ONE definition + ONE reader (#23).
 
 struct BaseLayerParams {
     std::unique_ptr<Ort::Value> weight_quantized;

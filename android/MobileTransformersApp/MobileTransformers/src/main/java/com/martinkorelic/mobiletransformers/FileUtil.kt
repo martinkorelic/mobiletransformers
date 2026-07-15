@@ -259,6 +259,8 @@ fun parseRagArguments(jsonPath: String): ORTRagConfig {
         embeddingDimension = json.optInt("embeddingDimension", 256),
         topK = json.optInt("topK", 10),
         searchType = json.optString("searchType", "semantic"),
+        minScore = json.optDouble("minScore", 0.0),
+        indexingMode = json.optString("indexingMode", "precompute"),
         maxTextLength = json.optInt("maxTextLength", 1024),
         chunkSize = json.optInt("chunkSize", 512),
         chunkOverlap = json.optInt("chunkOverlap", 50),

@@ -6,6 +6,8 @@ data class ORTRagArguments(
     val embeddingDimension: Int? = null,
     val topK: Int? = null,
     val searchType: String? = null,
+    val minScore: Double? = null,
+    val indexingMode: String? = null,
     val maxTextLength: Int? = null,
     val chunkSize: Int? = null,
     val chunkOverlap: Int? = null,
@@ -19,6 +21,8 @@ data class ORTRagConfig(
     val embeddingDimension : Int = 256,
     val topK: Int = 10,
     val searchType : String = "semantic", // semantic, text
+    val minScore: Double = 0.0,                  // #27: similarity floor for search hits
+    val indexingMode: String = "precompute",     // #27: precompute (v1) | dynamic (fail-closed stub, F7)
 
     // Text processing
     val maxTextLength: Int = 1024,               // Max chars per document
@@ -36,6 +40,8 @@ data class ORTRagConfig(
             embeddingDimension = override.embeddingDimension ?: this.embeddingDimension,
             topK = override.topK ?: this.topK,
             searchType = override.searchType ?: this.searchType,
+            minScore = override.minScore ?: this.minScore,
+            indexingMode = override.indexingMode ?: this.indexingMode,
             maxTextLength = override.maxTextLength ?: this.maxTextLength,
             chunkSize = override.chunkSize ?: this.chunkSize,
             chunkOverlap = override.chunkOverlap ?: this.chunkOverlap,

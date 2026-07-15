@@ -26,6 +26,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
     )
     parser.add_argument("--embedding-model", default=None, help="Embedding model id for RAG.")
     parser.add_argument("--genai", action="store_true", help="Declare GenAI engine support for the variant.")
+    parser.add_argument(
+        "--stages",
+        default=None,
+        help="Comma-separated stages to build: inference,training,embedding (default: auto by profile).",
+    )
     parser.add_argument("--config", default=None, help="Path to config YAML (overlay).")
     parser.add_argument("--dry-run", action="store_true", help="Resolve + print the plan; write nothing.")
     parser.set_defaults(func=run)
@@ -40,6 +45,9 @@ def run(args: argparse.Namespace) -> int:
     )
 
     engines = ("native", "genai") if getattr(args, "genai", False) else ("native",)
+    stages = (
+        {s.strip() for s in args.stages.split(",") if s.strip()} if getattr(args, "stages", None) else None
+    )
     try:
         result = export_package(
             model=args.model,
@@ -53,13 +61,11 @@ def run(args: argparse.Namespace) -> int:
             embedding_model=args.embedding_model,
             engines=engines,
             dry_run=args.dry_run,
+            stages=stages,
         )
     except MobileTransformersError as exc:
         print(f"export failed: {exc}")
         return 1
-    except NotImplementedError as exc:
-        print(f"export (real run) is env-gated: {exc}")
-        return 2
 
     if args.dry_run:
         assert isinstance(result, ExportPlan)

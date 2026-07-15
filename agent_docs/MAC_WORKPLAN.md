@@ -1,129 +1,169 @@
-# Mac Work Plan — implement-ahead without a device
+# Mac Work Plan — moving the restructure to macOS
 
-Guide for continuing on **macOS without an Android device**. The core insight: for almost every
-remaining plan the device is only the **final acceptance leg** (does it actually run/measure on
-hardware). The *implementation*, static checks (compile + type), and *unit/integration tests* (with
-fixtures/mocks) can nearly all be done ahead of time. Read `agent_docs/HANDOFF.md` for full state.
+Guide for continuing on **macOS**. As of 2026-07-15 **all of #1–#29 are code-complete** with host tests
+green (Python `make check` 215 passed, Android 125 SDK JVM tests, arm64 `assembleDebug` links); the only
+open legs are **device acceptance runs**, now one command away (`make device-package` → `make device-test`).
+So Mac work is: (a) run those device legs (needs a connected Android device + `adb` on the Mac), and
+(b) the not-yet-started plans — release **#30/#32**, remaining docs **#31**, and Tier-3 **#33/#34/#36/#37**.
+Read `agent_docs/HANDOFF.md` for full state.
 
-## TL;DR — how much is reachable
+---
 
-- **With the full Android toolchain set up (Track B): ~80% of the remaining implementation** across
-  Tiers 1–3 can be written + compiled/type-checked + unit/integration-tested on the Mac. The device
-  becomes a *verification* step you run later, not a blocker to writing the code.
-- **Python-only (Track A):** still substantial — the entire federated plan (#35), the Python halves of
-  #33/#37, #22 materialization, #31 docs, #32 license/version, and all core/export Python.
-- **Genuinely NOT reachable on Mac:** running real ML — ORT **training-artifact generation / a real
-  train step** (Linux/cp312 wheel; no macOS ORT-training) and **real on-device generate** — plus the two
-  measurement spikes that *are* device experiments by nature (#10 GenAI RSS/symbol, #12 mmap RSS).
+## 0. Export checklist (the NOT-git-tracked files to carry over)
 
-## The verification model (what "done on Mac" means)
+`git clone`/push brings ALL source (Python, Kotlin, C++ incl. the `cpp/onnxruntime*/` headers, docs,
+schemas, build files). These paths are **git-ignored** and must be moved out-of-band (Drive/zip/scp).
+All under `android/MobileTransformersApp/MobileTransformers/src/main/` unless noted.
 
-Every plan's `Tests & acceptance` is already split **unit → integration → manual(device)**. On the Mac we
-complete the first two legs for each plan and leave a clearly-marked device stub for the third:
-- **Unit (Mac):** `pytest` (Python) / `testDebugUnitTest` (Kotlin JVM) / host C++ tests. Compile +
-  `mypy`/`ruff` + `compileDebugKotlin` are the static gate.
-- **Integration (Mac):** fixture-in → asserted-out, mocking the JNI / model / network boundary
-  (`InMemoryVectorStore`, injected `downloader`/`uploader`, injected detection, synthetic caches).
-- **Manual (later, device):** the real run — write it as a documented, skipped/`workflow_dispatch` stub.
+- [ ] `jniLibs/arm64-v8a/`  — Android arm64 device libs (~1.2 GB w/ x86_64): `libonnxruntime.so`,
+      `libort_gen.so`, `libonnxruntime-genai.so`(+`-jni.so`), `libtokenizers_c.a`, `libprotobuf-lite.a`,
+      `libobjectbox-jni.so`, `libonnxruntime4j_jni.so`  → **move** (device binaries, host-agnostic)
+- [ ] `jniLibs/x86_64/`  — same for the emulator ABI  → **optional** (upstream-incomplete; real device = arm64 only)
+- [ ] `aarLibs/onnxruntime-genai.aar`  (~40 MB)  → **move**
+- [ ] `cpp/includes/`  (~24 MB, protobuf headers)  → **move**
+- [ ] `third_party/wheels/onnxruntime_training-…-linux_x86_64.whl`  (~632 MB)  → **DO NOT move**
+      (linux/cp312; won't load on macOS — rebuild for macOS-arm64 only if you need the training side, §4)
 
-## Prerequisites
-
-### Track A — Python only (no Android)
-- macOS + [Homebrew](https://brew.sh).
-- `uv` (`brew install uv` or the astral installer) — drives all Python envs from `uv.lock`.
-- Python 3.10 (core/dev, mypy target) and 3.12 (export/train profiles); `uv` fetches these on demand.
-- Setup:
-  ```bash
-  uv sync --frozen --group dev                 # core + dev; `make check` works
-  uv sync --extra export --group dev --python 3.12   # optimum export (host)
-  uv sync --extra train  --group dev --python 3.12   # torch/peft/safetensors (CPU) for #22, #35 local training
-  ```
-  None of these pull the (Linux-only) ORT-training wheel, so its absence is a non-issue.
-
-### Track B — Full Android (recommended, unlocks the Kotlin/C++ plans)
-Pinned toolchain (from `android/MobileTransformersApp`): **AGP 8.5.1, Kotlin 1.9.0, Gradle 8.7,
-compileSdk 34, minSdk 24, CMake 3.22.1, ObjectBox 4.3.0**.
-- **JDK 17** to *run* Gradle (`brew install --cask temurin@17`, or use Android Studio's JBR). Set
-  `JAVA_HOME` to it. (Modules compile to JVM 1.8 bytecode, but AGP 8.5 needs JDK 17 to run.)
-- **Android SDK**: install Android Studio (easiest) or command-line tools. Via SDK Manager get:
-  platform **android-34**, **build-tools;34.x**, **platform-tools**, **cmake;3.22.1**, and the **NDK**
-  AGP 8.5.1 resolves (r26.x — `ndkVersion` isn't pinned, so let AGP pick, or install `ndk;26.1.10909125`).
-  Set `ANDROID_HOME` / `ANDROID_SDK_ROOT`.
-- **The vendored native deps** (git-ignored — carry them over, see next section): `aarLibs/` (needed for
-  `compileDebugKotlin` — types), `jniLibs/` + `cpp/includes/google/` (needed for the NDK/CMake native
-  build in `assembleDebug`/`assembleRelease`).
-- Optional: **Robolectric** only if we add unit tests that touch Android framework classes (current tests
-  deliberately avoid it — plain JUnit4 on the JVM).
-- Verify the setup: `./gradlew :MobileTransformers:testDebugUnitTest :MobileTransformers:assembleDebug`.
-
-### Moving artifacts to the Mac (Drive / zip / scp)
-| Artifact | Move it? | Why |
-| --- | --- | --- |
-| `android/.../src/main/aarLibs/` | ✅ yes | Android `.aar`s — host-OS-agnostic; needed for `compileDebugKotlin`. |
-| `android/.../src/main/jniLibs/` | ✅ yes | Android-ABI `.so`s — consumed by the build, never run on host. |
-| `android/.../src/main/cpp/includes/google/` | ✅ yes | protobuf headers — needed for the CMake native build. |
-| `third_party/wheels/onnxruntime_training-*.whl` | ❌ no | `linux_x86_64` cp312 C-extension — cannot load on macOS. |
-| Android SDK / NDK / JDK | ❌ install fresh | Use the macOS builds via SDK Manager / brew, don't copy Linux ones. |
-
-Zip the three ✅ dirs, drop them on Drive, unzip into the same paths on the Mac. (Or clone
-`../ORTTransformer` on the Mac and re-copy from there — same source they were provisioned from here.)
-**Commit + push the repo first** — the tree is the only copy of this session's work.
-
-## Coverage map (remaining plans)
-
-Legend: **Impl+test on Mac** = write code + static compile/type + unit/integration (mock/fixture) tests.
-**Device/Linux leg** = the acceptance-only step deferred.
-
-| # | Plan | Impl + test on Mac | Device/Linux leg only | Track |
-| --- | --- | --- | --- | --- |
-| 10 | GenAI swap spike | swap harness + host symbol-probe scaffold (low) | RSS + observable-output Gate 0.1 | B |
-| 11 | Engine abstraction | `ModelRuntime`/`InferenceEngine` enum (+Py mirror+parity)/impls/selector/fallback + JVM tests w/ mocked JNI; callback-parity test w/ mocks | real cross-engine parity lock | B |
-| 12 | mmap experiments | experiment harness code (low) | RSS numbers Gate 0.2 | B |
-| 17 | Facade foundation | `fromPretrained`/`ModelSession`/exceptions/selector + JVM tests (mock repos) | load→generate 1 token | B |
-| 18 | Training lifecycle | `TrainingJob`/event adapter/checkpoint format/session lock/cancellation + JVM tests | real train run | B |
-| 19 | HF Kotlin facade | applyPeft/train/merge/generate/retrieve + config-mapping table + JVM tests | train→merge→generate | B |
-| 23 | Native load hardening | map-driven fail-closed load (C++/Kotlin) compiles; conversation-reset fix + reset test | load-and-generate on device | B (+NDK) |
-| 24 | Sampling/streaming | `SamplingMethod` enum+mirror+mapping+defaults + JVM tests | cross-engine callback parity | B |
-| 26 | RAG ingestion | chunking + document-loader registry + ingest via `InMemoryVectorStore` + JVM tests | real embedding step (host-ORT or device) | B |
-| 27 | RAG grounded gen | `RagConfig` + retrieve→assemble→prompt logic + JVM tests | full grounded generate | B |
-| 30 | AAR/Maven | `assembleRelease` + `publishToMavenLocal` + external consumer app build — **all no-device** | — (host-only) | B (+NDK) |
-| 31 | Docs (remaining) | `MODEL_FORMAT.md`, `CONFIGURATION.md` now (locked); others as contracts lock | pages for device contracts | A |
-| 32 | Versioning/license | SPDX headers, version-site sync, CHANGELOG, license expression | full release gate (CI+AAR+device) | A |
-| 33 | Encoder support | arch-registry entry + export config + host inference-export smoke | train step + Android smoke + MARS-transfer verify | A/B |
-| 34 | Training scheduler | `LinearLRScheduler.stateDict/loadFromState` (pure) + WorkManager worker + resume logic + JVM tests | Doze/thermal/energy multi-chunk | B |
-| 35 | **Federated (Flower sim)** | `FederatedAdapterRecord` from codec + Python N-client Flower sim + Py↔Kotlin byte-parity golden — **all host** | — (Option A is a Python sim; device is Option B/#36) | A |
-| 36 | Federated Android | JNI export/import + byte-identical codec golden + privacy-gate logic + JVM tests | real client/gateway run | B |
-| 37 | FunctionGemma | Gemma-3 arch entry + inference-graph export config + tool-call allowlist/dry-run/validation + intents | train→tool-call→intent demo | A/B |
-
-**Flagship Mac plans (highest coverage, lowest device dependence):** **#35** (entirely host Python),
-**#11/#17/#18/#19/#24** (facade+engine — implement fully, mock the JNI), **#34** (scheduler state is pure
-logic), **#30** (AAR+consumer build is host-only).
-
-## Concrete first tasks on the Mac (ordered)
-
-1. **#22 materialize_peft_weights** (`adapter/convert.py`) — read the A/B `.bin` externals from the cache
-   (`AdapterPackage.tensors`, dtype/shape) → `numpy`→`torch`→`safetensors.save_file`; **needs only the
-   `train` extra (CPU), not ORT-training** (the stub docstring's "ORT CheckpointState" is pessimistic —
-   the cache already has raw `.bin` bytes). Test behind `importorskip("torch")`.
-2. **#31 remaining docs** — `docs/MODEL_FORMAT.md` (#8/#9/#13/#14) + `docs/CONFIGURATION.md` (#6) are
-   locked; write them (pure markdown).
-3. **#35 federated (Python)** — the whole Option-A Flower simulation + codec-derived record + golden. Big,
-   self-contained, no device. If local per-client training needs a runtime, use torch-CPU (Mac-ok), not
-   ORT-training.
-4. **(Track B) #11 + #17** — the engine enum/`ModelRuntime` + facade foundation, compiled + JVM-tested
-   against mocked repositories/JNI. This unblocks #18/#19/#24 as pure-logic + mock work.
-
-## Verify commands (Mac)
+Skip `*.old.bak`/`*.stub.bak`. Don't move recreatables (`.venv*`, `build/`, `cache_dir/`, `.gradle`,
+`.cxx`, `onnx_models/`, `dist/`). One-liner to list them + zip the movable set:
 ```bash
-make check                                   # Python: lint + typecheck + parity + tests
-uv run --extra train pytest tests/adapter -q # after #22 (torch CPU)
-# Track B:
-./gradlew :MobileTransformers:testDebugUnitTest :MobileTransformers:assembleDebug
+git status --porcelain --ignored | grep '^!!' | grep -E 'jniLibs|aarLibs|cpp/includes|wheels/.*\.whl'
+cd android/MobileTransformersApp/MobileTransformers/src/main && \
+  zip -r ~/mtf-native.zip jniLibs/arm64-v8a aarLibs/onnxruntime-genai.aar cpp/includes -x '*.bak'
+```
+**Commit + push the repo first** — the working tree is the only copy of the source. §1 has the details.
+
+---
+
+## 1. What you actually need to move (git-tracked vs. not)
+
+**Git-tracked → arrives with `git clone`/push, nothing to do:** all Python (`src/mobiletransformers/`,
+`tests/`, `spikes/`), **all** Android Kotlin **and C++ source** — including the ORT/GenAI C++ headers
+under `cpp/onnxruntime/` and `cpp/onnxruntime-genai/` (these ARE tracked) — `agent_docs/`, `schemas/`,
+`docs/`, `pyproject.toml`/`uv.lock`, `Makefile`, `scripts/`, `third_party/wheels/README.md`,
+`third_party/onnxruntime/{manifest.json,BUILD.md}`. **Commit + push first** — the working tree is the only
+copy of this session's work.
+
+**NOT git-tracked → must move out-of-band** (Drive/zip/scp), all under
+`android/MobileTransformersApp/MobileTransformers/src/main/`:
+
+| Path | Size | What it is | Move to Mac? |
+| --- | --- | --- | --- |
+| `jniLibs/arm64-v8a/` | (bulk of ~1.2 GB) | Android **arm64 device** libs: `libonnxruntime.so` (source-built ORT-training 1.23), `libort_gen.so` (stock ORT 1.27, soname-patched), `libonnxruntime-genai.so`+`-jni.so` (patched genai 0.14), `libtokenizers_c.a`, `libprotobuf-lite.a`, `libobjectbox-jni.so`, `libonnxruntime4j_jni.so` | ✅ yes — device binaries, host-OS-agnostic |
+| `jniLibs/x86_64/` | (part of ~1.2 GB) | same set for the emulator ABI | ⚠️ optional — upstream-**incomplete** (arm64 is the good one); a real device only needs arm64-v8a |
+| `aarLibs/onnxruntime-genai.aar` | ~40 MB | genai 0.14 AAR (CMake link input + clean upstream headers source) | ✅ yes |
+| `cpp/includes/` | ~24 MB | protobuf headers (`google/` + `protobuf/`) — CMake native-build inputs | ✅ yes |
+| `third_party/wheels/onnxruntime_training-1.23.0+cpu-cp312-cp312-linux_x86_64.whl` | ~632 MB | source-built ORT-training wheel | ❌ **NO** — `linux_x86_64` cp312 C-extension, **cannot load on macOS** (see §4) |
+
+Skip the `*.old.bak` / `*.stub.bak` files in `jniLibs`/`aarLibs` (dev cruft). **Do not move** the
+recreatable dirs: `.venv*`, `.venv-genai-spike/`, `build/`, `cache_dir/`, `.gradle`, `.cxx`,
+`onnx_models/`, `dist/`.
+
+Enumerate/verify the out-of-band set on this box before you copy:
+```bash
+git status --porcelain --ignored | grep '^!!' | grep -E 'jniLibs|aarLibs|cpp/includes|wheels/.*\.whl'
+# zip the movable ones (excludes the linux wheel + backups):
+cd android/MobileTransformersApp/MobileTransformers/src/main
+zip -r ~/mtf-native.zip jniLibs/arm64-v8a aarLibs/onnxruntime-genai.aar cpp/includes -x '*.bak'
+```
+On the Mac, unzip into the same relative paths. (Or re-provision from the sibling `../ORTTransformer`
+checkout, the same source these came from here.)
+
+**Gradle deps are NOT a move:** the W5 additions (OkHttp, WorkManager, kotlinx-coroutines, mockwebserver,
+androidx-test-runner) resolve from Maven Central over the network on first build — nothing to carry.
+
+---
+
+## 2. Prerequisites
+
+### Track A — Python only
+- macOS + [Homebrew](https://brew.sh); `uv` (`brew install uv`). `uv` fetches Python 3.10 (core/dev, mypy
+  target) + 3.12 (export) on demand from `uv.lock`.
+  ```bash
+  uv sync --frozen --group dev                       # core + dev; `make check` works
+  uv sync --extra export --python 3.12               # optimum inference export (host)
+  uv sync --extra train  --python 3.12               # torch/peft/safetensors (CPU) — #22, #35 local
+  uv sync --group genai-smoke --python 3.12          # onnxruntime-genai desktop (mmap/dual-engine spikes)
+  ```
+  None of these pull the Linux ORT-training wheel, so its absence is a non-issue for the host gate.
+
+### Track B — Full Android (recommended)
+Pinned toolchain (from `android/MobileTransformersApp`): **AGP 8.5.1, Kotlin 1.9.0, Gradle 8.7,
+compileSdk 34, minSdk 24, CMake 3.22.1, NDK r26.x, ObjectBox 4.3.0**.
+- **JDK 17** to run Gradle (`brew install --cask temurin@17`, or Android Studio's JBR); set `JAVA_HOME`.
+- **Android SDK** (Android Studio or cmdline-tools): `android-34`, `build-tools;34.x`, `platform-tools`
+  (gives `adb`), `cmake;3.22.1`, and the NDK AGP resolves. Set `ANDROID_HOME`/`ANDROID_SDK_ROOT`.
+- Drop the moved native deps (§1) into their paths — `aarLibs/` + `jniLibs/arm64-v8a` + `cpp/includes/`
+  are needed for `compileDebugKotlin` (types) and the arm64 native build in `assembleDebug`.
+- Verify: `JAVA_HOME=<jdk17> ./gradlew :MobileTransformers:testDebugUnitTest \
+  :MobileTransformers:compileDebugAndroidTestKotlin :MobileTransformers:assembleDebug \
+  -Pandroid.injected.build.abi=arm64-v8a`.
+
+---
+
+## 3. Running the device legs on Mac (the main remaining work for #1–#29)
+
+Everything for #1–#29 is written; a connected device + `adb` turns the boxes green. The inference+GenAI
+package builds entirely on the Mac (export profile); the train-capable package needs the ORT-training
+wheel (§4).
+
+```bash
+# inference+GenAI package (Mac-native) -> reshape -> adb push -> run instrumented suites:
+make device-package MODEL=HuggingFaceTB/SmolLM2-135M-Instruct
+make device-test        # FacadeLoadGenerateTest, DualEngineParityTest, ConversationResetTest, RagDeviceTest*
+```
+Instrumented classes `assumeTrue`-skip without a pushed package, so a device-less Mac still runs green.
+`*RagDeviceTest`/`TrainMergeGenerateTest` self-skip unless the package carries `embedding/`/`train/`.
+
+---
+
+## 4. The one hard macOS limitation — ORT-training
+
+`third_party/wheels/onnxruntime_training-…-linux_x86_64.whl` **will not install/load on macOS**. It gates
+the **training side**: `_build_training_stage` (#15), `tests/integration/test_training_stage_smoke.py`
+(#3/#15), `gen_artifacts`/`optimum_hf_export`, and `make device-package TRAIN=1`. Consequences on Mac:
+- **Works without it:** all core/dev + export + genai-smoke Python, every Android host build/test, the
+  inference+GenAI device package + its device legs (#9-load / #11 / #17 / #23 / #24), #22 PEFT
+  materialization (needs only the `train` extra = torch CPU, not ORT-training), #35 federated (torch CPU).
+- **Blocked until you rebuild the wheel for macOS-arm64:** the real train→merge→generate legs (#18/#19),
+  the train-capable package, and #34's real training run. Rebuild via
+  `scripts/build_ort_training_*.sh` + `third_party/onnxruntime/BUILD.md` (source build of onnxruntime-training
+  for `macosx_arm64` cp312), then point the `ort-training-local` group at the new wheel in `pyproject.toml`.
+  Big, but a one-time cost if training-on-Mac is required. Otherwise keep the training legs on this Linux box.
+
+---
+
+## 5. Remaining plans (not-yet-started) — all Mac-doable
+
+#1–#29 are code-complete; these are the genuinely-open plans for v1.0+ and Tier-3.
+
+| # | Plan | Impl + test on Mac | Device leg only | Track |
+| --- | --- | --- | --- | --- |
+| 30 | AAR / Maven publication | `assembleRelease` + `publishToMavenLocal` + external consumer-app build — **all no-device** | — (host-only) | B (+NDK) |
+| 31 | Docs set (finish) | `ARCHITECTURE.md`/`ANDROID_SDK.md` (contracts now locked by #23/#24) + CI link-check | — | A |
+| 32 | Versioning / license / release | SPDX headers, version-site sync, CHANGELOG, license expression | full release gate (CI+AAR+device) | A |
+| 33 | Encoder support | arch-registry entry + export config + host inference-export smoke | train step + Android smoke | A/B |
+| 34 | Training scheduler | `LinearLRScheduler.stateDict/loadFromState` (pure) + WorkManager worker + resume + JVM tests | Doze/thermal multi-chunk (+ real train → §4) | B |
+| 36 | Federated Android | JNI export/import + byte-identical codec golden vs #35 + privacy gate + JVM tests | real client/gateway run | B |
+| 37 | FunctionGemma | Gemma-3 arch entry + inference-graph export config + tool-call allowlist/validation + intents | train→tool-call→intent demo | A/B |
+
+**Flagship Mac plans:** #30 (AAR+consumer build, host-only), #31 docs, #34 scheduler state (pure logic +
+WorkManager, mirrors the #21 worker pattern), #36 codec golden (reuses #35's pinned serialization).
+
+---
+
+## 6. Verify commands (Mac)
+```bash
+make check                                              # Python: lint + typecheck + parity + tests
+uv run --extra export --python 3.12 mobiletransformers export --model <id> --output build/pkg --genai --dry-run
+# Track B (from android/MobileTransformersApp):
+JAVA_HOME=<jdk17> ./gradlew :MobileTransformers:testDebugUnitTest \
+  :MobileTransformers:compileDebugAndroidTestKotlin :app:compileDebugKotlin \
+  :MobileTransformers:assembleDebug -Pandroid.injected.build.abi=arm64-v8a
+# Device (connected + adb): make device-package MODEL=<id> && make device-test
+# Desktop GenAI/mmap invariants (genai-smoke): python -m spikes.mmap.base_blob_mmap_spike --dir build/pkg/variants/cpu-int4/inference
 ```
 
-## Out of reach on Mac (defer, write as skipped/device stubs)
-- Real **ORT training** (artifact gen / a train step) and real **on-device generate** — Linux/device.
-- **#10 / #12** — device RSS/symbol measurements (they *are* the experiment).
-- Any emulator/device instrumentation — `device.yml` (`workflow_dispatch` + nightly) is their harness.
-
-Nothing is committed by the assistant — **you** commit. Keep the "nothing committed" discipline.
+Out of reach on Mac without the wheel rebuild (§4): real ORT training-artifact gen / a train step, and the
+train-capable package. The #12 device RSS table (Gate 0.2) and any emulator/device instrumentation are
+device legs by nature. **Nothing is committed by the assistant — you commit.**

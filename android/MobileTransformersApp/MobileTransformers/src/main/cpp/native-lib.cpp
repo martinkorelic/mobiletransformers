@@ -183,7 +183,8 @@ extern "C" JNIEXPORT jlong JNICALL
  * @param env
  * @param inference_model_path
  * @param inference_model_name
- * @param load_merged_weights - Whether to load merged weights from ".../inference/merged"
+ * @param load_merged_weights - Whether to load merged weights as flat per-tensor external initializers
+ *        from ".../inference/" keyed by weight_handoff_map.json (#23; the /merged subdir is retired)
  * @return
  */
 Java_com_martinkorelic_mobiletransformers_ORTGeneratorNative_createInferenceSession(

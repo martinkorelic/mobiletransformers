@@ -7,7 +7,7 @@
 
 .PHONY: help setup setup-export setup-train setup-genai \
         lint format typecheck parity test test-smoke test-train check \
-        export-model package-model android-build build-aar publish-local docs clean-generated
+        export-model package-model android-build device-package device-test build-aar publish-local docs clean-generated
 
 # Overridable export knobs (used by `export-model`).
 MODEL   ?=
@@ -70,6 +70,12 @@ package-model:  ## Validate + assemble an existing build dir into a Hub package 
 # --- android / publish (bodies owned by #30; thin wrappers over Gradle + scripts/) --------------
 android-build:  ## gradle assembleDebug (SDK + sample app).
 	$(GRADLE) :MobileTransformers:assembleDebug :app:assembleDebug
+
+device-package:  ## MODEL=<hf-id> [VARIANT= TRAIN=1] -> export + adb push a real package for device tests (#1-29 W6).
+	MODEL=$(MODEL) scripts/device_package.sh
+
+device-test:  ## Run the instrumented device suites over the pushed package (skips w/o a device/package).
+	$(GRADLE) :MobileTransformers:connectedDebugAndroidTest
 
 build-aar:  ## Assemble the release AAR (#30 owns the script body).
 	scripts/android_build_aar.sh

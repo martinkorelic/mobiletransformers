@@ -1,6 +1,8 @@
 package com.martinkorelic.mobiletransformers
 
 import android.util.Log
+import com.martinkorelic.mobiletransformers.constants.SamplingMethod
+import com.martinkorelic.mobiletransformers.internal.runtime.HandoffPrecondition
 import com.martinkorelic.mobiletransformers.repository.GenerationCallback
 import com.martinkorelic.mobiletransformers.runtime.EngineCapabilities
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
@@ -14,17 +16,25 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
     private var inferenceModel : Long = 0
 
     // #11: the guaranteed engine floor. maxContextLength reflects the configured generation length.
+    // #23: supportsLoadMergedWeights now reflects the hardened handoff precondition for THIS model —
+    // it is a non-throwing presence query (schema + file existence, no hashing); the throwing,
+    // checksum-verifying gate lives in createInferenceModel below.
     override val capabilities: EngineCapabilities
         get() = EngineCapabilities(
             engine = InferenceEngine.NATIVE,
             supportsStreaming = true,
-            supportsLoadMergedWeights = true,
+            supportsLoadMergedWeights = HandoffPrecondition.mergedWeightsPresent(inferenceDir()),
             maxContextLength = _generationConfig.maxSequenceLength,
         )
+
+    private fun inferenceDir(): File = File("${cacheDir}/${_generationConfig.repoName}/inference")
 
     /** #11 [ModelRuntime.load]: open the Native session over `<cacheDir>/<repoName>/inference`. */
     override suspend fun load(cacheDir: String, config: ORTGenerationConfig) {
         generationConfig = config
+        // #23: a freshly loaded session starts a fresh conversation — clear any KV/attention/history
+        // state so a new session never inherits the previous conversation's prepend state.
+        resetConversation()
         createInferenceModel()
     }
 
@@ -60,14 +70,13 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
         }
 
         if (generationConfig.loadMergedWeights) {
-            // DECOMPOSE(#23): #9 retired the inference/merged subdir — merged tensors now overwrite the
-            // per-tensor <name>.bin in inference/ directly (see ORTTrainerNative.mergeExportSessionWeights).
-            // This load-side probe must migrate to "weight_handoff_map.json present + every
-            // externalDataLocation .bin exists with a matching .sha256"; that is #23's scope, not #9's.
-            // Check if the directory even exists in inferenceModelPath + "/merged"
-            val mergedWeightsDir = File("${cacheDir}/${generationConfig.repoName}/inference", "merged")
-            if (!mergedWeightsDir.exists() || !mergedWeightsDir.isDirectory) {
-                Log.w(LOG_TAG, "Merged weights directory does not exist: ${mergedWeightsDir.absolutePath}, disabling merged weights loading")
+            // #23: map-driven, fail-closed load precondition (replaces the retired inference/merged probe).
+            // #9 writes merged tensors as flat per-tensor <name>.bin in inference/, keyed by
+            // weight_handoff_map.json (+ sibling .sha256). loadMergedWeightsReady throws (naming the
+            // offending tensor) if the map is present but any .bin is missing or its checksum fails —
+            // no silent downgrade. An ABSENT map means nothing was merged: fall back to base weights.
+            if (!HandoffPrecondition.loadMergedWeightsReady(inferenceDir())) {
+                Log.w(LOG_TAG, "No weight_handoff_map.json in ${inferenceDir().absolutePath}; loading base weights")
                 generationConfig.loadMergedWeights = false
             }
         }
@@ -160,6 +169,8 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
 
             prefillStartMs = System.currentTimeMillis()
 
+            // #24: maxSequenceLength carries the public `maxNewTokens` (new tokens to emit). The exact
+            // stop-count of this inclusive bound is pinned by the device generation smoke.
             while (decoded <= generationArgs.maxSequenceLength) {
 
                 // Trim maximum tokens from beginning of the sequence if they go over the limit
@@ -288,8 +299,10 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
     }
 
     fun updateSamplingOptions(args : SamplingOptions) {
-        val methodMap = mapOf("greedy" to 0, "top_k" to 1, "top_p" to 2)
-        val methodInt = methodMap[args.method] ?: 0
+        // #24: single source for the native ordinal via SamplingMethod.nativeOrdinal (replaces the old
+        // methodMap). fromWire fails closed on an unknown method rather than silently defaulting to greedy.
+        // (topK is always passed explicitly here, so the C++ struct's top_k=50 default is never observed.)
+        val methodInt = SamplingMethod.fromWire(args.method).nativeOrdinal
         setSamplingConfig(inferenceModel, methodInt, args.temperature, args.topK, args.topP, args.seed)
     }
 

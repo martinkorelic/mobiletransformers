@@ -281,7 +281,8 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         // Assuming the training session has been saved prior to this
         ortTrainerNative?.destroySession(false)
 
-        val retriever = ORTRetriever(cacheDir, applicationContext, ragConfig)
+        // #27: honor the override config actually passed in (was previously ignoring ortArgs).
+        val retriever = ORTRetriever(cacheDir, applicationContext, ortArgs)
         retriever.createEmbeddingModel()
 
         return retriever
@@ -297,8 +298,9 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
             ortTokenizerNative = null
         }
 
-        // TODO: Override RAG config if needed
-        //val finalGenConfig = generationConfig.overrideConfig(generationArgs)
+        // #27: apply the caller's RAG config override (falls back to the loaded field config).
+        val finalRagConfig = ragArgs ?: ragConfig
+        ragConfig = finalRagConfig
 
         // If the model was in training state
         if (llmState == LLMState.Training) {
@@ -317,7 +319,7 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         return coroutineScope.launch {
             try {
                 withContext(Dispatchers.Default) {
-                    ortRetriever = makeOrtRag(ragConfig)
+                    ortRetriever = makeOrtRag(finalRagConfig)
                 }
             } catch (e: Exception) {
                 Log.e(LOG_TAG, "Retriever session failed to create: ${e.message}")

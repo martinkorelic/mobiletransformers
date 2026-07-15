@@ -123,6 +123,17 @@ exclude = "(^|/)(research|trainer|artifact|inference|tools|peft_models|database|
 module = "mobiletransformers.*"
 disallow_untyped_defs = true
 
+[[tool.mypy.overrides]]
+# The legacy roots are outside the gate (see `exclude`), but `src` lazy-imports a few of them (e.g. the
+# #15 training stage wires trainer/artifact/inference builders). `follow_imports = skip` stops mypy from
+# descending into their (ratcheted, un-gated) source when a checked module imports them.
+module = [
+  "artifact.*", "trainer.*", "inference.*", "tools.*",
+  "peft_models.*", "research.*", "database.*", "evaluation.*",
+]
+follow_imports = "skip"
+ignore_errors = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The ORT-training integration smoke self-skips (importorskip) unless the ort-training-local

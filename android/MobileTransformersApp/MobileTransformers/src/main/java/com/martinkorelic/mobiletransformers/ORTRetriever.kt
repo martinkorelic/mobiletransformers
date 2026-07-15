@@ -1,7 +1,11 @@
 package com.martinkorelic.mobiletransformers
 
 import android.content.Context
+import com.martinkorelic.mobiletransformers.rag.DimensionRegistry
+import com.martinkorelic.mobiletransformers.rag.IngestionPipeline
+import com.martinkorelic.mobiletransformers.rag.IngestionProgress
 import com.martinkorelic.mobiletransformers.rag.ObjectBoxVectorStore
+import com.martinkorelic.mobiletransformers.rag.RagDocument
 import com.martinkorelic.mobiletransformers.rag.VectorStore
 import com.martinkorelic.mobiletransformers.repository.RagCallback
 
@@ -105,7 +109,8 @@ class ORTRetriever(val cacheDir : String, val applicationContext: Context, var _
 
                         val queryStartTimeMs = System.currentTimeMillis()
                         // Retrieval routes through the VectorStore boundary (#25), not ObjectBox directly.
-                        val documents = vectorStore()?.search(embeddings, ragArgs.topK)
+                        // #27: honor the configured similarity floor.
+                        val documents = vectorStore()?.search(embeddings, ragArgs.topK, ragArgs.minScore)
                         val queryTimeMs = System.currentTimeMillis() - queryStartTimeMs
 
                         ragCallback?.onQueryResults(
@@ -175,9 +180,46 @@ class ORTRetriever(val cacheDir : String, val applicationContext: Context, var _
         return Triple(inputIds, attentionMask, tokenTypeIds)
     }
 
-    suspend fun ingestData() {
-        // TODO: Implement ingesting text data for now from filesystem (.md, .txt,...)
-        // TODO: Simply chunking
+    /**
+     * #26: chunk → embed → store the given [documents]. Fails closed on an unsupported embedding
+     * dimension before any work; binds the real on-device embedder (tokenizer + [performEmbeddingStep])
+     * into the pure [IngestionPipeline]. Returns the number of chunks inserted.
+     */
+    suspend fun ingestData(documents: List<RagDocument>, progress: IngestionProgress? = null): Int {
+        DimensionRegistry.requireSupported(ragConfig.embeddingDimension)
+        val store = vectorStore()
+            ?: throw IllegalStateException("vector store not initialized; call createEmbeddingModel() first")
+        val tokenizer = embeddingTokenizer
+            ?: throw IllegalStateException("embedding tokenizer not initialized")
+
+        return IngestionPipeline.ingest(
+            documents = documents,
+            chunkSize = ragConfig.chunkSize,
+            chunkOverlap = ragConfig.chunkOverlap,
+            store = store,
+            progress = progress,
+            embed = { chunk ->
+                val tokens = tokenizer.tokenize(chunk, prependCls = true, appendSep = true, dropZero = true)
+                if (tokens == null) {
+                    null
+                } else {
+                    val (inputIds, attentionMask, tokenTypeIds) = prepareEmbeddingInputs(
+                        inputTokens = tokens,
+                        maxSequenceLength = tokenizer.maximumTokenLength ?: 512,
+                        padTokenId = tokenizer.padToken ?: 0,
+                    )
+                    performEmbeddingStep(
+                        session = embeddingModel,
+                        inputIds = inputIds,
+                        attentionMask = attentionMask,
+                        tokenTypeIds = tokenTypeIds,
+                        batchSize = 1,
+                        sequenceLength = inputIds.size,
+                        embeddingDim = ragConfig.embeddingDimension,
+                    )
+                }
+            },
+        )
     }
 
     suspend fun destroyEmbeddingModel() {

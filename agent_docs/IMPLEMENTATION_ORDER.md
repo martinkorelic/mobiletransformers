@@ -59,27 +59,27 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | [ ] | 9 | `01_code_plans/01_unified_merger_and_external_data_export.md` | **Dual-engine core** + full merger unification | 6, 7, 8 | *(code-complete 2026-07-14: Python A/B/C tested, C++ D/E compile+link-verified on arm64-v8a; box stays open pending the manual on-device parity/atomic/load-smoke tests — see #9 self-check)* |
 | [x] | 10 | `01_code_plans/02_genai_external_data_swap_spike.md` | Feeds Gate 0.1 | 9 | *(2026-07-15: **Gate 0.1 = ADOPT GenAI.** F2 validated — external-data swap changes GenAI output on device (token/fp differ) + desktop; symbol/fork-only confirmed; RSS measured (mmap). The one blocker — ORT-runtime coexistence (genai needs stock ORT ≥1.26, Native needs training ORT 1.23) — **resolved** via `libort_gen.so` distinct-soname separation, verified both coexist on device. Cross-engine #1/#4 (same package under BOTH engines) ride with #11's dual-engine smoke + a real #9 package. See `spikes/genai_external_swap/README.md`.)* |
 | [ ] | 11 | `01_code_plans/03_inference_engine_abstraction_native_and_genai.md` | Engine selection | 10 | *(code-complete 2026-07-15: `runtime/ModelRuntime.kt` (interface + `EngineCapabilities` + `EXECUTION_PROVIDER_REGISTRY` F3 + `GenAiSupport` + `ModelRuntimeFactory` pure-select + device-create w/ transparent Native fallback); `ORTGeneratorGenAI.kt` + `cpp/genai_runtime.cpp` (streaming, callback parity); `ORTGeneratorNative` adapted to `ModelRuntime`; `engine` field in `ORTGenerationConfig`; `LLMRepository` wired via factory; dead `ORTGenAINative.kt`+`onnx-genai.cpp` deleted. Compiles+links arm64, **48 JVM tests**, device build loads. Box open pending the dual-engine same-folder device smoke + streaming-parity harness — need a real #9 package.)* |
-| [ ] | 12 | `01_code_plans/04_memory_mapping_experiments.md` | Optimizes 9–11 (non-blocking) | 9 |
+| [ ] | 12 | `01_code_plans/04_memory_mapping_experiments.md` | Optimizes 9–11 (non-blocking) | 9 | *(code-complete 2026-07-15: `cpp/mem_probe.h` (RSS) + `cpp/mmap_tensor.h` (RAII) + a default-off `MTF_MMAP_WEIGHTS` zero-copy branch in `session_cache.h` (copy path stays the shipping default, #23 unaffected); `spikes/mmap/{measure_rss(re-export),base_blob_mmap_spike}.py` (desktop byte-identical correctness invariant). arm64 links. Device 4-point RSS table = the manual Gate 0.2 leg.)* |
 | [x] | 13 | `00_code_plans/06_manifest_first_package_and_cache_bridge.md` | Package contract | 8, 9 | *(done 2026-07-14: Python `artifacts/manifest.py` + Kotlin `packages/` cache-bridge (6 classes), JVM-tested + `compileDebugKotlin`; only the on-device generate smoke deferred)* |
 | [x] | 14 | `02_code_plans/03_hub_model_package_format.md` | Hub repo shape | 13 | *(done 2026-07-14: `hub/package_format.py` — `sanitize_repo_id`, `build_manifest`, tiny_package fixture; no device)* |
-| [x] | 15 | `02_code_plans/05_one_command_export_cli.md` | Wraps 7–9 + 13 *(checkpoint: export E2E)* | 7, 9, 13 | *(done 2026-07-14: `export/pipeline.py` + `cli export/push`; dry-run + assemble→validate checkpoint automated; real full-model export env-gated, not device)* |
+| [x] | 15 | `02_code_plans/05_one_command_export_cli.md` | Wraps 7–9 + 13 *(checkpoint: export E2E)* | 7, 9, 13 | *(done 2026-07-14; 2026-07-15: `_full_export` real inference+GenAI leg implemented (stage-gated) + on-box verified — SmolLM2-135M → #13-valid package, GenAI loads it; training stage staged for the ort-training-local run — see #15 self-check)* |
 | [x] | 16 | `00_code_plans/04_android_gradle_rename_migration.md` | Isolated, verified rename | — | *(done 2026-07-14: **full removal / option B** — Kotlin+native+JNI all renamed off `ortmobile`; supersedes the doc's option-A. Compile+link-verified arm64-v8a, `compileDebugKotlin` + `make parity` green.)* |
 | [ ] | 17 | `00_code_plans/05_android_facade_foundation.md` | Public SDK facade *(checkpoint: load→generate)* | 13, 16 | *(code-complete 2026-07-15: `MobileTransformers.fromPretrained`/`MobileTransformerModel`, public `config/*` + `runtime/{ModelSession,RuntimeCapabilities,Results}`, `ConfigMappers`, `RepositoryBackedModelSession`, `ModelFeature`, exception stubs; 13 JVM tests (config round-trip, feature/engine, variant-select, facade delegation). Box open pending the device load→generate leg. `InferenceEngine` placeholder retired by #11.)* |
 | [ ] | 18 | `00_code_plans/08_training_lifecycle_and_checkpoint_contracts.md` | Job/progress/checkpoint API | 17 | *(code-complete 2026-07-15: `training/` `TrainingJob`/`TrainingStatus`/`TrainingEvent`/`CheckpointInfo`/`TrainingJobManager`(+`TrainingJobSpec`) + `TrainingEventAdapter`; `ORTTrainerNative` cooperative `cancelRequested` (no format change); `TrainingResult` enriched. 5 JVM tests (event mapping, checkpoint round-trip). Box open pending device resume/summary/train→merge→generate legs.)* |
-| [ ] | 19 | `02_code_plans/01_hf_style_kotlin_facade.md` | `fromPretrained`/train/merge/generate *(checkpoint: train→merge→generate)* | 11, 17 |
+| [ ] | 19 | `02_code_plans/01_hf_style_kotlin_facade.md` | `fromPretrained`/train/merge/generate *(checkpoint: train→merge→generate)* | 11, 17 | *(code-complete 2026-07-15: DELTA over #17 — `applyPeft`/`pushAdapter` + public callbacks + full sealed exception hierarchy + sealed `PeftConfig`/`PeftSupport` + engine/merge-driven `ConfigMappers` + construction-time feature/GenAI gates; 87 SDK JVM tests + sample-app compile green; box open pending the device train→merge→generate workflow — see #19 self-check)* |
 | [x] | 20 | `02_code_plans/02_optimum_support_matrix.md` | Reporting layer | 7 | *(done 2026-07-14: `support/` package (statuses/models/matrix) + `support-matrix` CLI; inherited statuses, probe ingestion, filtered docs; detection injectable/mocked in CI, ready-statuses read device probes when present)* |
-| [x] | 21 | `02_code_plans/04_hub_pull_and_cache_flow.md` | Python pull first, Android downloader next *(checkpoint: pull→load)* | 13, 14 | *(done 2026-07-14: `hub/{variant_select,pull}.py` + `cli pull`/`install-package`; pull→install→sha256 automated over the fixture; Android downloader + device load deferred)* |
-| [x] | 22 | `02_code_plans/06_adapter_pushback.md` | Last Tier-1 piece | 9, 14 | *(done 2026-07-14; 2026-07-15: `materialize_peft_weights` implemented (CheckpointState A/B factors → `adapter_model.safetensors`, injectable factor reader) + tested under the `train` profile. On-device upload remains device-gated.)* |
+| [x] | 21 | `02_code_plans/04_hub_pull_and_cache_flow.md` | Python pull first, Android downloader next *(checkpoint: pull→load)* | 13, 14 | *(done 2026-07-14: Python `hub/{variant_select,pull}.py`. 2026-07-15: **Android downloader** — `hub/{HubResolver,DownloadPlanner,PackageDownloader,HubDownloader,PackageDownloadWorker}` (OkHttp + WorkManager, reuses `packages/` verify/select/install), `fromPretrained` triggers pull-then-load; JVM/MockWebServer tests. WorkManager scheduling + real network = device leg.)* |
+| [x] | 22 | `02_code_plans/06_adapter_pushback.md` | Last Tier-1 piece | 9, 14 | *(done 2026-07-14; 2026-07-15 Python `materialize_peft_weights`. 2026-07-15: **Android `hub/AdapterUploader`** — cache→AdapterPackage + Mode-1/2 gate + privacy-gated card (fail-closed sections), default-off `BuildConfig.ADAPTER_UPLOAD_ENABLED`; fills the `pushAdapter` stub. JVM tests. Real authenticated upload + checkpoint factor read = device leg.)* |
 
 ### Tier 2 — Inference & RAG (Phase 7)
 
 | Done | # | Plan | Why here | Prerequisites |
 | --- | --- | --- | --- | --- |
-| [ ] | 23 | `03_code_plans/01_inference_handoff_alignment_and_native_hardening.md` | Wire Native into `ModelRuntime`, retire `inference/merged/` | 11, 9, 8 |
-| [ ] | 24 | `03_code_plans/02_sampling_and_streaming_public_config.md` | HF-aligned generation config (enum-typed) + callback parity | 23, 19 |
+| [ ] | 23 | `03_code_plans/01_inference_handoff_alignment_and_native_hardening.md` | Wire Native into `ModelRuntime`, retire `inference/merged/` | 11, 9, 8 | *(code-complete 2026-07-15: fail-closed map-driven load — Kotlin `HandoffPrecondition` + shared C++ `handoff_io.h`/`session_cache.h`; conversation-reset fix; host JVM tests + arm64 link green; box open pending device load/generate/reset smokes — see #23 self-check)* |
+| [ ] | 24 | `03_code_plans/02_sampling_and_streaming_public_config.md` | HF-aligned generation config (enum-typed) + callback parity | 23, 19 | *(code-complete 2026-07-15: `SamplingMethod.nativeOrdinal` + `methodMap` retired + `maxNewTokens` lock; host JVM tests + enum parity green; box open pending cross-engine callback-parity device leg)* |
 | [x] | 25 | `03_code_plans/03_vector_store_boundary_and_inmemory.md` | Testable `VectorStore`; `SearchType` enum; dynamic dimension registry | 17 | *(done 2026-07-14: `rag/` VectorStore boundary + ObjectBoxVectorStore + test-only InMemoryVectorStore + DimensionRegistry + VectorStoreRegistry (F4); `ORTRetriever` routes through it; `RagResult`→`RagMatch`; 23 JVM tests + `compileDebugKotlin` (both modules) green. #17 prereq nominal — wraps existing classes, no facade code. No device.)*
-| [ ] | 26 | `03_code_plans/04_rag_ingestion_and_chunking.md` | Implement `ingestData()` | 25, 23 |
-| [ ] | 27 | `03_code_plans/05_rag_config_and_grounded_generation.md` | Public `RagConfig` + grounded flow *(checkpoint: ingest→retrieve→generate)* | 26, 24, 21 |
+| [ ] | 26 | `03_code_plans/04_rag_ingestion_and_chunking.md` | Implement `ingestData()` | 25, 23 | *(code-complete 2026-07-15: `rag/DocumentChunker` + `DocumentSource`/`DOCUMENT_LOADER_REGISTRY` (F3, txt/md/jsonl; PDF/Word rejected) + `IngestionProgress` + pure `IngestionPipeline` seam; `ORTRetriever.ingestData` binds the real embedder; `RagRepository.ingest` + facade `ingest`. JVM tests (chunker/loader/pipeline over InMemoryVectorStore). Device ingest smoke = `RagDeviceTest`.)* |
+| [ ] | 27 | `03_code_plans/05_rag_config_and_grounded_generation.md` | Public `RagConfig` + grounded flow *(checkpoint: ingest→retrieve→generate)* | 26, 24, 21 | *(code-complete 2026-07-15: `rag/PromptAssembler` + `GroundedResult` + facade `generateWithRag` (retrieve→assemble→generate, inspectable prompt); `RagConfig`/`ORTRagConfig` +`minScore`/`indexingMode`, new `IndexingMode` enum (Python+Kotlin+parity), F7 dynamic fail-closed; fixed `makeOrtRag`/`prepareRetriever` override + `minScore` threading. JVM tests (mapper/prompt/grounded flow). Device checkpoint = `RagDeviceTest`.)* |
 
 ### Cross-cutting — Release modernization (Phase 8; runs alongside, gated)
 
@@ -192,7 +192,7 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 > `torch.onnx` frontend body only if a future optimum removes `export()`.
 
 ### #8 — Weight handoff map & tensor codec (`00_code_plans/07`)
-- [x] Is `weight_handoff_map.json` the sole source of tensor identity (no hard-coded `replace_prefix` on the load side)? *(true for the Python contract; the C++ load-side rewrite of `session_cache.h`/`weight_merger.cpp:904` rides with #23/#9)*
+- [x] Is `weight_handoff_map.json` the sole source of tensor identity (no hard-coded `replace_prefix` on the load side)? *(Python contract + C++ both sides: #23 landed the load-side rewrite — `session_cache.h` now derives names from `inferenceInitializerNames[role]` via the shared `handoff_io.h` reader, no `<dirname>.<filestem>` reconstruction)*
 - [x] Does the codec resolve names/dtype/shape/order deterministically from the map + registries?
 - [x] Are `schemaVersion` + `minReaderVersion` present and is an unsupported `handoffMode` fail-closed (F1/F7)?
 - [x] Is the quantized triple (weight/scale/zero_point) naming inconsistency resolved and regression-tested?
@@ -231,7 +231,7 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 - **Offline emit driver (C):** `artifact/merger.py` reduced to `emit_merger_models` (registry-driven, descriptive filenames); the four factories + the `onnx_builder.py:628-641` `peft_method == "lora"/"mars"` dispatch are gone.
 - **Device save (D):** `weight_merger.cpp` rewritten — `load_handoff_map` + a C++ `check_compat` mirror; `load_merger_models` resolves filenames from `mergerModels`; `save_merged_parameters` writes raw tensor bytes to `externalDataLocation[role]` (atomic temp→rename + `.sha256`), deleting the `inference_name` string-rewrite. **Compiles + links on arm64-v8a** (`libortmobile.so` built); x86_64 link is blocked only by an incomplete vendored `jniLibs/x86_64` in the source repo, not by code.
 - **Kotlin caller (E):** `ORTTrainerNative.mergeExportSessionWeights` points merge at the unified `inference/` dir (retires `inference/merged`); `compileDebugKotlin` passes.
-- **Outstanding (manual/device + #23):** on-device atomic-overwrite-under-kill, offline-vs-device byte-identical `.bin` parity, native load-and-generate smoke. The native **load** side (`ORTGeneratorNative.loadMergedWeights` / `session_cache.h`) still probes `inference/merged` — its migration to the handoff map is **#23**, flagged with `DECOMPOSE(#23)` at both sites.
+- **Outstanding (manual/device):** on-device atomic-overwrite-under-kill, offline-vs-device byte-identical `.bin` parity, native load-and-generate smoke. The native **load** side migration is **DONE (#23, 2026-07-15)** — `ORTGeneratorNative` + `session_cache.h` now consume the handoff map fail-closed (map-driven flat `<name>.bin`, no `inference/merged` probe); a device build now sees #9's in-place merges.
 - **Env note:** the native build needs the untracked vendored deps (`cpp/includes/google` protobuf headers, `jniLibs/`, `aarLibs/`) — all `.gitignore`d (aarLibs added this session); they were provisioned locally from the sibling `../ORTTransformer` checkout for the compile-check.
 
 ### #10 — GenAI external-data swap spike (`01_code_plans/02`)
@@ -272,8 +272,9 @@ ride with #11's dual-engine smoke + a real #9 package.
 - [x] Are checksums + per-file sizes present and schema-versioned? *(`build_manifest` stream-hashes `sha256`/`fileSizes`; per-variant `checksums.json`; `schemaVersion`/`minReaderVersion`)*
 
 ### #15 — One-command export CLI (`02_code_plans/05`) · checkpoint
-**Done 2026-07-14 (Python; automated checkpoint leg, no device).** `export/pipeline.py` (`plan_export`/`export_package`/`assemble_package`) + `export/model_card.py` + `cli/export.py` + `cli/push.py` wired into the dispatcher.
-- [x] Does one command go HF model → validated device-ready package? *(dry-run plans it; `assemble_package` reshapes stage outputs → #14 tree → validates against #13. The real full-model export (`create_model`/`gen_artifacts`) is **env-gated** (optimum + ORT-training profiles), not run in CI — this is env-gated, not device-gated)*
+**Done 2026-07-14 (checkpoint leg); real `_full_export` inference leg landed 2026-07-15.** `export/pipeline.py` (`plan_export`/`export_package`/`assemble_package`) + `export/model_card.py` + `cli/export.py` + `cli/push.py` wired into the dispatcher.
+- **`_full_export` (2026-07-15):** now a **stage-gated orchestrator** (inference | training | embedding), injectable builders, effective features/engines computed from what's on disk (never claims a missing subtree). The **inference stage is real** (`export` profile): optimum `export_inference` → normalized `model.onnx`/`model.onnx_data` + tokenizer + `generation_config.json`, an empty (all-frozen) `weight_handoff_map.json`, and a self-contained `genai_config.json` built from HF `AutoConfig` + the fixed canonical IO scheme (the vendored `inference.builder` can't import under `export` — it needs an onnxruntime symbol absent there). **Verified on-box:** `mobiletransformers export --model HuggingFaceTB/SmolLM2-135M-Instruct --output build/pkg --genai` → `#13` manifest validates (`features=[core,inference,genai]`), and GenAI `OgaCreateModel` loads the same `inference/` dir and produces logits (`desktop_spike`, genai-smoke). CI: `tests/export/test_full_export_orchestration.py` (orchestration over injected fake builders). The **training stage** (`gen_artifacts` + `export_inference_package` trainable split/handoff map) was **implemented 2026-07-15** (was a seam): it runs under a separate `ort-training-local` invocation into the same `--output`, writes `train/` + overwrites the empty handoff map with the real trainable split; `_effective_features` unions on-disk state so the training-only re-assembly keeps `inference`/`genai`. Env-gated `tests/integration/test_training_stage_smoke.py` covers the `gen_artifacts` leg; the full `optimum_hf_export` real-model run is the `make device-package TRAIN=1` leg. This unblocks #19 train→merge→generate.
+- [x] Does one command go HF model → validated device-ready package? *(dry-run plans it; `assemble_package` reshapes stage outputs → #14 tree → validates against #13. Real inference+GenAI export on-box verified; the training stage is implemented (env-gated smoke) + produced via the two-profile `make device-package TRAIN=1` run)*
 - [x] Does it delegate to existing modules (no reimplementation), with CLI > env > YAML > default overlay? *(reuses #7 discovery, #9 `export_inference_package`, `build_merger_model`, `build_manifest`)*
 - [x] Does the **export E2E workflow** test pass on a tiny model end to end? *(automated leg over the fixture stub → validates against #13; real-tiny-model run is the env-gated manual leg)*
 
@@ -307,9 +308,26 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 **Code-complete 2026-07-15.** 5 JVM tests. `TrainingResult` (the #17 type) enriched with `checkpoint`/`summary`. Box open pending the device resume/summary/train→merge→generate manual legs.
 
 ### #19 — HF-style Kotlin facade (`02_code_plans/01`) · checkpoint
-- [ ] Do `applyPeft`/`train`/`merge`/`generate`/`retrieve` map cleanly onto existing repositories?
-- [ ] Are public config names HF-aligned and mapped to internal config (mapping table present)?
-- [ ] Does the **train→merge→generate** workflow (device-manual) pass end to end?
+**Code-complete 2026-07-15 (host-verified; box open pending the device workflow).** DELTA over #17:
+`MobileTransformerModel` gained `applyPeft`/`pushAdapter` + public `callback:` params; the full sealed
+exception hierarchy landed in `MobileTransformersException.kt` (`PeftMismatch`/`FeatureNotInstalled`/
+`EngineUnavailable`/`NotImplementedFeature` + the #17 base/`ModelNotInstalled`/`MissingArtifact`); flat
+`PeftConfig` → sealed `config/PeftConfig.kt` (`Lora`/`MarsOpt0/1`/`MarsQuantized`) with pure
+`internal/config/PeftSupport.kt` taxonomy+validation; public `TrainCallback`/`GenerateCallback`/
+`RetrieveCallback` + payloads mapped 1:1 from the repository callbacks (streaming = callback, tokens
+forwarded while accumulated); `ConfigMappers` drives `type` from the engine + `loadMergedWeights` from
+merge state and adds `DatasetConfig.toOrt()`; `fromPretrained` adds construction-time feature-gate +
+GenAI-config gate; `pushAdapter` is a `NotImplementedFeatureException` stub (rides #22). `PeftMappingTest`
+/`ConfigMappingDeltaTest`/`ExceptionMessageTest`/updated `FacadeDelegationTest` (host JVM) green; sample
+app still compiles.
+- [x] Do `applyPeft`/`train`/`merge`/`generate`/`retrieve` map cleanly onto existing repositories? *(RepositoryBackedModelSession delegates all five; applyPeft validates via PeftSupport)*
+- [x] Are public config names HF-aligned and mapped to internal config (mapping table present)? *(ConfigMappers + PeftSupport taxonomy; delta tests assert engine→type, merge→loadMergedWeights, dataset, sampling)*
+- [ ] Does the **train→merge→generate** workflow (device-manual) pass end to end? *(device leg — merged output diverges from pre-train baseline)*
+> Notes: manifest carries no `peftMethods` — PEFT support is derived from `train/training_config.json`
+> alone (Gson, testable); GenAI availability is a `fromPretrained` file check (no new `LLMRepository`
+> flag). `compat/LegacyAliases.kt` skipped: #16 fully retired the `ortmobile` brand, so there are no
+> consumers to alias. Sample-app ViewModel migration to the facade handle deferred (app builds unchanged;
+> facade is additive).
 
 ### #20 — Optimum support matrix (`02_code_plans/02`)
 **Done 2026-07-14 (Python, no device).** `support/{statuses,models,matrix}.py` + `cli support-matrix`. Detection injectable (mocked in CI); the three ready-statuses read a device/CI probe file and degrade to `false`+blocker when absent.
@@ -328,13 +346,32 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 - [x] Is Android upload gated / disabled by default with a privacy warning? *(card carries the bold privacy warning, asserted before upload; on-device `AdapterUploader.kt` is the deferred, gated device leg — default path is device→desktop→`push-adapter`)*
 
 ### #23 — Inference handoff alignment & native hardening (`03_code_plans/01`)
-- [ ] Does Native implement `ModelRuntime` with map-driven, **fail-closed** external-initializer load?
-- [ ] Are there zero `inference/merged/` references left, and the dead GenAI stubs deleted?
-- [ ] Is the conversation-state prepend bug fixed with a reset test?
+**Code-complete 2026-07-15 (Kotlin + C++ host-verified; box open pending device legs).** New
+`internal/runtime/HandoffPrecondition.kt` (fail-closed, map-driven merged-weight gate over the #9
+on-disk contract — `weight_handoff_map.json` + flat `<name>.bin` + map-`sha256`/sibling-`.sha256`) +
+`packages/WeightHandoffMap.kt` (Gson read model) wired into `ORTGeneratorNative.createInferenceModel`
+(retired the `inference/merged` probe) and `EngineCapabilities.supportsLoadMergedWeights`. C++: new shared
+`cpp/handoff_io.h` (ONE reader — `HandoffEntry` + `load_handoff_entries` + `check_compat`, used by both
+`weight_merger.cpp` and `session_cache.h`); `WeightSessionCache::init` rewritten to load flat `<name>.bin`
+keyed by `inferenceInitializerNames[role]` (no `<dirname>.<filestem>` reconstruction) with dtype/shape
+fail-closed validation before `AddExternalInitializers`. Conversation-reset prepend bug fixed in
+`ORTConversationState.addAssistantMessage` (advance by rendered content offset, not decoded length);
+`resetConversation()` now runs on `load()`. `HandoffPreconditionTest` + `ORTConversationStateTest` +
+`NativeLoadRegressionTest` (host JVM) green; arm64 AAR links.
+- [x] Does Native implement `ModelRuntime` with map-driven, **fail-closed** external-initializer load? *(HandoffPrecondition gate + C++ `session_cache.h` map-driven load; both fail closed naming the tensor)*
+- [x] Are there zero `inference/merged/` references left, and the dead GenAI stubs deleted? *(grep regression test `NativeLoadRegressionTest`; `/merged` gone from both load sides; `ORTGenAINative.kt`/`onnx-genai.cpp` stay deleted)*
+- [x] Is the conversation-state prepend bug fixed with a reset test? *(rendered-offset fix + `resetConversation()` on load; `ORTConversationStateTest` covers reset — the two-prompt device smoke is the deferred leg)*
+- [ ] **Device (deferred):** map-driven load-and-generate over a real #9 package; two-prompt no-leak smoke; train→merge→generate reflecting merged weights.
 
 ### #24 — Sampling & streaming public config (`03_code_plans/02`)
-- [ ] Are public sampling names HF-aligned (`SamplingMethod` enum) and mapped to internal with exact defaults?
-- [ ] Is the callback sequence identical across engines (parity)?
+**Code-complete 2026-07-15 (host-verified; box open pending the cross-engine parity device leg).**
+`SamplingMethod` gained `nativeOrdinal` (as a `when`, not a constructor arg — keeps enum parity intact)
+matching the C++ `sampling.h` enum; `ORTGeneratorNative.updateSamplingOptions` dropped the `methodMap`
+magic for `SamplingMethod.fromWire(...).nativeOrdinal` (fail-closed on unknown, no silent greedy);
+`maxNewTokens → maxSequenceLength` locked (+ generation-loop comment); `DECOMPOSE(#24)` retired.
+`SamplingMappingTest` (host JVM) + enum parity green.
+- [x] Are public sampling names HF-aligned (`SamplingMethod` enum) and mapped to internal with exact defaults? *(nativeOrdinal 0/1/2; `SamplingConfig`/`GenerationConfig` map via `toOrt`; defaults round-trip in ConfigMapperTest)*
+- [ ] Is the callback sequence identical across engines (parity)? *(the public callback surface + Native sequence are in place; the Native-vs-GenAI ordered-event assertion needs a real #9 dual-engine package — device leg, shared with #11)*
 
 ### #25 — Vector store boundary & in-memory test (`03_code_plans/03`)
 **Done 2026-07-14 (Kotlin, JVM-tested, no device).** New `com.martinkorelic.mobiletransformers.rag`: `VectorStore` (+ `RagDocument`/`RagMatch`), `ObjectBoxVectorStore` (wraps `ORTVectorDatabase`, preserves COSINE / `1 - distance` / `minScore` / embedding-strip / text path), test-only `InMemoryVectorStore`, `DimensionRegistry` (single declared source; `ORTVectorDatabase.SUPPORTED_DIMENSIONS` delegates to it), `VectorStoreRegistry` (F4, `objectbox` default). `ORTRetriever.query` routes through the boundary; `RagResult.documents` migrated `List<Pair<VectorEntityInterface,Double>>` → `List<RagMatch>` (consumer `InferenceViewModel` updated). `compileDebugKotlin` (`:MobileTransformers` + `:app`) + 23 JVM tests green.

@@ -2,6 +2,7 @@ package com.martinkorelic.mobiletransformers.config
 
 import com.martinkorelic.mobiletransformers.constants.CoreConfigId
 import com.martinkorelic.mobiletransformers.constants.ExecutionProvider
+import com.martinkorelic.mobiletransformers.constants.IndexingMode
 import com.martinkorelic.mobiletransformers.constants.MemoryConfigId
 import com.martinkorelic.mobiletransformers.constants.SamplingMethod
 import com.martinkorelic.mobiletransformers.constants.SchedulerType
@@ -24,9 +25,9 @@ data class DeviceConfig(
 )
 
 /**
- * Sampling configuration. DECOMPOSE(#24): `03_code_plans/02` owns the final `SamplingConfig(method, …)`
- * parity/mapping; this is the foundation shape the facade needs now. Do not introduce a competing sealed
- * `Sampling` class.
+ * Sampling configuration (#24 locked the HF-aligned names + native mapping). `method` maps to the native
+ * sampler via [com.martinkorelic.mobiletransformers.constants.SamplingMethod.nativeOrdinal]; wire strings
+ * are the shared #6 enum values. Do not introduce a competing sealed `Sampling` class.
  */
 data class SamplingConfig(
     val method: SamplingMethod = SamplingMethod.GREEDY,
@@ -62,27 +63,29 @@ data class GenerationConfig(
     val device: DeviceConfig = DeviceConfig(),
 )
 
-/** Retrieval configuration. Maps 1:1 to the internal `ORTRagConfig`. */
+/**
+ * Retrieval configuration (#25/#27). Maps to the internal `ORTRagConfig`. `similarityMetric` is fixed to
+ * COSINE by the ObjectBox backing store and is exposed read-only (not a settable knob). `indexingMode`
+ * `DYNAMIC` is a fail-closed stub in v1 (F7).
+ */
 data class RagConfig(
     val topK: Int = 10,
     val searchType: SearchType = SearchType.SEMANTIC,
     val embeddingDimension: Int = 256,
+    val minScore: Double = 0.0,
+    val indexingMode: IndexingMode = IndexingMode.PRECOMPUTE,
+    val embeddingRepoId: String = "model",
+    val embeddingModelFile: String = "embedding_model",
     val chunkSize: Int = 512,
     val chunkOverlap: Int = 50,
     val maxTextLength: Int = 1024,
     val device: DeviceConfig = DeviceConfig(),
-)
+) {
+    /** Read-only: the on-device vector store uses cosine similarity; not configurable. */
+    val similarityMetric: String get() = "COSINE"
+}
 
-/**
- * PEFT selection (LoRA/MARS trainable-tensor selection). First pass is metadata-only — it folds into the
- * training config / handoff metadata; #19 wires `applyPeft`.
- */
-data class PeftConfig(
-    val method: String = "lora",
-    val rank: Int = 8,
-    val alpha: Int = 16,
-    val targetModules: List<String> = emptyList(),
-)
+// PEFT selection now lives in config/PeftConfig.kt as a sealed class (#19 wires `applyPeft`).
 
 /** Local dataset description; mapped onto the existing `ORTDataCurator`/`DatasetOptions` loader. */
 data class DatasetConfig(

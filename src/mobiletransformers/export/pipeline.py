@@ -240,13 +240,16 @@ def export_package(
     embedding_model: str | None = None,
     engines: tuple[str, ...] = ("native",),
     dry_run: bool = False,
+    stages: set[str] | None = None,
     token: str | None = None,
     discover: Callable[[str], str] | None = None,
 ) -> ExportPlan | ExportedPackage:
     """Export ``model`` into a #14 package at ``output``.
 
     ``dry_run=True`` returns the resolved :class:`ExportPlan` (no files, no heavy deps). A real run
-    lazy-imports the export/train stack and is env-gated (export + ORT-training profiles).
+    lazy-imports the export stack and builds the selected ``stages`` (default: auto by request +
+    importable deps). A train-capable package is produced across two profile-scoped runs (see
+    :func:`_full_export`).
     """
     plan = plan_export(
         model=model,
@@ -262,22 +265,438 @@ def export_package(
     )
     if dry_run:
         return plan
-    return _full_export(plan, token=token, embedding_model=embedding_model)
+    return _full_export(plan, token=token, embedding_model=embedding_model, stages=stages)
 
 
-def _full_export(plan: ExportPlan, *, token: str | None, embedding_model: str | None) -> ExportedPackage:
-    """Real export orchestration — reuses existing stages; env-gated (heavy imports are lazy).
+# --- real export: stage-gated orchestrator (#15) ------------------------------------------------
 
-    Stage order (per #15): task already resolved → inference package + handoff (#9
-    ``export_inference_package``) → training artifacts → mergers → tokenizer/configs → reshape into the
-    #14 variant tree → ``build_manifest`` + checksums. This body runs only under the export/ORT-training
-    profiles; the core test gate exercises ``dry_run`` + the assembly/manifest layer over the fixture.
+#: Stage name -> the manifest feature it satisfies (F1 feature→subtree contract, #13 validator).
+_STAGE_FEATURE = {"inference": "inference", "training": "train", "embedding": "rag"}
+
+
+@dataclass
+class StageOutput:
+    """What one stage builder produced: the stage_dirs to hand ``assemble_package`` + report fields.
+
+    ``stage_dirs`` keys are the assemble keys (``inference``/``train``/``embedding``/``tokenizer``);
+    ``report`` fields are merged into the manifest provenance (non-null wins).
     """
-    raise NotImplementedError(
-        "Full-model export requires the export + onnxruntime-training profiles and is run manually "
-        "(see 02_code_plans/05). The planning path (dry_run=True) and the #14/#13 assembly+validate "
-        "layer are covered in CI. Wire the heavy stages here when running under those profiles."
+
+    stage_dirs: dict[str, Path] = field(default_factory=dict)
+    report: dict[str, Any] = field(default_factory=dict)
+
+
+#: A stage builder: resolved plan + a staging dir -> its outputs. Heavy deps imported lazily inside.
+StageBuilder = Callable[..., StageOutput]
+
+
+def _pkg_version(dist: str) -> str | None:
+    from importlib import metadata
+
+    try:
+        return metadata.version(dist)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _training_available() -> bool:
+    """True iff the ORT-training stack is importable (the ``ort-training-local`` profile is active).
+
+    ``find_spec`` on a submodule imports the parent, which raises (not returns None) when ``onnxruntime``
+    is absent — so guard it and treat any import failure as "not available".
+    """
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("onnxruntime.training") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _select_stages(plan: ExportPlan, stages: set[str] | None) -> set[str]:
+    """Which stages to attempt. Explicit ``stages`` wins; else auto-detect by request + importable deps."""
+    if stages is not None:
+        unknown = stages - set(_STAGE_FEATURE)
+        if unknown:
+            raise ConfigValidationError(f"unknown export stage(s): {sorted(unknown)}")
+        return set(stages)
+    selected = {"inference"}  # the always-required floor
+    if "rag" in plan.features:
+        selected.add("embedding")
+    if _training_available():
+        selected.add("training")
+    return selected
+
+
+def _base_report(plan: ExportPlan) -> dict[str, Any]:
+    return {
+        "mobiletransformersVersion": _pkg_version("mobiletransformers") or "0.0.0",
+        "architectures": [],
+        "supportedTasks": [plan.task],
+        "selectedTask": plan.task,
+        "trustRemoteCode": False,
+        "peftMethods": [plan.peft_method.value],
+        "quantization": [plan.quant],
+        "androidRuntime": {"minimumAndroidApi": 28, "recommendedDeviceMemoryMb": None, "requiredAbis": []},
+        "license": {"framework": None, "baseModelWeights": None, "noticeFile": None},
+    }
+
+
+def _effective_features(plan: ExportPlan, stage_dirs: dict[str, str | Path]) -> tuple[str, ...]:
+    """Features the manifest may honestly claim: ``core`` + the stages actually present (+ ``genai`` iff
+    requested AND a ``genai_config.json`` was emitted). Unions THIS run's ``stage_dirs`` with what is
+    already on disk in the assembled variant tree, so a training-only re-assembly (a separate profile run)
+    does not drop the ``inference``/``genai`` features produced by the earlier run. Never claim a subtree
+    that isn't present — the #13 validator checks feature→path presence for train/inference/rag."""
+    variant_dir = plan.output_dir / "variants" / plan.variant_id
+
+    def present(stage: str, marker: str) -> bool:
+        return stage in stage_dirs or (variant_dir / stage / marker).exists()
+
+    feats = ["core"]
+    if present("inference", "model.onnx"):
+        feats.append("inference")
+    if present("train", "training_config.json"):
+        feats.append("train")
+    if present("embedding", "rag_config.json"):
+        feats.append("rag")
+
+    inf = stage_dirs.get("inference")
+    genai_config = (
+        (Path(inf) / "genai_config.json").is_file()
+        if inf is not None
+        else (variant_dir / "inference" / "genai_config.json").is_file()
     )
+    if "genai" in plan.supported_engines and genai_config:
+        feats.append("genai")
+    return tuple(feats)
+
+
+def _default_builders() -> dict[str, StageBuilder]:
+    return {
+        "inference": _build_inference_stage,
+        "training": _build_training_stage,
+        "embedding": _build_embedding_stage,
+    }
+
+
+def _build_inference_stage(
+    plan: ExportPlan, dest: Path, *, token: str | None, embedding_model: str | None
+) -> StageOutput:
+    """Real inference stage (``export`` profile): one dir both engines read from a single source of truth.
+
+    Produces ``inference/`` with the normalized Native-ready ``model.onnx`` (+ ``model.onnx_data``),
+    ``generation_config.json``, tokenizer files, an empty ``weight_handoff_map.json`` (all-frozen base —
+    the training stage overwrites it with trainable entries), and a best-effort ``genai_config.json`` so
+    the GenAI engine loads the SAME ``model.onnx``. Tokenizer is also copied to the ``tokenizer`` stage
+    for ``shared/tokenizer`` + the on-device ``mobiletransformers_tokenizer_config.json``.
+    """
+    from mobiletransformers.artifacts.handoff_map import HandoffMap
+    from mobiletransformers.export.inference_export import export_inference
+    from mobiletransformers.utils.logging import get_logger
+
+    log = get_logger(__name__)
+    dest = Path(dest)
+    inf = dest / "inference"
+    tok = dest / "tokenizer"
+    inf.mkdir(parents=True, exist_ok=True)
+    tok.mkdir(parents=True, exist_ok=True)
+
+    result = export_inference(plan.model_id, inf, task=plan.task, token=token)
+
+    # All-frozen base: a valid empty handoff map (the #13 validator + build_manifest require the file to
+    # exist and resolve; the training stage replaces it with the trainable-tensor entries).
+    HandoffMap(entries=[]).save(inf / "weight_handoff_map.json")
+
+    # Tokenizer stage (copied — the GenAI dir also needs tokenizer.json beside model.onnx/genai_config).
+    _populate_tokenizer_stage(plan, result, inf, tok, token=token, log=log)
+
+    # Best-effort GenAI config so both engines read one dir; dropped from features if it can't be emitted.
+    if "genai" in plan.supported_engines:
+        try:
+            _emit_genai_config(plan, inf, result, token=token)
+        except Exception as exc:  # noqa: BLE001 - never fail the whole export on the GenAI side-car
+            log.warning("genai_config.json not emitted (package will be Native-only): %s", exc)
+
+    report = {
+        "architectures": [result.model_type] if result.model_type else [],
+        "supportedTasks": [result.task],
+        "selectedTask": result.task,
+        "optimumOnnxVersion": result.optimum_onnx_version,
+        "transformersVersion": result.transformers_version,
+        "trustRemoteCode": result.trust_remote_code,
+    }
+    return StageOutput(
+        stage_dirs={"inference": inf, "tokenizer": tok},
+        report={k: v for k, v in report.items() if v is not None},
+    )
+
+
+def _populate_tokenizer_stage(
+    plan: ExportPlan, result: Any, inf: Path, tok: Path, *, token: str | None, log: Any
+) -> None:
+    """Copy the exported tokenizer files into the tokenizer stage + best-effort emit the on-device
+    ``mobiletransformers_tokenizer_config.json`` (Android Native tokenizer; the device leg)."""
+    import shutil
+
+    for name in getattr(result, "tokenizer_files", ()):  # relative names under the export dir
+        src = inf / name
+        if src.is_file():
+            shutil.copy2(src, tok / Path(name).name)
+    try:
+        from tools.tokenizer_export import export_tokenizer_config
+
+        export_tokenizer_config(plan.model_id, output_dir=str(tok), hf_token=token)
+    except Exception as exc:  # noqa: BLE001 - the on-device tokenizer config is a deferred device leg
+        log.warning("mobiletransformers_tokenizer_config.json not emitted (device-leg tokenizer): %s", exc)
+
+
+def _emit_genai_config(plan: ExportPlan, inference_dir: Path, result: Any, *, token: str | None) -> None:
+    """Emit ``genai_config.json`` into ``inference_dir`` describing the exported ``model.onnx`` so the
+    GenAI engine loads the SAME graph the Native engine does.
+
+    ``genai_config`` is model-intrinsic — dims / head & layer counts / canonical KV-IO names / special
+    tokens — and the canonical IO scheme is fixed (the same names ``normalize.py`` verifies and the
+    legacy ``make_genai_config`` hard-wires). We build it directly from the HF ``AutoConfig`` (+ the
+    normalized ``ExportResult``), so it needs only ``transformers`` (the ``export`` profile) — not the
+    vendored GenAI builder, which imports an ``onnxruntime`` symbol absent from that profile.
+    """
+    import json
+
+    from transformers import AutoConfig
+
+    cfg = AutoConfig.from_pretrained(plan.model_id, token=token, trust_remote_code=result.trust_remote_code)
+
+    def _attr(*names: str, default: Any = None) -> Any:
+        for n in names:
+            if getattr(cfg, n, None) is not None:
+                return getattr(cfg, n)
+        return default
+
+    hidden = _attr("hidden_size", default=0)
+    heads = _attr("num_attention_heads", default=0)
+    kv_heads = _attr("num_key_value_heads", "num_attention_heads", default=heads)
+    head_size = _attr("head_dim", default=(hidden // heads if heads else 0))
+    context = _attr("max_position_embeddings", "n_positions", default=2048)
+    layers = _attr("num_hidden_layers", "n_layer", default=result.kv_layers)
+
+    genai = {
+        "model": {
+            "bos_token_id": _attr("bos_token_id", default=1),
+            "eos_token_id": _attr("eos_token_id", default=2),
+            "pad_token_id": _attr("pad_token_id", "eos_token_id", default=0),
+            "context_length": context,
+            "type": _attr("model_type", default=result.model_type or ""),
+            "vocab_size": _attr("vocab_size", default=0),
+            "decoder": {
+                "session_options": {"provider_options": []},
+                "filename": "model.onnx",
+                "head_size": head_size,
+                "hidden_size": hidden,
+                "num_attention_heads": heads,
+                "num_key_value_heads": kv_heads,
+                "num_hidden_layers": layers,
+                "inputs": {
+                    "input_ids": "input_ids",
+                    "attention_mask": "attention_mask",
+                    "position_ids": "position_ids",
+                    "past_key_names": "past_key_values.%d.key",
+                    "past_value_names": "past_key_values.%d.value",
+                },
+                "outputs": {
+                    "logits": "logits",
+                    "present_key_names": "present.%d.key",
+                    "present_value_names": "present.%d.value",
+                },
+            },
+        },
+        "search": {
+            "max_length": context,
+            "min_length": 0,
+            "do_sample": False,
+            "top_k": 1,
+            "top_p": 1.0,
+            "temperature": 1.0,
+            "repetition_penalty": 1.0,
+        },
+    }
+    (inference_dir / "genai_config.json").write_text(json.dumps(genai, indent=2) + "\n", encoding="utf-8")
+
+
+def _build_training_stage(
+    plan: ExportPlan, dest: Path, *, token: str | None, embedding_model: str | None
+) -> StageOutput:
+    """Training stage seam (``ort-training-local`` profile). Wires ``gen_artifacts`` (→ training/eval/
+    optimizer models + checkpoint + the extended ``training_config.json`` carrying ``peft_mapping``) and
+    then ``export_inference_package`` for the per-tensor ``.bin`` + ``frozen_base.onnx.data`` +
+    trainable ``weight_handoff_map.json`` + merger graphs into the inference dir.
+
+    Staged: the body lands in a follow-on ``ort-training-local`` run. Selected-but-unavailable fails
+    closed naming the profile.
+    """
+    import os
+
+    from mobiletransformers.exceptions import ExportError
+    from mobiletransformers.utils.logging import get_logger
+
+    log = get_logger(__name__)
+    if not _training_available():
+        raise ExportError(
+            "training stage requires the ort-training-local profile "
+            "(`uv sync --python 3.12 --group ort-training-local`)"
+        )
+
+    # The inference stage (a prior `export`-profile run) must already have assembled the package; the
+    # training stage reads that inference model.onnx and writes the trainable split back into it.
+    inference_dir = plan.output_dir / "variants" / plan.variant_id / "inference"
+    inference_onnx = inference_dir / "model.onnx"
+    if not inference_onnx.is_file():
+        raise ExportError(
+            f"training stage requires the inference package first — {inference_onnx} not found. "
+            "Run the inference export (export profile) into the same --output before --stages training."
+        )
+
+    if token:
+        os.environ.setdefault("HF_TOKEN", token)
+
+    dest = Path(dest)
+    train_export = dest / "train_export"  # optimum_hf_export scratch (quant_model.onnx + training_config)
+    train_stage = dest / "train"  # the assembled train/ stage dir
+    train_export.mkdir(parents=True, exist_ok=True)
+    train_stage.mkdir(parents=True, exist_ok=True)
+
+    # Lazy legacy imports (torch/peft/optimum/onnxruntime.training — the ort-training-local profile).
+    from artifact.onnx_builder import gen_artifacts  # type: ignore[import-not-found]
+    from inference.export_inference_package import export_inference_package  # type: ignore[import-not-found]
+    from trainer.builder import optimum_hf_export  # type: ignore[import-not-found]
+    from transformers import AutoConfig
+
+    quantized = plan.quant != "fp16"
+    # optimum_hf_export picks AutoModelForCausalLM for text-generation; strip the KV-cache suffix.
+    task_type = "text-generation" if plan.task.startswith("text-generation") else plan.task
+
+    # 1) Producer of peft_mapping/requires_grad + the training graph (quant_model.onnx + training_config).
+    log.info("training stage: optimum_hf_export(%s) -> %s", plan.model_id, train_export)
+    optimum_hf_export(
+        model_id=plan.model_id,
+        model_output=str(train_export),
+        training_mode=True,
+        train_method=plan.peft_method.value,
+        lora_rank=plan.rank,
+        lora_alpha=plan.rank,
+        quantize=quantized,
+        task_type=task_type,
+    )
+
+    # 2) Training artifacts (training/eval/optimizer models + checkpoint/ + extended training_config.json).
+    extended_config = gen_artifacts(
+        train_dir=str(train_export),
+        artifact_dir=str(train_stage),
+        model_name="quant_model.onnx" if quantized else "model.onnx",
+        training_config={},
+    )
+
+    # 3) Overwrite the empty handoff map with the real trainable split into the assembled inference dir.
+    model_config = AutoConfig.from_pretrained(plan.model_id, token=token, trust_remote_code=False)
+    log.info("training stage: export_inference_package -> %s (trainable split + handoff map)", inference_dir)
+    export_inference_package(
+        model_path=str(inference_onnx),
+        output_dir=str(inference_dir),
+        training_config=extended_config,
+        model_config=model_config,
+        peft_method=plan.peft_method,
+        quant_in=quantized,
+        quant_out=quantized,
+    )
+
+    report = {
+        "peftMethods": [plan.peft_method.value],
+        "trainableParameterCount": extended_config.get("trainable_parameter_count"),
+        "onnxRuntimeTrainingVersion": _pkg_version("onnxruntime-training"),
+    }
+    return StageOutput(
+        stage_dirs={"train": train_stage},
+        report={k: v for k, v in report.items() if v is not None},
+    )
+
+
+def _build_embedding_stage(
+    plan: ExportPlan, dest: Path, *, token: str | None, embedding_model: str | None
+) -> StageOutput:
+    """Embedding stage seam (RAG). Body rides with #26/#27; selected-but-unwired fails closed."""
+    from mobiletransformers.exceptions import ExportError
+
+    raise ExportError("embedding stage is staged for the RAG phase (#26/#27)")
+
+
+def _full_export(
+    plan: ExportPlan,
+    *,
+    token: str | None,
+    embedding_model: str | None,
+    stages: set[str] | None = None,
+    builders: dict[str, StageBuilder] | None = None,
+) -> ExportedPackage:
+    """Real export orchestration — stage-gated, reuses existing stages, heavy imports lazy (#15).
+
+    Builds each selected stage into a staging dir, computes the features actually produced, and delegates
+    the #14 reshape + #13 manifest/checksums to :func:`assemble_package`. ``stages`` selects which to
+    attempt (default: auto by request + importable deps — inference always, embedding iff RAG requested,
+    training iff the ORT-training stack is present). ``builders`` is injectable so the orchestration is
+    unit-testable in the core env without the heavy export stack.
+
+    Producing a train-capable package straddles two conflicting uv profiles, so it runs as separate
+    profile-scoped invocations into the same ``output``: assemble copies with ``dirs_exist_ok`` and
+    rebuilds the manifest from disk, so a later ``stages={"training"}`` run fills in ``train/`` + the
+    trainable handoff map without rework.
+    """
+    import tempfile
+
+    from mobiletransformers.utils.logging import get_logger
+
+    log = get_logger(__name__)
+    builders = builders or _default_builders()
+    selected = _select_stages(plan, stages)
+    report = _base_report(plan)
+
+    with tempfile.TemporaryDirectory(prefix="mtf-export-") as staging_root:
+        staging = Path(staging_root)
+        stage_dirs: dict[str, str | Path] = {}
+        for stage in ("inference", "training", "embedding"):  # deterministic order
+            if stage not in selected:
+                log.info(
+                    "export: skipping %s stage (not selected). Add it with a %s-profile run / --stages.",
+                    stage,
+                    stage,
+                )
+                continue
+            out = builders[stage](plan, staging / stage, token=token, embedding_model=embedding_model)
+            stage_dirs.update(out.stage_dirs)
+            report.update({k: v for k, v in out.report.items() if v is not None})
+
+        if "inference" not in stage_dirs and "train" not in stage_dirs:
+            from mobiletransformers.exceptions import ExportError
+
+            raise ExportError("no export stage produced any output")
+
+        import dataclasses
+
+        eff_features = _effective_features(plan, stage_dirs)
+        # Honesty: don't advertise an engine the package can't serve. genai stays only if a genai_config
+        # was actually emitted (i.e. "genai" survived into effective features).
+        eff_engines = tuple(e for e in plan.supported_engines if e != "genai" or "genai" in eff_features)
+        effective_plan = dataclasses.replace(plan, features=eff_features, supported_engines=eff_engines)
+        log.info(
+            "export: assembling package with features %s engines %s",
+            effective_plan.features,
+            effective_plan.supported_engines,
+        )
+        return assemble_package(
+            effective_plan,
+            stage_dirs,
+            base_model_id=plan.model_id,
+            report=report,
+        )
 
 
 __all__ = [

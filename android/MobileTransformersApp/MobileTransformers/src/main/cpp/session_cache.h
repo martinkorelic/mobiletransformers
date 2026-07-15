@@ -14,6 +14,8 @@
 #include "weight_merger.h"
 #include "sampling.h"
 #include "logging.h"
+#include "mem_probe.h"    // #12: RSS probe (Gate 0.2)
+#include "mmap_tensor.h"  // #12: RAII mmap region (default-off zero-copy load)
 
 namespace fs = std::filesystem;
 
@@ -43,6 +45,9 @@ struct WeightSessionCache {
 
     std::unordered_map<std::string, Ort::Value > weights;
     std::unordered_map<std::string, void*> allocated_buffers; // Track allocated memory
+    // #12: mmap'd regions backing zero-copy external initializers (default-off). Must outlive the
+    // Ort::Values that point into them, so they are freed only in clearWeights()/destruction.
+    std::vector<MmapRegion> mmap_regions_;
 
     Ort::MemoryInfo memory_info_;
     Ort::AllocatorWithDefaultOptions allocator_;
@@ -50,54 +55,121 @@ struct WeightSessionCache {
     // Constructor
     WeightSessionCache() : memory_info_(Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU)) {}
 
-    // Initialize cache by loading tensors from folder
-    bool init(const std::string& weights_folder) {
+    // #23: initialize the cache from FLAT per-tensor <name>.bin files in the inference dir, keyed by
+    // weight_handoff_map.json (the ONE reader in handoff_io.h). No <dirname>.<filestem> reconstruction:
+    // initializer names come straight from inferenceInitializerNames[role]. dtype/shape are validated
+    // against each loaded TensorProto; a missing file or dtype/shape mismatch fails closed (clears the
+    // cache and returns false so the caller adds NO external initializers, never a partial/wrong set).
+    // Checksums are already enforced by the Kotlin precondition (HandoffPrecondition) before this runs.
+    bool init(const std::string& inference_dir) {
         try {
-            // Check if the folder exists
-            if (!std::filesystem::exists(weights_folder)) {
-                LOGE("Weights folder does not exist: %s", weights_folder.c_str());
+            LOG_RSS("weight-load:start");
+            // #12 (Gate 0.2, default-off): MTF_MMAP_WEIGHTS=1 loads each fp per-tensor .bin zero-copy via
+            // mmap instead of the buffered TensorProto parse. Opt-in only — the shipping default is the
+            // #23 copy path, so this never perturbs the hardened load unless the env var is set.
+            const bool use_mmap = std::getenv("MTF_MMAP_WEIGHTS") != nullptr;
+
+            const std::string map_path = inference_dir + "/weight_handoff_map.json";
+            std::unordered_map<std::string, HandoffEntry> handoff;
+            if (!load_handoff_entries(map_path, /*readerVersion=*/"1.0", handoff)) {
+                LOGE("Handoff map missing/invalid at %s; not loading merged weights", map_path.c_str());
                 return false;
             }
 
-            // Iterate through all subdirectories in the weights folder
-            for (const auto& layer_entry : std::filesystem::directory_iterator(weights_folder)) {
-                if (layer_entry.is_directory()) {
-                    std::string layer_name = layer_entry.path().filename().string();
-
-                    // Iterate through all .tensor files in this directory
-                    for (const auto& tensor_file : std::filesystem::directory_iterator(layer_entry.path())) {
-                        if (tensor_file.is_regular_file() && tensor_file.path().extension() == ".tensor") {
-                            std::string tensor_filename = tensor_file.path().stem().string(); // Gets filename without .tensor extension
-                            std::string full_tensor_name = layer_name + "." + tensor_filename;
-
-                            try {
-                                // Load the tensor
-                                auto [loaded_tensor, buffer_ptr] = load_tensor_with_allocator(tensor_file.path().string());
-                                if (loaded_tensor) {
-
-                                    // Store the tensor and track the buffer
-                                    weights.emplace(full_tensor_name, std::move(loaded_tensor));
-                                    // Release ownership from unique_ptr
-                                    allocated_buffers[full_tensor_name] = buffer_ptr;
-                                    LOGI("Loaded tensor for layer: %s", full_tensor_name.c_str());
-                                } else {
-                                    LOGE("Failed to load tensor from: %s", tensor_file.path().string().c_str());
-                                }
-                            } catch (const std::exception& e) {
-                                LOGE("Error loading tensor from %s: %s", tensor_file.path().string().c_str(), e.what());
-                            }
-                        }
+            for (const auto& [layer, entry] : handoff) {
+                for (const auto& [role, bin_name] : entry.externalDataLocation) {
+                    const std::string init_name = entry.inferenceInitializerNames.count(role)
+                            ? entry.inferenceInitializerNames.at(role) : bin_name;
+                    const std::string path = inference_dir + "/" + bin_name;
+                    if (!std::filesystem::exists(path)) {
+                        LOGE("Merged weight file missing: %s (layer %s, role %s)", path.c_str(),
+                             layer.c_str(), role.c_str());
+                        clearWeights();
+                        return false;
                     }
+
+                    // mmap path: only well-shaped, non-quantized tensors (the frozen-base RSS win). Any
+                    // other tensor falls back to the copy path so quantized/scalar cases stay correct.
+                    ONNXTensorElementDataType mmap_type =
+                            use_mmap ? onnx_type_from_string(entry.dtype) : ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+                    if (use_mmap && !entry.shape.empty() && !entry.has_quantization &&
+                        mmap_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED) {
+                        MmapRegion region(path);
+                        if (!region.valid()) {
+                            LOGE("mmap failed for %s; failing closed", path.c_str());
+                            clearWeights();
+                            return false;
+                        }
+                        std::vector<int64_t> shape = entry.shape;
+                        Ort::Value v = Ort::Value::CreateTensor(
+                                memory_info_, const_cast<void*>(region.data()), region.size(),
+                                shape.data(), shape.size(), mmap_type);
+                        weights.emplace(init_name, std::move(v));
+                        mmap_regions_.push_back(std::move(region));
+                        LOGI("mmap'd initializer: %s <- %s (%zu bytes)", init_name.c_str(), bin_name.c_str(),
+                             mmap_regions_.back().size());
+                        continue;
+                    }
+
+                    auto [loaded_tensor, buffer_ptr] = load_tensor_with_allocator(path);
+                    if (!loaded_tensor) {
+                        LOGE("Failed to load merged weight: %s", path.c_str());
+                        clearWeights();
+                        return false;
+                    }
+                    if (!validate_dtype_shape(loaded_tensor, entry, init_name)) {
+                        allocator_.Free(buffer_ptr);
+                        clearWeights();
+                        return false;
+                    }
+                    weights.emplace(init_name, std::move(loaded_tensor));
+                    allocated_buffers[init_name] = buffer_ptr;
+                    LOGI("Loaded merged initializer: %s <- %s", init_name.c_str(), bin_name.c_str());
                 }
             }
 
-            LOGI("Weight cache initialized with %zu tensors", weights.size());
-            return true;
+            LOGI("Weight cache initialized with %zu external initializers (mmap=%d)", weights.size(),
+                 use_mmap ? 1 : 0);
+            LOG_RSS("weight-load:end");
+            return !weights.empty();
 
         } catch (const std::exception& e) {
             LOGE("Error initializing weight cache: %s", e.what());
+            clearWeights();
             return false;
         }
+    }
+
+    // Map the handoff dtype string onto an ORT element type (int4 packs into uint8 storage on device).
+    static ONNXTensorElementDataType onnx_type_from_string(const std::string& s) {
+        if (s == "float32" || s == "float") return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+        if (s == "float16") return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
+        if (s == "int8") return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8;
+        if (s == "uint8" || s == "int4") return ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8;
+        if (s == "int32") return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
+        return ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+    }
+
+    // Fail-closed dtype/shape check of a loaded external initializer against its handoff-map entry.
+    bool validate_dtype_shape(const Ort::Value& tensor, const HandoffEntry& entry,
+                              const std::string& init_name) {
+        auto info = tensor.GetTensorTypeAndShapeInfo();
+        if (!entry.dtype.empty()) {
+            ONNXTensorElementDataType want = onnx_type_from_string(entry.dtype);
+            if (want != ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED && info.GetElementType() != want) {
+                LOGE("dtype mismatch for %s: map declares %s, tensor element type is %d",
+                     init_name.c_str(), entry.dtype.c_str(), (int) info.GetElementType());
+                return false;
+            }
+        }
+        // Quantized (packed) tensors legitimately differ from the declared logical shape; skip those.
+        if (!entry.shape.empty() && !entry.has_quantization) {
+            if (info.GetShape() != entry.shape) {
+                LOGE("shape mismatch for %s (declared vs loaded TensorProto)", init_name.c_str());
+                return false;
+            }
+        }
+        return true;
     }
 
     // Load tensor using our allocator and return both tensor and buffer pointer
@@ -141,6 +213,8 @@ struct WeightSessionCache {
         // Clear the maps
         weights.clear();
         allocated_buffers.clear();
+        // #12: unmap any mmap'd regions (after the Ort::Values that referenced them are cleared).
+        mmap_regions_.clear();
 
         LOGI("Weight cache cleared and memory freed");
     }
@@ -659,9 +733,11 @@ private:
             }
         }
 
-        // Load merged weights (external initializers)
+        // #23: load merged weights as flat per-tensor external initializers from the inference dir,
+        // keyed by weight_handoff_map.json (retired the inference/merged subdir). The Kotlin
+        // precondition already checksum-verified these before we got here.
         if (load_external_weights) {
-            const std::string weights_path = inference_model_path + "/merged";
+            const std::string weights_path = inference_model_path;
             weight_session = std::make_unique<WeightSessionCache>();
 
             if (!weight_session->init(weights_path)) {

@@ -120,11 +120,6 @@ def test_assemble_package_produces_valid_13_package(tmp_path):
     assert (pkg.output_dir / "shared/tokenizer/tokenizer.json").exists()
 
 
-def test_full_export_is_env_gated(tmp_path):
-    with pytest.raises(NotImplementedError, match="export . onnxruntime-training"):
-        export_package(model="org/x", output=tmp_path, dry_run=False, discover=lambda m: "text-generation")
-
-
 # --- model card -------------------------------------------------------------
 
 

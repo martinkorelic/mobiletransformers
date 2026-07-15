@@ -2,6 +2,8 @@ package com.martinkorelic.mobiletransformers
 
 import android.content.Context
 import com.martinkorelic.mobiletransformers.config.HubConfig
+import com.martinkorelic.mobiletransformers.hub.HubDownloader
+import com.martinkorelic.mobiletransformers.hub.HubResolver
 import com.martinkorelic.mobiletransformers.internal.runtime.RepositoryBackedModelSession
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
 import com.martinkorelic.mobiletransformers.packages.PackageFormat
@@ -26,7 +28,6 @@ object MobileTransformers {
      * when the package is absent.
      */
     @JvmStatic
-    @Suppress("UNUSED_PARAMETER") // revision/variant/hubConfig are the stable signature; used by #21's pull
     suspend fun fromPretrained(
         context: Context,
         repoId: String,
@@ -40,9 +41,32 @@ object MobileTransformers {
         val sanitized = PackageFormat.sanitizeRepoId(repoId)
         val modelDir = File(cacheDir, sanitized)
         if (!modelDir.isDirectory) {
-            throw ModelNotInstalledException(
-                "package '$repoId' is not installed at $modelDir (pull it first — #21)",
-            )
+            // #21: not installed -> manifest-first pull + atomic install, then load.
+            val genaiRequested = engine == InferenceEngine.GENAI || features.any { it == ModelFeature.GenAI }
+            val featureGroups = buildSet {
+                add("inference")
+                if (ModelFeature.Training in features) add("train")
+                if (ModelFeature.Rag in features || ModelFeature.Embedding in features) add("rag")
+            }
+            try {
+                HubDownloader.downloadAndInstall(
+                    cacheDir = File(cacheDir),
+                    repoId = repoId,
+                    revision = revision,
+                    variant = variant,
+                    features = featureGroups,
+                    genai = genaiRequested,
+                    endpoint = hubConfig?.endpoint ?: HubResolver.DEFAULT_ENDPOINT,
+                    token = hubConfig?.token,
+                )
+            } catch (e: Exception) {
+                throw ModelNotInstalledException(
+                    "package '$repoId' is not installed at $modelDir and the Hub pull failed: ${e.message}",
+                )
+            }
+            if (!modelDir.isDirectory) {
+                throw ModelNotInstalledException(repoId, cacheDir)
+            }
         }
 
         val repo = LLMRepository(context.applicationContext, cacheDir, initialModel = sanitized)
@@ -52,10 +76,27 @@ object MobileTransformers {
             )
         }
 
+        // #19: fail at construction (not first use) if a requested genuine feature isn't installed.
+        // Engine selectors (GenAI/ManualInference) are not downloads — skip them here.
+        val installed = detectFeatures(repo)
+        features.filterNot { it.isEngineSelector }.forEach { requested ->
+            if (requested !in installed) throw FeatureNotInstalledException(requested, installed)
+        }
+
         // GenAI is a selectable engine over the one shared package; #11 owns real GenAI wiring + fallback.
         // Requesting the GenAI/ManualInference feature only sets the engine — it never downloads a 2nd group.
         val resolvedEngine =
             if (features.any { it == ModelFeature.GenAI }) InferenceEngine.GENAI else engine
+
+        // #19: GenAI needs the genai config in the shared package; else fail closed (no silent fallback here).
+        if (resolvedEngine == InferenceEngine.GENAI &&
+            !File(modelDir, "inference/genai_config.json").isFile
+        ) {
+            throw EngineUnavailableException(
+                InferenceEngine.GENAI,
+                "inference/genai_config.json not found in the installed package (re-export with GenAI).",
+            )
+        }
 
         val capabilities =
             RuntimeCapabilities(
@@ -71,9 +112,10 @@ object MobileTransformers {
             RepositoryBackedModelSession(
                 repo = repo,
                 capabilities = capabilities,
+                modelDir = modelDir,
                 inferencePackagePath = File(modelDir, "inference").absolutePath,
             )
-        return MobileTransformerModel(session, capabilities)
+        return MobileTransformerModel(session, capabilities, repoId)
     }
 
     private fun detectFeatures(repo: LLMRepository): Set<ModelFeature> {

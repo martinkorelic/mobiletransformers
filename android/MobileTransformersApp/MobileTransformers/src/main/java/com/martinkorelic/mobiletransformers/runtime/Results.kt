@@ -38,3 +38,21 @@ data class RetrievalResult(
     val matches: List<RetrievalMatch> = emptyList(),
     val queryTimeMs: Long = 0L,
 )
+
+/** Result of pushing a trained adapter to the Hub (#19 surface; real upload lands with #22). */
+data class PushResult(
+    val repoId: String,
+    val url: String? = null,
+)
+
+/** Result of ingesting documents into the RAG vector store (#26). */
+data class IngestResult(
+    val chunkCount: Int,
+)
+
+/** Result of grounded generation (#27): the answer, the retrieved matches, and the exact assembled prompt. */
+data class GroundedResult(
+    val text: String,
+    val matches: List<RetrievalMatch> = emptyList(),
+    val prompt: String = "",
+)
