@@ -360,3 +360,154 @@ guide, ahead of the user moving to a **macOS box without a device** for a few da
 
 **Nothing committed** (human commits) — and note the Mac plan hinges on committing + pushing this work
 first, since the tree is the only copy.
+
+## Session close (2026-07-15 — #22 finish + #31 docs + #35 federated + #17/#18 Android facade)
+
+Landed a **five-plan "everything host-doable" phase** (user-confirmed) on the **Linux** box (Android
+toolchain + ORT-training wheel both present here — the `MAC_WORKPLAN` was written ahead of a move that
+hadn't happened). All legs verified host-side: Python `make check` **211 passed, 10 skipped**; enum parity
+OK; `uv lock --check` clean; Android `:MobileTransformers:testDebugUnitTest` **41 JVM tests green** +
+`:MobileTransformers`/`:app` `compileDebugKotlin` green. Only physical-device legs deferred.
+
+- **#22 DONE** — `adapter/convert.py::materialize_peft_weights` implemented (was the last stub). It reads the
+  LoRA A/B factors from the ORT `CheckpointState` (`train/checkpoint`, mirrors `onnx_transfer_trained_weights`)
+  and writes `adapter_model.safetensors` (numpy→torch→`safetensors.torch.save_file`) with PEFT keys
+  (`base_model.model.<module>.lora_A/B.weight`). **The factor read is injectable** (`factor_reader`) so the
+  numpy→torch→safetensors + key-mapping path is unit-tested (`tests/adapter/test_convert.py`, behind
+  `importorskip torch/safetensors`) **without** building a real checkpoint; the default reader stays
+  env-gated on `onnxruntime-training`. Verified under the `train` profile (3.12): 2 materialize tests pass.
+  The clarifying finding: the A/B factors live in the CheckpointState, **not** as flat `.bin` in `inference/`
+  (those are the merged tensors) — the MAC note's "raw .bin" was optimistic, but it's still no-device on this
+  Linux box.
+- **#31 (still partial)** — added the two contract-locked pages: `docs/MODEL_FORMAT.md` (manifest +
+  `weight_handoff_map.json` on-disk contract, sourced from `hub/package_format.py`/`artifacts/manifest.py` +
+  `artifacts/handoff_map.py`) and `docs/CONFIGURATION.md` (enum vocab, Pydantic cross-boundary models, the
+  three registries as extension points). `docs/ARCHITECTURE.md` + `docs/ANDROID_SDK.md` still await #23/#24/#30.
+- **#35 code-complete (box open)** — new `src/mobiletransformers/federated/`: `adapter_record.py`
+  (`FederatedAdapterRecord`, a thin wrapper over `TrainableTensorCodec`/`HandoffMap` — invents no ordering;
+  pinned byte serialization = uint32 LE header len + JSON header + codec-order payloads, the #36 golden),
+  `flower_sim.py` (pure `federated_average` FedAvg + `save_global_adapter` + a lazy-flwr `run_simulation`
+  manual leg), `flower_client.py` (lazy-flwr `ClientApp`/`ServerApp` + ORT `fit` seam — manual leg),
+  `cli/federated.py` (`mobiletransformers federated simulate`, wired into the dispatcher). Tests
+  `tests/federated/` (roundtrip/format-version/comm-size/fedavg/dropout + a committed byte golden
+  `fixtures/federated_record.golden.bin`, regen: `python -m tests.federated.gen_serialization_golden`) all
+  run in the **core** env (pure numpy). **Flower is deliberately OUT of the universal `uv.lock`** — adding
+  `flwr[simulation]` (ray/pyarrow) downgraded protobuf 7→6 / rich / typer repo-wide **and** bumped mypy
+  (1.11→1.19, which broke `make check`'s yaml typecheck). So flwr is out-of-band like the ORT wheel:
+  `pip install "flwr[simulation]"` for the manual sim leg (documented in `pyproject.toml` + the
+  `run_simulation` error). **Deferred (manual):** the real N-client ORT-`fit` sim + aggregated-adapter
+  logits-differ smoke (runnable here under the ORT-training profile, but treated as user-run).
+- **#17 code-complete (box open)** — Android facade foundation under
+  `android/.../com/martinkorelic/mobiletransformers/`: `MobileTransformers.fromPretrained` +
+  `MobileTransformerModel` (train/merge/generate/retrieve/capabilities/close), public `config/PublicConfigs.kt`
+  + `runtime/{ModelSession,RuntimeCapabilities,Results,InferenceEngine}.kt`, `packages/ModelFeature.kt`,
+  `MobileTransformersException.kt`, `internal/config/ConfigMappers.kt` (`toOrt()`),
+  `internal/runtime/RepositoryBackedModelSession.kt` (wraps the existing `LLMRepository` + 3 sub-repos;
+  callback→result adaptation via `CompletableDeferred`). **`InferenceEngine` is a placeholder flagged
+  `DECOMPOSE(#11)`** — #11 owns it; do not add a second engine enum. JVM tests (`src/test/.../facade/`):
+  config-mapper round-trip (defaults == `ORT*Config()`), feature/engine semantics, manifest variant-select,
+  and facade→session delegation via a hand-written fake `ModelSession` (no mock framework on the classpath).
+  **Deferred (device):** real `fromPretrained→generate` on a device.
+- **#18 code-complete (box open)** — new `training/` package: `TrainingJob`/`TrainingStatus`/`TrainingEvent`/
+  `CheckpointInfo`/`TrainingJobManager` (+`TrainingJobSpec` WorkManager seam, **no WorkManager dep added**) +
+  `TrainingEventAdapter` (callback→status/event mapping). Light edits: `ORTTrainerNative` gained
+  `@Volatile cancelRequested` checked at the epoch/step loop tops (cooperative cancel; **no `TrainingState`/
+  `SchedulerState`/JSON format change**). `TrainingResult` (in `runtime/Results.kt`, the #17 type) enriched
+  with `checkpoint`/`summary`. JVM tests: adapter status/event mapping (scripted callbacks) + `CheckpointInfo`
+  round-trip (format preserved). **Deferred (device):** resume-no-double-count, profileMetrics summary, the
+  instrumented train→merge→generate smoke; `TrainingEvent.Metric` is defined but not emitted (the
+  `TrainingCallback` surface carries no metrics — honest, not silently faked).
+
+**Boxes:** #22 is genuinely done. #31 stays *partial*. #35/#17/#18 are **code-complete with device/manual
+legs open** — leave `[ ]` (like #9) until their manual legs run. **Nothing committed** (human commits).
+**Next candidates:** run the deferred #35 sim under the ORT-training profile here; or #23 (native load) /
+#24 (sampling) / #26–#27 (RAG) for continued host-doable Kotlin; device legs when a device is available.
+
+*(Housekeeping: `HANDOFF.md`'s earlier dangling ref to `plans/read-through-the-recent-sunny-turtle.md`
+never existed — the real order lives in `IMPLEMENTATION_ORDER.md` "Global order".)*
+
+## Session close (2026-07-15, cont. — #10 GenAI external-data-swap spike / Gate 0.1)
+
+Ran the **#10 spike** on the real `onnxruntime-genai-android-0.14.0.aar` + a connected device (Galaxy S21
+FE, SM-G990B, arm64). Full record: `spikes/genai_external_swap/README.md`. **Verdict: Gate 0.1 GenAI side
+PASSES on device.** F2 (external-data swap) is validated, and the one real blocker — ORT-runtime coexistence
+(genai needs stock ORT ≥1.26, Native needs the training ORT 1.23) — was **RESOLVED** via engine separation
+(distinct-soname `libort_gen.so` for GenAI; training ORT stays `libonnxruntime.so`). Both coexist on device.
+
+- **Symbol check (#6/#8): PASS** — `spikes/genai_external_swap/check_symbols.sh` on the AAR arm64 `.so`:
+  `OgaCreateModelWithInitializers` ABSENT (fork-only confirmed), `OgaCreateModel` present, 23 `OgaGenerator*`.
+- **Desktop swap smoke (#2/#3): PASS** — built a tiny real GenAI model
+  (`build_tiny_genai_model.sh` → SmolLM2-135M, standalone `.venv-genai-spike`) and `desktop_spike.py` shows
+  overwriting external weights changes GenAI logits on a fresh `og.Model()` (`|ΔL|=39.6`); RSS +144 MB on a
+  199 MB blob = mmap/lazy, not 2× copy.
+- **Device build/link/install: PASS** — `genai_spike.cpp` (JNI, stable C API) + `GenAISpike.kt` +
+  `GenAISpikeTest.kt` compile, link against the real genai `.so`, package, and install on device.
+- **Device generate: ✅ PASS (RESOLVED)** — `GenAISpikeTest` passes on device: `OgaCreateModel` loads the
+  model, generates a token (relative external data resolved → #5), and overwriting one external weight
+  changes the output on a fresh model (token 28→6156, fp 1.518e8→9.82e7 → #2/#3). **Both ORTs coexist in one
+  process.**
+- **Root cause + fix — ORT engine separation.** The genai AAR ships **no `libonnxruntime.so`**; GenAI
+  `dlopen`s the app's. The app ships the **source-built ORT-training 1.23**, but **genai 0.14 needs stock ORT
+  ≥1.26** (pip meta `onnxruntime>=1.26.0`; desktop worked with 1.27.0) → SIGABRT. Fix (reproducible via
+  `spikes/genai_external_swap/setup_ort_separation.sh`): ship GenAI its own stock ORT **1.27** as
+  `jniLibs/<abi>/libort_gen.so` (SONAME **raw-patched** — NOT `patchelf`, which corrupts `verneed`), and
+  raw-patch the genai `.so`'s `dlopen` target `libonnxruntime.so`→`libort_gen.so`. Training ORT stays
+  `libonnxruntime.so` (linked by `libmobiletransformers.so`). Safe because each ORT exports only ~3 symbols
+  (hidden visibility) and genai resolves ORT via `dlsym` on its own handle → no interposition; the **distinct
+  SONAME is essential** (same soname → linker dedup → genai gets the training lib back, observed).
+- **Setup changes (vendored, git-ignored):** real AAR at `aarLibs/onnxruntime-genai.aar` (was a 1.3 MB stub);
+  `jniLibs/arm64-v8a/{libonnxruntime-genai.so (dlopen-patched), libort_gen.so (stock 1.27, soname-patched)}`;
+  `cpp/onnxruntime-genai/*.h` ← AAR clean upstream headers (`.fork.bak` kept); dead `ORTGenAITokenizer.kt`
+  reduced to a compiling stub (DECOMPOSE(#11)). **The genai AAR is NOT a Gradle dependency** (Java unused);
+  the patched genai `.so` ships from `jniLibs`. `build.gradle.kts` keeps a harmless `packaging{ jniLibs
+  pickFirsts }`. **Nothing committed** (human commits).
+- **Next:** #11 (inference engine abstraction) is now unblocked *and* has a proven ORT-coexistence design to
+  build on — promote `genai_spike.cpp` into the `ModelRuntime` GenAI engine, keep `libort_gen.so`/patched
+  genai from `setup_ort_separation.sh`. Remaining Gate 0.1 legs #1/#4 (cross-engine equivalence + RSS) need a
+  real File #9 package (per-tensor externals) so Native + GenAI read the SAME folder — rides with #9's
+  real-export leg.
+
+## Session close (2026-07-15, cont. — #11 inference engine abstraction)
+
+Landed **#11** (dual-engine `ModelRuntime`) on top of the proven ORT separation. Compiles + links (arm64),
+**48 SDK JVM tests green**, device build loads and GenAI still works (`GenAISpikeTest` OK). New JNI symbols
+(`ORTGeneratorGenAI_native*`, `GenAiSupport_nativeGenAiAvailable`) exported.
+- **New:** `runtime/ModelRuntime.kt` (interface + `EngineCapabilities` + `EXECUTION_PROVIDER_REGISTRY`/
+  `EngineRegistry` F3 + `GenAiSupport` probe + `ModelRuntimeFactory.selectEngine`(pure) / `.create`(device,
+  transparent fallback to Native)); `ORTGeneratorGenAI.kt` (GenAI engine, loop-in-Kotlin callback parity);
+  `cpp/genai_runtime.cpp` (session-handle streaming wrapper: `nativeCreate/SetSampling/Start/IsDone/Step/
+  LastToken/Release` + `nativeGenAiAvailable`, promoted from the spike, stable C API).
+- **Changed:** `runtime/InferenceEngine.kt` finalized as the canonical enum (retired #17's `DECOMPOSE(#11)`
+  placeholder); `ORTGeneratorNative` now `: ModelRuntime` (added `capabilities`/`load`/`release`, `generate`
+  is `override`); `ORTGenerationConfig` gained `engine: InferenceEngine? = null` (+ `overrideConfig`);
+  `LLMRepository.ortNativeInference` is now `ModelRuntime?` selected via `ModelRuntimeFactory.create`
+  (`makeModelRuntime`), `destroySession`→`release`.
+- **Deleted:** `ORTGenAINative.kt` + `cpp/onnx-genai.cpp` (dead).
+- **JVM tests:** `runtime/RuntimeSelectionTest.kt` — selection/fallback matrix + EP-registry parity (probe
+  injected; no JNI).
+- **Deferred to the #9-package step:** the full `ORTGeneratorGenAI.generate()` device smoke + dual-engine
+  same-folder run (Gate 0.1 #1/#4) need a real File #9 package — the builder model is GenAI-format only and
+  lacks the mobiletransformers tokenizer/inference-config the Native engine + `ORTTokenizerNative` require.
+  `LLMRepository` currently offers `{native,genai}` to the factory; wiring `supportedEngines`/`defaultEngine`
+  from the manifest variant (#13) is a small follow-up. **Nothing committed** (human commits).
+
+### Next: real File #9 package (the dual-engine cross-engine validator) — SCOPED, not yet built
+
+The #11 device dual-engine smoke + Gate 0.1 #1/#4 (same folder correct under BOTH engines + RSS) need a
+**real File #9 package** that both `ORTGeneratorNative` and GenAI read from one `inference/` dir. The tiny
+builder model (`build/genai_spike_model`) is GenAI-format only (single-blob, HF tokenizer) — Native +
+`ORTTokenizerNative` can't consume it.
+
+Producing one = **implementing the deferred #15 `_full_export`** (`src/mobiletransformers/export/pipeline.py`
+— currently `raise NotImplementedError`). Stages already exist in the legacy root and must be wired:
+`inference/export_inference_package.py` (base/trainable external split + `weight_handoff_map.json` +
+`genai_config.json`, the #9 inference entry), `inference/builder.py` (`make_genai_config`), and
+`artifact/onnx_builder.py` (`create_model`/`gen_artifacts`/`onnx_checktrain` for training artifacts +
+mergers). Env: the **export** profile (optimum-onnx, 3.12) for the inference graph; **ort-training** for the
+training artifacts/mergers — these are in **conflicting** `[tool.uv]` profiles, so the inference-side export
+(what the cross-engine test needs) should be produced under the export profile alone; the training side is a
+separate profile run. Output must carry the mobiletransformers tokenizer (`mobiletransformers_tokenizer_config.json`)
++ `generation_config.json` (Native) alongside `genai_config.json` (GenAI) so both engines load the same dir.
+
+Once a real package exists: push it (internal filesDir), add a `ModelRuntime`/`ORTGeneratorGenAI` instrumented
+test that loads it under each engine and asserts the same token (Gate 0.1 #1) + RSS within threshold (#4).

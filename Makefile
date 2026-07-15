@@ -50,7 +50,7 @@ parity:  ## Cross-language enum/schema parity gate (Python source of truth vs. K
 	uv run python -m mobiletransformers.codegen.enums --check
 
 test:  ## Python unit tests (core env, no heavy deps).
-	uv run pytest tests/unit tests/fixtures tests/export tests/hub tests/support tests/cli tests/adapter
+	uv run pytest tests/unit tests/fixtures tests/export tests/hub tests/support tests/cli tests/adapter tests/federated
 
 test-smoke:  ## Export/package/manifest wiring smoke (core-runnable subset).
 	uv run pytest tests/export tests/hub tests/cli -q

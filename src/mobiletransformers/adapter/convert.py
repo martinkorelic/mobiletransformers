@@ -11,13 +11,24 @@ here are pure and CI-covered.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from mobiletransformers.adapter.export import AdapterPackage
+from mobiletransformers.artifacts.handoff_map import HandoffMap
 from mobiletransformers.config.constants import PEFTMethod
 from mobiletransformers.config.registry.peft import get_peft_spec
 from mobiletransformers.exceptions import ExportError
+
+if TYPE_CHECKING:  # numpy is only needed under the train/ort-training profiles, not in the pure gate.
+    import numpy as np
+
+#: Reads trainable A/B factor arrays out of the ORT ``CheckpointState``: ``(checkpoint_dir, names) ->
+#: {checkpoint_name: ndarray}``. Injectable so the safetensors-writing path is unit-testable without a
+#: real on-device checkpoint (the default reader below is env-gated on ``onnxruntime-training``).
+FactorReader = Callable[[Path, "Iterable[str]"], "dict[str, np.ndarray]"]
 
 
 @dataclass
@@ -48,25 +59,105 @@ def to_peft_layout(pkg: AdapterPackage) -> PeftLayout | None:
     return PeftLayout(adapter_config=adapter_config, component_roles=tuple(sorted(required_roles)))
 
 
-def materialize_peft_weights(pkg: AdapterPackage, layout: PeftLayout, dest_dir: str) -> None:
-    """Write ``adapter_model.safetensors`` from the ORT checkpoint A/B factors — **env-gated**.
+def _read_checkpoint_factors(checkpoint_dir: Path, names: Iterable[str]) -> dict[str, np.ndarray]:
+    """Default :data:`FactorReader`: pull trainable A/B factors from the ORT ``CheckpointState``.
 
-    Reading the ORT ``CheckpointState`` needs ``onnxruntime-training`` and writing safetensors needs
-    ``torch``/``safetensors`` (the ``train`` extra). Raises a clear error when those are unavailable;
-    the gate decision + ``adapter_config.json`` are produced without this (CI-covered).
+    Mirrors ``artifact/onnx_builder.py``'s ``onnx_transfer_trained_weights`` (``state.parameters`` yields
+    ``(name, parameter)`` with ``parameter.data`` a numpy array). Env-gated on ``onnxruntime-training``.
     """
     try:
-        import safetensors  # noqa: F401
-        import torch  # noqa: F401
+        from onnxruntime.training.api import CheckpointState  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover - env-gated, needs the ORT-training runtime
+        raise ExportError(
+            "reading the ORT CheckpointState requires the onnxruntime-training runtime; run under the "
+            "ort-training profile, or pass a factor_reader to materialize_peft_weights"
+        ) from exc
+    if not checkpoint_dir.exists():  # pragma: no cover - env-gated path
+        raise ExportError(f"no ORT checkpoint at {checkpoint_dir}")
+    wanted = set(names)
+    state = CheckpointState.load_checkpoint(str(checkpoint_dir))  # pragma: no cover - env-gated
+    return {  # pragma: no cover - env-gated
+        param_name: parameter.data for param_name, parameter in state.parameters if param_name in wanted
+    }
+
+
+def _peft_safetensors_key(training_base_layer_name: str, search_pattern: str) -> str:
+    """Map a handoff ``trainingBaseLayerName`` + a PEFT component pattern to the PEFT safetensors key.
+
+    ``backbone.model.layers.0.self_attn.q_proj.base_layer`` + ``lora_A`` ->
+    ``base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight`` (the layout ``peft`` loads with
+    ``PeftModel.from_pretrained``).
+    """
+    module_path = training_base_layer_name
+    if module_path.startswith("backbone."):
+        module_path = module_path[len("backbone.") :]
+    if module_path.endswith(".base_layer"):
+        module_path = module_path[: -len(".base_layer")]
+    return f"base_model.model.{module_path}.{search_pattern}.weight"
+
+
+def materialize_peft_weights(
+    pkg: AdapterPackage,
+    layout: PeftLayout,
+    dest_dir: str,
+    *,
+    factor_reader: FactorReader | None = None,
+) -> None:
+    """Write ``adapter_model.safetensors`` from the ORT checkpoint A/B factors — **env-gated**.
+
+    Writing safetensors needs ``torch``/``safetensors`` (the ``train`` extra) and reading the ORT
+    ``CheckpointState`` needs ``onnxruntime-training`` (the default ``factor_reader``). The gate decision +
+    ``adapter_config.json`` are produced without either (CI-covered). ``factor_reader`` is injectable so
+    the numpy->torch->safetensors path can be exercised without a real on-device checkpoint.
+
+    Fails closed (``ExportError``) naming any factor tensor the reader could not supply, before writing.
+    """
+    try:
+        import numpy as np  # noqa: PLC0415
+        import torch  # noqa: PLC0415
+        from safetensors.torch import save_file  # noqa: PLC0415
     except ImportError as exc:  # pragma: no cover - env-gated, not run in the core CI env
         raise ExportError(
-            "materializing adapter_model.safetensors requires the 'train' extra (torch + safetensors) "
-            "and the ORT-training runtime; run under that profile"
+            "materializing adapter_model.safetensors requires the 'train' extra (torch + safetensors); "
+            "run under that profile"
         ) from exc
-    raise NotImplementedError(  # pragma: no cover - device/env-gated tensor extraction
-        "PEFT safetensors materialization from the ORT checkpoint is env-gated (run manually under the "
-        "train profile); the gate + adapter_config.json are available in every environment"
-    )
+
+    # Component role -> PEFT sub-key pattern (adapter_A -> lora_A, adapter_B -> lora_B), from the registry.
+    role_to_pattern = {c.role: c.search_pattern for c in get_peft_spec(PEFTMethod.LORA).component_schema}
+    factor_roles = tuple(layout.component_roles)
+
+    # Reload the handoff map to recover each trainable layer's A/B factor checkpoint names (the merged
+    # AdapterPackage.tensors carry only the fused inference weight, not the separate factors).
+    handoff = HandoffMap.load(pkg.cache_repo_dir / "train" / "weight_handoff_map.json")
+
+    # checkpoint param name -> its target PEFT safetensors key.
+    key_by_checkpoint_name: dict[str, str] = {}
+    for entry in handoff.entries:
+        if not all(role in entry.checkpoint_names for role in factor_roles):
+            continue  # this layer's checkpoint no longer carries the factors; skip (gate already vetted)
+        for role in factor_roles:
+            pattern = role_to_pattern.get(role)
+            if pattern is None:
+                raise ExportError(f"PEFT role {role!r} has no component pattern in the LoRA registry")
+            ckpt_name = entry.checkpoint_names[role]
+            key_by_checkpoint_name[ckpt_name] = _peft_safetensors_key(entry.training_base_layer_name, pattern)
+    if not key_by_checkpoint_name:
+        raise ExportError("no LoRA A/B factors found in the handoff map; package is not Mode-1 eligible")
+
+    reader = factor_reader or _read_checkpoint_factors
+    arrays = reader(pkg.cache_repo_dir / "train" / "checkpoint", key_by_checkpoint_name.keys())
+
+    missing = sorted(set(key_by_checkpoint_name) - set(arrays))
+    if missing:
+        raise ExportError(f"checkpoint is missing required LoRA factor tensor(s): {', '.join(missing)}")
+
+    tensors = {
+        key_by_checkpoint_name[name]: torch.from_numpy(np.ascontiguousarray(arrays[name]))
+        for name in key_by_checkpoint_name
+    }
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    save_file(tensors, str(dest / "adapter_model.safetensors"))
 
 
-__all__ = ["PeftLayout", "to_peft_layout", "materialize_peft_weights"]
+__all__ = ["PeftLayout", "FactorReader", "to_peft_layout", "materialize_peft_weights"]

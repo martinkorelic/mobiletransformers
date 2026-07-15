@@ -2,13 +2,34 @@ package com.martinkorelic.mobiletransformers
 
 import android.util.Log
 import com.martinkorelic.mobiletransformers.repository.GenerationCallback
+import com.martinkorelic.mobiletransformers.runtime.EngineCapabilities
+import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
+import com.martinkorelic.mobiletransformers.runtime.ModelRuntime
 import java.io.File
 
-class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokenizerNative, var _generationConfig : ORTGenerationConfig) {
+class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokenizerNative, var _generationConfig : ORTGenerationConfig) : ModelRuntime {
 
     private var LOG_TAG = "ORTGeneratorNative"
 
     private var inferenceModel : Long = 0
+
+    // #11: the guaranteed engine floor. maxContextLength reflects the configured generation length.
+    override val capabilities: EngineCapabilities
+        get() = EngineCapabilities(
+            engine = InferenceEngine.NATIVE,
+            supportsStreaming = true,
+            supportsLoadMergedWeights = true,
+            maxContextLength = _generationConfig.maxSequenceLength,
+        )
+
+    /** #11 [ModelRuntime.load]: open the Native session over `<cacheDir>/<repoName>/inference`. */
+    override suspend fun load(cacheDir: String, config: ORTGenerationConfig) {
+        generationConfig = config
+        createInferenceModel()
+    }
+
+    /** #11 [ModelRuntime.release]. */
+    override fun release() = destroySession()
 
     private var modelLoadTimeMs : Long = 0L
 
@@ -81,9 +102,9 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
      * This generation loop generates token by token.
      * Generates multi-turn conversation if chat template is enabled in tokenizer configuration.
      */
-    fun generate(promptText: String,
+    override fun generate(promptText: String,
                          generationArgs : ORTGenerationConfig,
-                         callback: GenerationCallback? = null) : String {
+                         callback: GenerationCallback?) : String {
 
         val decodedText = StringBuilder()
 

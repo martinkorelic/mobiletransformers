@@ -18,7 +18,9 @@ data class ORTGenerationConfig(
     val systemPrompt : String? = null,
     var loadMergedWeights : Boolean = false,
     val sampling : SamplingOptions = SamplingOptions(),
-    val deviceOptions: DeviceOptions = DeviceOptions()
+    val deviceOptions: DeviceOptions = DeviceOptions(),
+    // #11: engine selector over the one shared package (null = auto-select; Native is the floor).
+    val engine: com.martinkorelic.mobiletransformers.runtime.InferenceEngine? = null
 ) {
     fun overrideConfig(override: ORTGenerationConfig?): ORTGenerationConfig {
         if (override == null) return this
@@ -36,7 +38,8 @@ data class ORTGenerationConfig(
             timeStepUpdate = if (override.timeStepUpdate != defaultConfig.timeStepUpdate) override.timeStepUpdate else this.timeStepUpdate,
             systemPrompt = override.systemPrompt ?: this.systemPrompt,
             deviceOptions = if (override.deviceOptions != defaultConfig.deviceOptions) override.deviceOptions else this.deviceOptions,
-            sampling = if (override.sampling != defaultConfig.sampling) override.sampling else this.sampling
+            sampling = if (override.sampling != defaultConfig.sampling) override.sampling else this.sampling,
+            engine = override.engine ?: this.engine
         )
     }
 }

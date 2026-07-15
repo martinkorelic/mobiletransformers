@@ -34,6 +34,8 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         weight_serializer.cpp
         weight_merger.cpp
         sampling.cpp
+        genai_spike.cpp
+        genai_runtime.cpp
         proto/onnx.pb.cc)
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/onnxruntime)

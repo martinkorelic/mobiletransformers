@@ -41,6 +41,11 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
     var epoch : Int = 0
     var accumulatedLoss = 0f
 
+    // Cooperative cancellation (#18): TrainingJob.cancel(...) sets this; the step/epoch loops check it and
+    // break cleanly so the existing saveModel + saveTrainingState path can run. Not a loop-logic change.
+    @Volatile
+    var cancelRequested : Boolean = false
+
 
     // Training metrics
 
@@ -216,6 +221,11 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
 
             while (epoch < trainingConfig.numTrainEpochs && globalStep < totalSteps) {
 
+                if (cancelRequested) {
+                    Log.i(LOG_TAG, "Training cancelled at epoch $epoch (global step: $globalStep)")
+                    break
+                }
+
                 Log.i(LOG_TAG, "Starting epoch $epoch (global step: $globalStep)")
 
                 val epochStartTime = System.currentTimeMillis()
@@ -239,6 +249,11 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
                 val dataloader = dataCurator.getBatchedDataset()
 
                 for (batch in dataloader) {
+
+                    // Cooperative cancel (#18): break out so the outer while sees the flag and exits cleanly.
+                    if (cancelRequested) {
+                        break
+                    }
 
                     // End the training if global steps have been reached
                     if (globalStep >= totalSteps) {

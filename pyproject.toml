@@ -31,6 +31,10 @@ train  = ["transformers>=4.45,<4.58", "onnxscript>=0.3", "peft>=0.13", "onnx"]
 rag    = ["langchain-community>=0.3.27", "langchain-huggingface>=0.3", "langchain-objectbox==0.1.0", "sentence-transformers>=5"]
 eval   = ["deepeval>=3.4.7", "matplotlib>=3.10"]
 hub    = ["huggingface-hub>=0.34"]
+# Tier-3 federated Flower simulation (#35): the record codec + FedAvg math are pure numpy (core-testable),
+# so no extra is needed for CI. Flower itself (flwr[simulation], which pulls ray/pyarrow) is deliberately
+# kept OUT of the universal lock — like the ORT-training wheel — because locking it downgrades protobuf/
+# rich/typer repo-wide. The manual simulation leg installs it out-of-band: `pip install "flwr[simulation]"`.
 
 [dependency-groups]
 # Local-only workflows. Never part of the published install surface.

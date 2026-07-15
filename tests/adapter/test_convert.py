@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mobiletransformers.adapter.convert import to_peft_layout
+from mobiletransformers.adapter.convert import materialize_peft_weights, to_peft_layout
 from mobiletransformers.adapter.export import export_adapter_from_cache
 from mobiletransformers.adapter.model_card import assert_required_sections, render_adapter_card
 from mobiletransformers.exceptions import ExportError
@@ -72,3 +72,46 @@ def test_adapter_card_assert_fails_on_missing_section(tmp_path):
     )
     with pytest.raises(ExportError, match="privacy warning"):
         assert_required_sections("no disclosures here", pkg)
+
+
+def test_materialize_peft_weights_writes_safetensors(tmp_path):
+    """The numpy->torch->safetensors path with an injected factor reader (no ORT checkpoint needed)."""
+    np = pytest.importorskip("numpy")
+    st = pytest.importorskip("safetensors")  # ensures torch+safetensors present
+    pytest.importorskip("torch")
+
+    pkg = export_adapter_from_cache(
+        make_cache(tmp_path / "c", peft_method="lora", component_roles=_LORA_ROLES)
+    )
+    layout = to_peft_layout(pkg)
+    assert layout is not None
+
+    factors = {
+        "l.lora_A": np.arange(8 * 3, dtype=np.float32).reshape(8, 3),  # (rank, in_features)
+        "l.lora_B": np.arange(4 * 8, dtype=np.float32).reshape(4, 8),  # (out_features, rank)
+    }
+    dest = tmp_path / "out"
+    materialize_peft_weights(pkg, layout, str(dest), factor_reader=lambda _dir, _names: factors)
+
+    from safetensors.numpy import load_file
+
+    loaded = load_file(str(dest / "adapter_model.safetensors"))
+    prefix = "base_model.model.model.layers.0.self_attn.q_proj"
+    assert set(loaded) == {f"{prefix}.lora_A.weight", f"{prefix}.lora_B.weight"}
+    assert np.array_equal(loaded[f"{prefix}.lora_A.weight"], factors["l.lora_A"])
+    assert np.array_equal(loaded[f"{prefix}.lora_B.weight"], factors["l.lora_B"])
+    _ = st
+
+
+def test_materialize_peft_weights_fails_closed_on_missing_factor(tmp_path):
+    pytest.importorskip("numpy")
+    pytest.importorskip("safetensors")
+    pytest.importorskip("torch")
+
+    pkg = export_adapter_from_cache(
+        make_cache(tmp_path / "c", peft_method="lora", component_roles=_LORA_ROLES)
+    )
+    layout = to_peft_layout(pkg)
+    assert layout is not None
+    with pytest.raises(ExportError, match="missing required LoRA factor"):
+        materialize_peft_weights(pkg, layout, str(tmp_path / "out"), factor_reader=lambda _d, _n: {})

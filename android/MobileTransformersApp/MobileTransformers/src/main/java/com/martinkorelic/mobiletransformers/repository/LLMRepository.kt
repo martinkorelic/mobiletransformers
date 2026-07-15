@@ -3,11 +3,11 @@ package com.martinkorelic.mobiletransformers.repository
 import android.content.Context
 import android.util.Log
 import com.martinkorelic.mobiletransformers.InferenceProgress
-import com.martinkorelic.mobiletransformers.ORTGenAINative
 import com.martinkorelic.mobiletransformers.ORTGenAITokenizer
 import com.martinkorelic.mobiletransformers.ORTGenerationConfig
-import com.martinkorelic.mobiletransformers.ORTGeneratorNative
 import com.martinkorelic.mobiletransformers.ORTRagArguments
+import com.martinkorelic.mobiletransformers.runtime.ModelRuntime
+import com.martinkorelic.mobiletransformers.runtime.ModelRuntimeFactory
 import com.martinkorelic.mobiletransformers.ORTRagConfig
 import com.martinkorelic.mobiletransformers.ORTRetriever
 import com.martinkorelic.mobiletransformers.ORTTokenizerNative
@@ -121,7 +121,6 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         get() = _generationConfig
         set(value) {
             _generationConfig = value
-            ortNativeInference?.generationConfig = _generationConfig
         }
 
     var ragConfig: ORTRagConfig
@@ -148,9 +147,8 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
     private var ortGenAITokenizer : ORTGenAITokenizer? = null
     var ortTokenizerNative : ORTTokenizerNative? = null
 
-    // Inference capabilities
-    private var ortGenAiNative : ORTGenAINative? = null
-    var ortNativeInference : ORTGeneratorNative? = null
+    // Inference capabilities (#11): the selected engine (Native floor or GenAI) behind ModelRuntime.
+    var ortNativeInference : ModelRuntime? = null
 
     // Retriever capabilities
     var ortRetriever : ORTRetriever? = null
@@ -220,7 +218,7 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         // Destroy previous tokenizer session
         ortTokenizerNative?.destroySession()
         // Destroy previous inference session
-        ortNativeInference?.destroySession()
+        ortNativeInference?.release()
 
         ortTokenizerNative = null
         ortNativeInference = null
@@ -259,12 +257,9 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         )
     }
 
-    private suspend fun makeOrtNativeInference(generationArgs : ORTGenerationConfig) : ORTGeneratorNative {
-        //if (ortTrainerNative == null) {
-        //    Log.e(LOG_TAG, "Could not find the train model. Make sure it is initialized before GenAI inference.")
-        //    return null
-        //}
-
+    // #11: select + load the inference engine (Native floor, or GenAI when requested & available) over the
+    // one shared inference/ package via ModelRuntimeFactory, with transparent fallback to Native.
+    private suspend fun makeModelRuntime(generationArgs : ORTGenerationConfig) : ModelRuntime {
         if (ortTokenizerNative == null) {
             Log.e(LOG_TAG, "Could not find the tokenizer. Initializing tokenizer...")
             ortTokenizerNative = ORTTokenizerNative(tokenizerConfigPath)
@@ -275,10 +270,9 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         // Assuming the training session has been saved prior to this
         ortTrainerNative?.destroySession(false)
 
-        val nativeInference = ORTGeneratorNative(cacheDir, ortTokenizerNative!!, generationConfig)
-        nativeInference.createInferenceModel()
-
-        return nativeInference
+        // supportedEngines would come from the manifest variant (#13); until wired here, offer both and let
+        // config.engine + GenAiSupport.available() drive selection (Native remains the guaranteed floor).
+        return ModelRuntimeFactory.create(cacheDir, ortTokenizerNative!!, generationArgs)
     }
 
     private suspend fun makeOrtRag(ortArgs : ORTRagConfig) : ORTRetriever {
@@ -364,7 +358,7 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
                         //    ortGenAiNative = makeOrtGenAI()
                         //}
                         "native" -> {
-                            ortNativeInference = makeOrtNativeInference(finalGenConfig)
+                            ortNativeInference = makeModelRuntime(finalGenConfig)
                         }
                         else -> {
                             Log.e(LOG_TAG, "Unknown generation type - ${finalGenConfig.type}")
@@ -442,7 +436,7 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
                     when (generationConfig.type) {
                         // Deprecated
                         //"genai" -> ortGenAiNative?.destroySession()
-                        "native" -> ortNativeInference?.destroySession()
+                        "native" -> ortNativeInference?.release()
                     }
 
                     llmState = LLMState.NotInitialized

@@ -57,19 +57,19 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | [x] | 7 | `01_code_plans/05_optimum_onnx_export_and_tasksmanager.md` | Inference-export front door (arch via registry) | 2, 4, 6 |
 | [x] | 8 | `00_code_plans/07_weight_handoff_map_and_tensor_codec.md` | Data contract every later piece reads (codec consumes registries) | 4, 6 | *(Python owner layer done: schema + codec + `check_compat`; C++/Kotlin consumers ride with #9/#23)* |
 | [ ] | 9 | `01_code_plans/01_unified_merger_and_external_data_export.md` | **Dual-engine core** + full merger unification | 6, 7, 8 | *(code-complete 2026-07-14: Python A/B/C tested, C++ D/E compile+link-verified on arm64-v8a; box stays open pending the manual on-device parity/atomic/load-smoke tests — see #9 self-check)* |
-| [ ] | 10 | `01_code_plans/02_genai_external_data_swap_spike.md` | Feeds Gate 0.1 | 9 |
-| [ ] | 11 | `01_code_plans/03_inference_engine_abstraction_native_and_genai.md` | Engine selection | 10 |
+| [x] | 10 | `01_code_plans/02_genai_external_data_swap_spike.md` | Feeds Gate 0.1 | 9 | *(2026-07-15: **Gate 0.1 = ADOPT GenAI.** F2 validated — external-data swap changes GenAI output on device (token/fp differ) + desktop; symbol/fork-only confirmed; RSS measured (mmap). The one blocker — ORT-runtime coexistence (genai needs stock ORT ≥1.26, Native needs training ORT 1.23) — **resolved** via `libort_gen.so` distinct-soname separation, verified both coexist on device. Cross-engine #1/#4 (same package under BOTH engines) ride with #11's dual-engine smoke + a real #9 package. See `spikes/genai_external_swap/README.md`.)* |
+| [ ] | 11 | `01_code_plans/03_inference_engine_abstraction_native_and_genai.md` | Engine selection | 10 | *(code-complete 2026-07-15: `runtime/ModelRuntime.kt` (interface + `EngineCapabilities` + `EXECUTION_PROVIDER_REGISTRY` F3 + `GenAiSupport` + `ModelRuntimeFactory` pure-select + device-create w/ transparent Native fallback); `ORTGeneratorGenAI.kt` + `cpp/genai_runtime.cpp` (streaming, callback parity); `ORTGeneratorNative` adapted to `ModelRuntime`; `engine` field in `ORTGenerationConfig`; `LLMRepository` wired via factory; dead `ORTGenAINative.kt`+`onnx-genai.cpp` deleted. Compiles+links arm64, **48 JVM tests**, device build loads. Box open pending the dual-engine same-folder device smoke + streaming-parity harness — need a real #9 package.)* |
 | [ ] | 12 | `01_code_plans/04_memory_mapping_experiments.md` | Optimizes 9–11 (non-blocking) | 9 |
 | [x] | 13 | `00_code_plans/06_manifest_first_package_and_cache_bridge.md` | Package contract | 8, 9 | *(done 2026-07-14: Python `artifacts/manifest.py` + Kotlin `packages/` cache-bridge (6 classes), JVM-tested + `compileDebugKotlin`; only the on-device generate smoke deferred)* |
 | [x] | 14 | `02_code_plans/03_hub_model_package_format.md` | Hub repo shape | 13 | *(done 2026-07-14: `hub/package_format.py` — `sanitize_repo_id`, `build_manifest`, tiny_package fixture; no device)* |
 | [x] | 15 | `02_code_plans/05_one_command_export_cli.md` | Wraps 7–9 + 13 *(checkpoint: export E2E)* | 7, 9, 13 | *(done 2026-07-14: `export/pipeline.py` + `cli export/push`; dry-run + assemble→validate checkpoint automated; real full-model export env-gated, not device)* |
 | [x] | 16 | `00_code_plans/04_android_gradle_rename_migration.md` | Isolated, verified rename | — | *(done 2026-07-14: **full removal / option B** — Kotlin+native+JNI all renamed off `ortmobile`; supersedes the doc's option-A. Compile+link-verified arm64-v8a, `compileDebugKotlin` + `make parity` green.)* |
-| [ ] | 17 | `00_code_plans/05_android_facade_foundation.md` | Public SDK facade *(checkpoint: load→generate)* | 13, 16 |
-| [ ] | 18 | `00_code_plans/08_training_lifecycle_and_checkpoint_contracts.md` | Job/progress/checkpoint API | 17 |
+| [ ] | 17 | `00_code_plans/05_android_facade_foundation.md` | Public SDK facade *(checkpoint: load→generate)* | 13, 16 | *(code-complete 2026-07-15: `MobileTransformers.fromPretrained`/`MobileTransformerModel`, public `config/*` + `runtime/{ModelSession,RuntimeCapabilities,Results}`, `ConfigMappers`, `RepositoryBackedModelSession`, `ModelFeature`, exception stubs; 13 JVM tests (config round-trip, feature/engine, variant-select, facade delegation). Box open pending the device load→generate leg. `InferenceEngine` placeholder retired by #11.)* |
+| [ ] | 18 | `00_code_plans/08_training_lifecycle_and_checkpoint_contracts.md` | Job/progress/checkpoint API | 17 | *(code-complete 2026-07-15: `training/` `TrainingJob`/`TrainingStatus`/`TrainingEvent`/`CheckpointInfo`/`TrainingJobManager`(+`TrainingJobSpec`) + `TrainingEventAdapter`; `ORTTrainerNative` cooperative `cancelRequested` (no format change); `TrainingResult` enriched. 5 JVM tests (event mapping, checkpoint round-trip). Box open pending device resume/summary/train→merge→generate legs.)* |
 | [ ] | 19 | `02_code_plans/01_hf_style_kotlin_facade.md` | `fromPretrained`/train/merge/generate *(checkpoint: train→merge→generate)* | 11, 17 |
 | [x] | 20 | `02_code_plans/02_optimum_support_matrix.md` | Reporting layer | 7 | *(done 2026-07-14: `support/` package (statuses/models/matrix) + `support-matrix` CLI; inherited statuses, probe ingestion, filtered docs; detection injectable/mocked in CI, ready-statuses read device probes when present)* |
 | [x] | 21 | `02_code_plans/04_hub_pull_and_cache_flow.md` | Python pull first, Android downloader next *(checkpoint: pull→load)* | 13, 14 | *(done 2026-07-14: `hub/{variant_select,pull}.py` + `cli pull`/`install-package`; pull→install→sha256 automated over the fixture; Android downloader + device load deferred)* |
-| [x] | 22 | `02_code_plans/06_adapter_pushback.md` | Last Tier-1 piece | 9, 14 | *(done 2026-07-14: `adapter/{export,convert,model_card}.py` + `cli push-adapter`; PEFT/native gate + card + dry-run automated; safetensors materialization + on-device upload env/device-gated)* |
+| [x] | 22 | `02_code_plans/06_adapter_pushback.md` | Last Tier-1 piece | 9, 14 | *(done 2026-07-14; 2026-07-15: `materialize_peft_weights` implemented (CheckpointState A/B factors → `adapter_model.safetensors`, injectable factor reader) + tested under the `train` profile. On-device upload remains device-gated.)* |
 
 ### Tier 2 — Inference & RAG (Phase 7)
 
@@ -88,7 +88,7 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | [x] | 28 | `05_code_plans/01_makefile_and_cli_entrypoints.md` | One-command path | 1, 15, 2 | *(done 2026-07-14: real Makefile — thin wrappers over the `mobiletransformers` CLI + Gradle, `make help` self-documents, profile-isolated `setup*`, non-destructive `clean-generated`; `scripts/{android_build_aar,publish_local_maven,run_smoke}.sh` stubs (bodies owned by #30))*|
 | [x] | 29 | `05_code_plans/02_ci_staged_pipeline.md` | Standing "it works" proof (incl. lint/typecheck/parity gates) | 28, 1, 3 | *(done 2026-07-14: `.github/workflows/ci.yml` (fast → export-smoke → android-assemble, `fail-fast:false`, per-job `timeout-minutes`) + `device.yml` (dispatch + nightly). fast+export-smoke run in CI; android-assemble self-skips without the git-ignored vendored native deps, exactly like `ort-training-smoke.yml`. No PR job downloads a large model.)*|
 | [ ] | 30 | `05_code_plans/03_aar_maven_publication.md` | Portable Android consumption *(checkpoint: consumer app builds)* | 16, 28 |
-| [ ] | 31 | `05_code_plans/04_docs_set_and_compatibility_matrix.md` | Public docs + registry-driven matrix as contracts stabilize | 23-27, 19, 13 | *(partial 2026-07-14: `docs/EXPORT.md`, `docs/RAG.md` (#25 scope), `docs/PUBLIC_API.md`, generated `docs/COMPATIBILITY_MATRIX.md` + `support/render.py` renderer + `support-matrix --md` + drift test; `CHANGELOG.md` + `docs/RELEASE_CHECKLIST.md` skeletons. Remaining pages (ARCHITECTURE/MODEL_FORMAT/CONFIGURATION/ANDROID_SDK) await their locked contracts; box stays open.)*|
+| [ ] | 31 | `05_code_plans/04_docs_set_and_compatibility_matrix.md` | Public docs + registry-driven matrix as contracts stabilize | 23-27, 19, 13 | *(partial 2026-07-14: `docs/EXPORT.md`, `docs/RAG.md` (#25 scope), `docs/PUBLIC_API.md`, generated `docs/COMPATIBILITY_MATRIX.md` + `support/render.py` renderer + `support-matrix --md` + drift test; `CHANGELOG.md` + `docs/RELEASE_CHECKLIST.md` skeletons. `docs/MODEL_FORMAT.md` + `docs/CONFIGURATION.md` added 2026-07-15 (contracts locked). Remaining pages (ARCHITECTURE/ANDROID_SDK) await #23/#24/#30; box stays open.)*|
 | [ ] | 32 | `05_code_plans/05_versioning_license_release.md` | v1.0 release gate *(checkpoint: full release)* | 29, 30, 31 |
 
 ### Tier 3 — Reach extensions (Phase 9; each spike-gated, never blocks v1.0)
@@ -97,7 +97,7 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | --- | --- | --- | --- | --- |
 | [ ] | 33 | `04_code_plans/01_encoder_model_support.md` | Cheapest reach; arch-registry entry + codec/manifest reuse | 13, 7, 9 |
 | [ ] | 34 | `04_code_plans/02_training_scheduler_workmanager.md` | Charging-cycle training; closes the **`LinearLRScheduler`** state-persistence gap (`ORTScheduler.kt:156-161` `TODO` — Cosine already implements + is wired via `training_state.json`) *(checkpoint: scheduled train→resume)* | 18, 17 |
-| [ ] | 35 | `04_code_plans/03_federated_codec_and_python_simulation.md` | Python Flower sim (Option A first) *(checkpoint: N-client sim)* | 8, 9, 13 |
+| [ ] | 35 | `04_code_plans/03_federated_codec_and_python_simulation.md` | Python Flower sim (Option A first) *(checkpoint: N-client sim)* | 8, 9, 13 | *(code-complete 2026-07-15: `federated/` `FederatedAdapterRecord` (codec-derived, pinned byte serialization = #36 golden), `flower_sim.py` pure `federated_average` + `cli federated simulate`; `flower_client.py` lazy-flwr. Tests `tests/federated/` (roundtrip/format-version/comm-size/fedavg/dropout + byte golden) run in core env. flwr kept OUT of the universal lock (out-of-band, like the ORT wheel). Box open pending the manual N-client ORT-`fit` sim + aggregated-adapter logits smoke — runnable under the ORT-training profile.)* |
 | [ ] | 36 | `04_code_plans/04_federated_android_gateway.md` | Android client + gateway (Option B) | 35, 34, 18 |
 | [ ] | 37 | `04_code_plans/05_functiongemma_architecture_gate_and_intents.md` | Gemma-3 inference-graph as arch-registry entry + intents *(checkpoint: train→tool-call→intent)* | 11, 7, 9 |
 
@@ -235,14 +235,25 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 - **Env note:** the native build needs the untracked vendored deps (`cpp/includes/google` protobuf headers, `jniLibs/`, `aarLibs/`) — all `.gitignore`d (aarLibs added this session); they were provisioned locally from the sibling `../ORTTransformer` checkout for the compile-check.
 
 ### #10 — GenAI external-data swap spike (`01_code_plans/02`)
-- [ ] Does the spike show a per-tensor `.bin` swap is observable in GenAI output (or a clear FAIL)?
-- [ ] Is RSS measured and the `OgaCreateModelWithInitializers` symbol presence verified on the Android lib?
-- [ ] Is the Gate 0.1 PASS/FAIL decision recorded with evidence?
+- [x] Does the spike show a `.bin` swap is observable in GenAI output (or a clear FAIL)? *(YES — device: token 28→6156, fp 1.518e8→9.82e7 on a fresh `OgaCreateModel`; desktop `|ΔL|=39.6`)*
+- [x] Is RSS measured and the `OgaCreateModelWithInitializers` symbol presence verified on the Android lib? *(RSS measured — mmap/lazy, not 2× copy; `check_symbols.sh`: `OgaCreateModelWithInitializers` ABSENT, `OgaCreateModel` present)*
+- [x] Is the Gate 0.1 PASS/FAIL decision recorded with evidence? *(**ADOPT GenAI** — `spikes/genai_external_swap/README.md`)*
+
+**Done 2026-07-15 (device-verified).** Gate 0.1 = ADOPT. F2 validated on device + desktop. The blocker
+(genai needs stock ORT ≥1.26, Native needs training ORT 1.23; both share soname `libonnxruntime.so`) was
+**resolved** with engine separation: ship the genai-paired stock ORT 1.27 as `libort_gen.so` (distinct
+soname, raw-patched — patchelf corrupts verneed) + raw-patch the genai `.so`'s dlopen target; training ORT
+stays `libonnxruntime.so`. Only ~3 exported symbols per ORT (hidden visibility) + dlsym-on-handle → no
+interposition. Verified both ORTs coexist in one process on device. Reproducible via
+`spikes/genai_external_swap/setup_ort_separation.sh`. Cross-engine #1/#4 (same package under BOTH engines)
+ride with #11's dual-engine smoke + a real #9 package.
 
 ### #11 — Inference engine abstraction (`01_code_plans/03`)
-- [ ] Is there **one** `ModelRuntime` with Native (guaranteed) + GenAI (opt-in) over the **same** package?
-- [ ] Do both engines emit an identical callback sequence (parity lock)?
-- [ ] Does engine selection fall back to Native transparently when GenAI is unavailable?
+- [x] Is there **one** `ModelRuntime` with Native (guaranteed) + GenAI (opt-in) over the **same** package? *(`ModelRuntime` interface; `ORTGeneratorNative` (NATIVE) + `ORTGeneratorGenAI` (GENAI); `ModelRuntimeFactory.create` over one `inference/` dir)*
+- [ ] Do both engines emit an identical callback sequence (parity lock)? *(GenAI engine mirrors Native's `onStartGeneration`→`onPartialResult`*→`onCompletion`; the automated streaming-parity harness + on-device parity are the outstanding legs, gated on a real #9 package)*
+- [x] Does engine selection fall back to Native transparently when GenAI is unavailable? *(`ModelRuntimeFactory` pure `selectEngine` + device `create` catch→Native; `RuntimeSelectionTest` covers the matrix; GenAI failure never reaches the caller)*
+
+**Code-complete 2026-07-15.** 48 SDK JVM tests, compiles+links arm64, device build loads. `EXECUTION_PROVIDER_REGISTRY` (F3) data-driven; dead `ORTGenAINative.kt`+`onnx-genai.cpp` deleted. Box open pending the streaming-parity harness + dual-engine same-folder device smoke — both need a real #9 package (the builder model is GenAI-format only).
 
 ### #12 — Memory-mapping experiments (`01_code_plans/04`)
 - [ ] Do the experiments produce RSS numbers feeding the Gate 0.2 decision?
@@ -282,14 +293,18 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 - [x] Are the JNI symbol decisions (rename vs alias) documented and does the app still link? *(chose rename-all, not alias; each symbol mangled from its class's new package; `libmobiletransformers.so` links on arm64-v8a)*
 
 ### #17 — Android facade foundation (`00_code_plans/05`) · checkpoint
-- [ ] Does `MobileTransformers.fromPretrained(...)` return a working `MobileTransformerModel` wrapping the existing repositories (no JNI rewrite)?
-- [ ] Are the engine selector + exception hierarchy in place?
-- [ ] Does the facade workflow (load → generate one token, device-manual) pass?
+- [x] Does `MobileTransformers.fromPretrained(...)` return a working `MobileTransformerModel` wrapping the existing repositories (no JNI rewrite)? *(`RepositoryBackedModelSession` wraps `LLMRepository` + 3 sub-repos; no `ORT*`/`Job` in public signatures; delegation covered by `FacadeDelegationTest`. Actual on-device load→generate is the outstanding leg)*
+- [x] Are the engine selector + exception hierarchy in place? *(`InferenceEngine`/`RuntimeCapabilities` + `ModelFeature` engine-selector semantics tested; `MobileTransformersException` base + `ModelNotInstalled`/`MissingArtifact` stubs — full hierarchy is #19)*
+- [ ] Does the facade workflow (load → generate one token, device-manual) pass? *(deferred — device leg)*
+
+**Code-complete 2026-07-15.** 13 JVM tests (config round-trip == `ORT*Config` defaults, feature/engine semantics, manifest variant-select, facade→session delegation via a hand-written fake). Box open pending the device load→generate checkpoint.
 
 ### #18 — Training lifecycle & checkpoint contracts (`00_code_plans/08`)
-- [ ] Does `TrainingJob` expose status/events/checkpoint without hiding the native lifecycle?
-- [ ] Is the callback→event adapter complete and the checkpoint file format preserved?
-- [ ] Are the session lock + cooperative cancellation defined for reuse by the scheduler (#34)?
+- [x] Does `TrainingJob` expose status/events/checkpoint without hiding the native lifecycle? *(`TrainingJob` + `TrainingStatus`/`TrainingEvent` (StateFlow/SharedFlow) + `CheckpointInfo`; `TrainingEventAdapter` maps the `TrainingCallback` 1:1 — `TrainingEventAdapterTest` asserts order/transitions)*
+- [x] Is the callback→event adapter complete and the checkpoint file format preserved? *(adapter complete; `CheckpointInfo` is a read-only Gson projection of `training_state.json` — `CheckpointInfoTest` asserts the on-disk JSON is unchanged after read)*
+- [x] Are the session lock + cooperative cancellation defined for reuse by the scheduler (#34)? *(`ORTTrainerNative.@Volatile cancelRequested` checked at the step/epoch loop tops (no format change); `TrainingJobManager` owns one job per repo + a `TrainingJobSpec` WorkManager seam — no WorkManager dep added)*
+
+**Code-complete 2026-07-15.** 5 JVM tests. `TrainingResult` (the #17 type) enriched with `checkpoint`/`summary`. Box open pending the device resume/summary/train→merge→generate manual legs.
 
 ### #19 — HF-style Kotlin facade (`02_code_plans/01`) · checkpoint
 - [ ] Do `applyPeft`/`train`/`merge`/`generate`/`retrieve` map cleanly onto existing repositories?
@@ -384,9 +399,11 @@ not-yet), `docs/PUBLIC_API.md` (Python `__all__` + CLI; Kotlin facade pending #1
 - [ ] Does the **multi-chunk scheduled-train → resume** workflow pass (thermal/energy logged)?
 
 ### #35 — Federated codec & Python Flower simulation (`04_code_plans/03`) · checkpoint
-- [ ] Does `FederatedAdapterRecord` derive ordering from `TrainableTensorCodec` (no new ordering) (F8)?
-- [ ] Does an N-client Flower simulation aggregate adapter tensors and improve the metric?
-- [ ] Is `adapterFormatVersion` linked to `weight_handoff_map.schemaVersion` (F1/F8)?
+- [x] Does `FederatedAdapterRecord` derive ordering from `TrainableTensorCodec` (no new ordering) (F8)? *(order == `HandoffMap._sorted_entries`/`tensor_specs`; `test_codec_roundtrip` pins it; byte golden `federated_record.golden.bin` freezes the #36 serialization)*
+- [ ] Does an N-client Flower simulation aggregate adapter tensors and improve the metric? *(pure `federated_average` FedAvg + dropout tested; the N-client ORT-`fit` run that shows metric-improvement is the manual leg — runnable under the ORT-training profile)*
+- [x] Is `adapterFormatVersion` linked to `weight_handoff_map.schemaVersion` (F1/F8)? *(`check_format` fails closed on mismatch via shared `check_compat`; `test_format_version`)*
+
+**Code-complete 2026-07-15 (Python, no device).** `federated/` package + `cli federated simulate` + `tests/federated/` (all core-env). flwr kept OUT of the universal lock (out-of-band, like the ORT wheel — it downgrades protobuf/rich/typer + bumps mypy). Box open pending the manual N-client sim + aggregated-adapter logits smoke.
 
 ### #36 — Federated Android client & gateway (`04_code_plans/04`)
 - [ ] Are `exportTrainableTensors`/`importTrainableTensors` JNI added, and is the codec byte-identical to Python (golden test)?

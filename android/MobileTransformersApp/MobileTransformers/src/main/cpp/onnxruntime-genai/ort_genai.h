@@ -9,6 +9,7 @@
 
 #if __cplusplus >= 202002L
 #include <span>
+#define OGA_USE_SPAN 1
 #endif
 
 #include "ort_genai_c.h"
@@ -26,13 +27,18 @@
  * tokenizer->Encode("A great recipe for Kung Pao chicken is ", *sequences);
  *
  * auto params = OgaGeneratorParams::Create(*model);
- * params->SetInputSequences(*sequences);
  * params->SetSearchOption("max_length", 200);
+ * params->SetSearchOption("batch_size", 1);
  *
- * auto output_sequences = model->Generate(*params);
- * auto out_string = tokenizer->Decode(output_sequences->Get(0));
+ * auto generator = OgaGenerator::Create(*model, *params);
+ * generator->AppendTokenSequences(*sequences);
+ * while (!generator->IsDone()) {
+ *  generator->GenerateNextToken();
+ * }
+ * auto output_sequence = generator->GetSequenceData(0);
+ * auto output_string = tokenizer->Decode(output_sequence, generator->GetSequenceCount(0));
  *
- * std::cout << "Output: " << std::endl << out_string << std::endl;
+ * std::cout << "Output: " << std::endl << output_string << std::endl;
  */
 
 // The types defined in this file are to give us zero overhead C++ style interfaces around an opaque C pointer.
@@ -59,21 +65,38 @@ inline void OgaCheckResult(OgaResult* result) {
   }
 }
 
-struct OgaModel : OgaAbstract {
-  static std::unique_ptr<OgaModel> Create(const char* config_path) {
-    OgaModel* p;
-    OgaCheckResult(OgaCreateModel(config_path, &p));
-    return std::unique_ptr<OgaModel>(p);
-  }
+struct OgaFloat16_t;
+struct OgaBFloat16_t;
 
-  std::unique_ptr<OgaSequences> Generate(const OgaGeneratorParams& params) const {
-    OgaSequences* p;
-    OgaCheckResult(OgaGenerate(this, &params, &p));
-    return std::unique_ptr<OgaSequences>(p);
-  }
-
-  static void operator delete(void* p) { OgaDestroyModel(reinterpret_cast<OgaModel*>(p)); }
-};
+// Variable templates to convert a C++ type into it's OgaElementType
+template <typename T>
+inline constexpr OgaElementType OgaTypeToElementType = T::Unsupported_Type;  // Force a compile error if hit, please add specialized version if type is valid
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<bool> = OgaElementType_bool;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<int8_t> = OgaElementType_int8;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<uint8_t> = OgaElementType_uint8;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<int16_t> = OgaElementType_int16;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<uint16_t> = OgaElementType_uint16;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<int32_t> = OgaElementType_int32;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<uint32_t> = OgaElementType_uint32;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<int64_t> = OgaElementType_int64;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<uint64_t> = OgaElementType_uint64;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<float> = OgaElementType_float32;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<double> = OgaElementType_float64;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<OgaFloat16_t> = OgaElementType_float16;
+template <>
+inline constexpr OgaElementType OgaTypeToElementType<OgaBFloat16_t> = OgaElementType_bfloat16;
 
 struct OgaString {
   OgaString(const char* p) : p_{p} {}
@@ -82,6 +105,155 @@ struct OgaString {
   operator const char*() const { return p_; }
 
   const char* p_;
+};
+
+struct OgaStringArray {
+  static std::unique_ptr<OgaStringArray> Create() {
+    OgaStringArray* p;
+    OgaCheckResult(OgaCreateStringArray(&p));
+    return std::unique_ptr<OgaStringArray>(p);
+  }
+
+  static std::unique_ptr<OgaStringArray> Create(const char* const* strings, size_t count) {
+    OgaStringArray* p;
+    OgaCheckResult(OgaCreateStringArrayFromStrings(strings, count, &p));
+    return std::unique_ptr<OgaStringArray>(p);
+  }
+
+  void Add(const char* str) {
+    OgaCheckResult(OgaStringArrayAddString(this, str));
+  }
+
+  const char* Get(size_t index) const {
+    const char* p;
+    OgaCheckResult(OgaStringArrayGetString(this, index, &p));
+    return p;
+  }
+
+  size_t Count() const {
+    size_t count;
+    OgaCheckResult(OgaStringArrayGetCount(this, &count));
+    return count;
+  }
+
+  static void operator delete(void* p) { OgaDestroyStringArray(reinterpret_cast<OgaStringArray*>(p)); }
+};
+
+struct OgaRuntimeSettings : OgaAbstract {
+  static std::unique_ptr<OgaRuntimeSettings> Create() {
+    OgaRuntimeSettings* p;
+    OgaCheckResult(OgaCreateRuntimeSettings(&p));
+    return std::unique_ptr<OgaRuntimeSettings>(p);
+  }
+
+  void SetHandle(const char* name, void* handle) {
+    OgaCheckResult(OgaRuntimeSettingsSetHandle(this, name, handle));
+  }
+  void SetHandle(const std::string& name, void* handle) {
+    SetHandle(name.c_str(), handle);
+  }
+
+  static void operator delete(void* p) { OgaDestroyRuntimeSettings(reinterpret_cast<OgaRuntimeSettings*>(p)); }
+};
+
+struct OgaConfig : OgaAbstract {
+  static std::unique_ptr<OgaConfig> Create(const char* config_path) {
+    OgaConfig* p;
+    OgaCheckResult(OgaCreateConfig(config_path, &p));
+    return std::unique_ptr<OgaConfig>(p);
+  }
+
+  void ClearProviders() {
+    OgaCheckResult(OgaConfigClearProviders(this));
+  }
+
+  void AppendProvider(const char* provider) {
+    OgaCheckResult(OgaConfigAppendProvider(this, provider));
+  }
+
+  void SetProviderOption(const char* provider, const char* name, const char* value) {
+    OgaCheckResult(OgaConfigSetProviderOption(this, provider, name, value));
+  }
+
+  void Overlay(const char* json) {
+    OgaCheckResult(OgaConfigOverlay(this, json));
+  }
+
+  void AddModelData(const std::string& model_filename, const void* model_data, size_t model_data_length) {
+    OgaCheckResult(OgaConfigAddModelData(this, model_filename.c_str(), model_data, model_data_length));
+  }
+
+  void AddModelData(const std::string& model_filename, const std::vector<std::byte>& model_data) {
+    OgaCheckResult(OgaConfigAddModelData(this, model_filename.c_str(), model_data.data(), model_data.size()));
+  }
+
+#if OGA_USE_SPAN
+  void AddModelData(const std::string& model_filename, std::span<const std::byte> model_data) {
+    OgaCheckResult(OgaConfigAddModelData(this, model_filename.c_str(), model_data.data(), model_data.size()));
+  }
+#endif
+
+  void RemoveModelData(const std::string& model_filename) {
+    OgaCheckResult(OgaConfigRemoveModelData(this, model_filename.c_str()));
+  }
+
+  void SetDecoderProviderOptionsHardwareDeviceType(const char* provider, const char* hardware_device_type) {
+    OgaCheckResult(OgaConfigSetDecoderProviderOptionsHardwareDeviceType(this, provider, hardware_device_type));
+  }
+
+  void SetDecoderProviderOptionsHardwareDeviceId(const char* provider, uint32_t hardware_device_id) {
+    OgaCheckResult(OgaConfigSetDecoderProviderOptionsHardwareDeviceId(this, provider, hardware_device_id));
+  }
+
+  void SetDecoderProviderOptionsHardwareVendorId(const char* provider, uint32_t hardware_vendor_id) {
+    OgaCheckResult(OgaConfigSetDecoderProviderOptionsHardwareVendorId(this, provider, hardware_vendor_id));
+  }
+
+  void ClearDecoderProviderOptionsHardwareDeviceType(const char* provider) {
+    OgaCheckResult(OgaConfigClearDecoderProviderOptionsHardwareDeviceType(this, provider));
+  }
+
+  void ClearDecoderProviderOptionsHardwareDeviceId(const char* provider) {
+    OgaCheckResult(OgaConfigClearDecoderProviderOptionsHardwareDeviceId(this, provider));
+  }
+
+  void ClearDecoderProviderOptionsHardwareVendorId(const char* provider) {
+    OgaCheckResult(OgaConfigClearDecoderProviderOptionsHardwareVendorId(this, provider));
+  }
+
+  static void operator delete(void* p) { OgaDestroyConfig(reinterpret_cast<OgaConfig*>(p)); }
+};
+
+struct OgaModel : OgaAbstract {
+  static std::unique_ptr<OgaModel> Create(const char* config_path) {
+    OgaModel* p;
+    OgaCheckResult(OgaCreateModel(config_path, &p));
+    return std::unique_ptr<OgaModel>(p);
+  }
+  static std::unique_ptr<OgaModel> Create(const char* config_path, const OgaRuntimeSettings& settings) {
+    OgaModel* p;
+    OgaCheckResult(OgaCreateModelWithRuntimeSettings(config_path, &settings, &p));
+    return std::unique_ptr<OgaModel>(p);
+  }
+  static std::unique_ptr<OgaModel> Create(const OgaConfig& config) {
+    OgaModel* p;
+    OgaCheckResult(OgaCreateModelFromConfig(&config, &p));
+    return std::unique_ptr<OgaModel>(p);
+  }
+
+  OgaString GetType() const {
+    const char* p;
+    OgaCheckResult(OgaModelGetType(this, &p));
+    return p;
+  }
+
+  OgaString GetDeviceType() const {
+    const char* p;
+    OgaCheckResult(OgaModelGetDeviceType(this, &p));
+    return p;
+  }
+
+  static void operator delete(void* p) { OgaDestroyModel(reinterpret_cast<OgaModel*>(p)); }
 };
 
 struct OgaSequences : OgaAbstract {
@@ -103,9 +275,23 @@ struct OgaSequences : OgaAbstract {
     return OgaSequencesGetSequenceData(this, index);
   }
 
-#if __cplusplus >= 202002L
+  void Append(const int32_t* tokens, size_t token_cnt) {
+    OgaCheckResult(OgaAppendTokenSequence(tokens, token_cnt, this));
+  }
+
+  void Append(int32_t token, size_t sequence_index) {
+    OgaCheckResult(OgaAppendTokenToSequence(token, this, sequence_index));
+  }
+
+#if OGA_USE_SPAN
   std::span<const int32_t> Get(size_t index) const {
     return {SequenceData(index), SequenceCount(index)};
+  }
+  void Append(std::span<const int32_t> sequence) {
+    OgaCheckResult(OgaAppendTokenSequence(sequence.data(), sequence.size(), this));
+  }
+  void Append(const std::vector<int32_t>& sequence) {
+    OgaCheckResult(OgaAppendTokenSequence(sequence.data(), sequence.size(), this));
   }
 #endif
 
@@ -119,8 +305,52 @@ struct OgaTokenizer : OgaAbstract {
     return std::unique_ptr<OgaTokenizer>(p);
   }
 
+  void UpdateOptions(const char* const* keys, const char* const* values, size_t num_options) {
+    OgaCheckResult(OgaUpdateTokenizerOptions(this, keys, values, num_options));
+  }
+
+  int32_t GetBosTokenId() const {
+    int32_t token_id;
+    OgaCheckResult(OgaTokenizerGetBosTokenId(this, &token_id));
+    return token_id;
+  }
+
+#if OGA_USE_SPAN
+  std::span<const int32_t> GetEosTokenIds() const {
+    const int32_t* eos_ids;
+    size_t count;
+    OgaCheckResult(OgaTokenizerGetEosTokenIds(this, &eos_ids, &count));
+    return {eos_ids, count};
+  }
+#else
+  std::vector<int32_t> GetEosTokenIds() const {
+    const int32_t* eos_ids_ptr;
+    size_t count;
+    OgaCheckResult(OgaTokenizerGetEosTokenIds(this, &eos_ids_ptr, &count));
+    return std::vector<int32_t>(eos_ids_ptr, eos_ids_ptr + count);
+  }
+#endif
+
+  int32_t GetPadTokenId() const {
+    int32_t token_id;
+    OgaCheckResult(OgaTokenizerGetPadTokenId(this, &token_id));
+    return token_id;
+  }
+
   void Encode(const char* str, OgaSequences& sequences) const {
     OgaCheckResult(OgaTokenizerEncode(this, str, &sequences));
+  }
+
+  std::unique_ptr<OgaTensor> EncodeBatch(const char** strings, size_t count) const {
+    OgaTensor* out;
+    OgaCheckResult(OgaTokenizerEncodeBatch(this, strings, count, &out));
+    return std::unique_ptr<OgaTensor>(out);
+  }
+
+  int32_t ToTokenId(const char* str) const {
+    int32_t token_id;
+    OgaCheckResult(OgaTokenizerToTokenId(this, str, &token_id));
+    return token_id;
   }
 
   OgaString Decode(const int32_t* tokens_data, size_t tokens_length) const {
@@ -129,13 +359,25 @@ struct OgaTokenizer : OgaAbstract {
     return p;
   }
 
-#if __cplusplus >= 202002L
+  OgaString ApplyChatTemplate(const char* template_str, const char* messages, const char* tools, bool add_generation_prompt) const {
+    const char* p{};
+    OgaCheckResult(OgaTokenizerApplyChatTemplate(this, template_str, messages, tools, add_generation_prompt, &p));
+    return p;
+  }
+
+#if OGA_USE_SPAN
   OgaString Decode(std::span<const int32_t> tokens) const {
     const char* p;
     OgaCheckResult(OgaTokenizerDecode(this, tokens.data(), tokens.size(), &p));
     return p;
   }
 #endif
+
+  std::unique_ptr<OgaStringArray> DecodeBatch(const OgaTensor& tensor) const {
+    OgaStringArray* p;
+    OgaCheckResult(OgaTokenizerDecodeBatch(this, &tensor, &p));
+    return std::unique_ptr<OgaStringArray>(p);
+  }
 
   static void operator delete(void* p) { OgaDestroyTokenizer(reinterpret_cast<OgaTokenizer*>(p)); }
 };
@@ -182,46 +424,92 @@ struct OgaGeneratorParams : OgaAbstract {
     OgaCheckResult(OgaGeneratorParamsSetSearchBool(this, name, value));
   }
 
-  void SetInputIDs(const int32_t* input_ids, size_t input_ids_count, size_t sequence_length, size_t batch_size) {
-    OgaCheckResult(OgaGeneratorParamsSetInputIDs(this, input_ids, input_ids_count, sequence_length, batch_size));
+  void SetGuidance(const char* type, const char* data, bool enable_ff_tokens = false) {
+    OgaCheckResult(OgaGeneratorParamsSetGuidance(this, type, data, enable_ff_tokens));
   }
 
-  void SetInputSequences(const OgaSequences& sequences) {
-    OgaCheckResult(OgaGeneratorParamsSetInputSequences(this, &sequences));
+  double GetSearchNumber(const char* name) const {
+    double value;
+    OgaCheckResult(OgaGeneratorParamsGetSearchNumber(this, name, &value));
+    return value;
   }
 
-  void SetModelInput(const char* name, OgaTensor& tensor) {
-    OgaCheckResult(OgaGeneratorParamsSetModelInput(this, name, &tensor));
-  }
-
-  void SetInputs(OgaNamedTensors& named_tensors) {
-    OgaCheckResult(OgaGeneratorParamsSetInputs(this, &named_tensors));
-  }
-
-  void TryGraphCaptureWithMaxBatchSize(int max_batch_size) {
-    OgaCheckResult(OgaGeneratorParamsTryGraphCaptureWithMaxBatchSize(this, max_batch_size));
+  bool GetSearchBool(const char* name) const {
+    bool value;
+    OgaCheckResult(OgaGeneratorParamsGetSearchBool(this, name, &value));
+    return value;
   }
 
   static void operator delete(void* p) { OgaDestroyGeneratorParams(reinterpret_cast<OgaGeneratorParams*>(p)); }
 };
 
 struct OgaGenerator : OgaAbstract {
-  static std::unique_ptr<OgaGenerator> Create(const OgaModel& model, const OgaGeneratorParams& params) {
+  static std::unique_ptr<OgaGenerator> Create(const OgaModel& model, OgaGeneratorParams& params) {
     OgaGenerator* p;
     OgaCheckResult(OgaCreateGenerator(&model, &params, &p));
     return std::unique_ptr<OgaGenerator>(p);
   }
 
-  bool IsDone() const {
+  bool IsDone() {
     return OgaGenerator_IsDone(this);
   }
 
-  void ComputeLogits() {
-    OgaCheckResult(OgaGenerator_ComputeLogits(this));
+  bool IsSessionTerminated() const {
+    return OgaGenerator_IsSessionTerminated(this);
+  }
+
+  void SetModelInput(const char* name, OgaTensor& tensor) {
+    OgaCheckResult(OgaGenerator_SetModelInput(this, name, &tensor));
+  }
+
+  void SetInputs(OgaNamedTensors& named_tensors) {
+    OgaCheckResult(OgaGenerator_SetInputs(this, &named_tensors));
+  }
+
+  void AppendTokenSequences(const OgaSequences& sequences) {
+    OgaCheckResult(OgaGenerator_AppendTokenSequences(this, &sequences));
+  }
+
+  void AppendTokens(const int32_t* input_ids, size_t input_ids_count) {
+    OgaCheckResult(OgaGenerator_AppendTokens(this, input_ids, input_ids_count));
+  }
+
+#if OGA_USE_SPAN
+  void AppendTokens(std::span<const int32_t> input_ids) {
+    OgaCheckResult(OgaGenerator_AppendTokens(this, input_ids.data(), input_ids.size()));
+  }
+#endif
+
+  size_t TokenCount() const {
+    return OgaGenerator_TokenCount(this);
   }
 
   void GenerateNextToken() {
     OgaCheckResult(OgaGenerator_GenerateNextToken(this));
+  }
+
+#if OGA_USE_SPAN
+  std::span<const int32_t> GetNextTokens() {
+    const int32_t* out;
+    size_t out_count;
+    OgaCheckResult(OgaGenerator_GetNextTokens(this, &out, &out_count));
+    return {out, out_count};
+  }
+#else
+  std::vector<int32_t> GetNextTokens() {
+    const int32_t* out;
+    size_t out_count;
+    OgaCheckResult(OgaGenerator_GetNextTokens(this, &out, &out_count));
+    return std::vector<int32_t>(out, out + out_count);
+  }
+#endif
+
+  void RewindTo(size_t new_length) {
+    OgaCheckResult(OgaGenerator_RewindTo(this, new_length));
+  }
+
+  void SetRuntimeOption(const char* key, const char* value) {
+    OgaCheckResult(OgaGenerator_SetRuntimeOption(this, key, value));
   }
 
   size_t GetSequenceCount(size_t index) const {
@@ -232,29 +520,57 @@ struct OgaGenerator : OgaAbstract {
     return OgaGenerator_GetSequenceData(this, index);
   }
 
+  std::unique_ptr<OgaTensor> GetInput(const char* name) {
+    OgaTensor* out;
+    OgaCheckResult(OgaGenerator_GetInput(this, name, &out));
+    return std::unique_ptr<OgaTensor>(out);
+  }
+
   std::unique_ptr<OgaTensor> GetOutput(const char* name) {
     OgaTensor* out;
     OgaCheckResult(OgaGenerator_GetOutput(this, name, &out));
     return std::unique_ptr<OgaTensor>(out);
   }
 
-#if __cplusplus >= 202002L
+  std::unique_ptr<OgaTensor> GetLogits() {
+    OgaTensor* out;
+    OgaCheckResult(OgaGenerator_GetLogits(this, &out));
+    return std::unique_ptr<OgaTensor>(out);
+  }
+
+  void SetLogits(OgaTensor& tensor) {
+    OgaCheckResult(OgaGenerator_SetLogits(this, &tensor));
+  }
+
+#if OGA_USE_SPAN
   std::span<const int32_t> GetSequence(size_t index) const {
     return {GetSequenceData(index), GetSequenceCount(index)};
   }
 #endif
 
+  void SetActiveAdapter(OgaAdapters& adapters, const char* adapter_name) {
+    OgaCheckResult(OgaSetActiveAdapter(this, &adapters, adapter_name));
+  }
+
   static void operator delete(void* p) { OgaDestroyGenerator(reinterpret_cast<OgaGenerator*>(p)); }
 };
 
 struct OgaTensor : OgaAbstract {
-#if __cplusplus >= 202002L
-  static std::unique_ptr<OgaTensor> Create(void* data, std::span<const int64_t> shape, OgaElementType element_type) {
+#if OGA_USE_SPAN
+  template <typename T>
+  static std::unique_ptr<OgaTensor> Create(T* data, std::span<const int64_t> shape) {
     OgaTensor* p;
-    OgaCheckResult(OgaCreateTensorFromBuffer(data, shape.data(), shape.size(), element_type, &p));
+    OgaCheckResult(OgaCreateTensorFromBuffer(data, shape.data(), shape.size(), OgaTypeToElementType<T>, &p));
+    return std::unique_ptr<OgaTensor>(p);
+  }
+
+  static std::unique_ptr<OgaTensor> Create(void* data, std::span<const int64_t> shape, OgaElementType type) {
+    OgaTensor* p;
+    OgaCheckResult(OgaCreateTensorFromBuffer(data, shape.data(), shape.size(), type, &p));
     return std::unique_ptr<OgaTensor>(p);
   }
 #endif
+
   static std::unique_ptr<OgaTensor> Create(void* data, const int64_t* shape_dims, size_t shape_dims_count, OgaElementType element_type) {
     OgaTensor* p;
     OgaCheckResult(OgaCreateTensorFromBuffer(data, shape_dims, shape_dims_count, element_type, &p));
@@ -285,16 +601,90 @@ struct OgaTensor : OgaAbstract {
 };
 
 struct OgaImages : OgaAbstract {
-  static std::unique_ptr<OgaImages> Load(const char* image_path) {
+  static std::unique_ptr<OgaImages> Load(const std::vector<const char*>& image_paths) {
     OgaImages* p;
-    OgaCheckResult(OgaLoadImage(image_path, &p));
+    auto strs = OgaStringArray::Create(image_paths.data(), image_paths.size());
+    OgaCheckResult(OgaLoadImages(strs.get(), &p));
+    return std::unique_ptr<OgaImages>(p);
+  }
+
+#if OGA_USE_SPAN
+  static std::unique_ptr<OgaImages> Load(std::span<const char* const> image_paths) {
+    OgaImages* p;
+    auto strs = OgaStringArray::Create(image_paths.data(), image_paths.size());
+    OgaCheckResult(OgaLoadImages(strs.get(), &p));
+    return std::unique_ptr<OgaImages>(p);
+  }
+#endif
+
+  static std::unique_ptr<OgaImages> Load(const void** image_data, const size_t* image_data_sizes, size_t count) {
+    OgaImages* p;
+    OgaCheckResult(OgaLoadImagesFromBuffers(image_data, image_data_sizes, count, &p));
     return std::unique_ptr<OgaImages>(p);
   }
 
   static void operator delete(void* p) { OgaDestroyImages(reinterpret_cast<OgaImages*>(p)); }
 };
 
+struct OgaAudios : OgaAbstract {
+  static std::unique_ptr<OgaAudios> Load(const std::vector<const char*>& audio_paths) {
+    OgaAudios* p;
+    auto strs = OgaStringArray::Create(audio_paths.data(), audio_paths.size());
+    OgaCheckResult(OgaLoadAudios(strs.get(), &p));
+    return std::unique_ptr<OgaAudios>(p);
+  }
+
+#if OGA_USE_SPAN
+  static std::unique_ptr<OgaAudios> Load(std::span<const char* const> audio_paths) {
+    OgaAudios* p;
+    auto strs = OgaStringArray::Create(audio_paths.data(), audio_paths.size());
+    OgaCheckResult(OgaLoadAudios(strs.get(), &p));
+    return std::unique_ptr<OgaAudios>(p);
+  }
+#endif
+
+  static std::unique_ptr<OgaAudios> Load(const void** audio_data, const size_t* audio_data_sizes, size_t count) {
+    OgaAudios* p;
+    OgaCheckResult(OgaLoadAudiosFromBuffers(audio_data, audio_data_sizes, count, &p));
+    return std::unique_ptr<OgaAudios>(p);
+  }
+
+  static void operator delete(void* p) { OgaDestroyAudios(reinterpret_cast<OgaAudios*>(p)); }
+};
+
 struct OgaNamedTensors : OgaAbstract {
+  static std::unique_ptr<OgaNamedTensors> Create() {
+    OgaNamedTensors* p;
+    OgaCheckResult(OgaCreateNamedTensors(&p));
+    return std::unique_ptr<OgaNamedTensors>(p);
+  }
+
+  std::unique_ptr<OgaTensor> Get(const char* name) {
+    OgaTensor* p;
+    OgaCheckResult(OgaNamedTensorsGet(this, name, &p));
+    return std::unique_ptr<OgaTensor>(p);
+  }
+
+  void Set(const char* name, OgaTensor& tensor) {
+    OgaCheckResult(OgaNamedTensorsSet(this, name, &tensor));
+  }
+
+  void Delete(const char* name) {
+    OgaCheckResult(OgaNamedTensorsDelete(this, name));
+  }
+
+  size_t Count() const {
+    size_t count;
+    OgaCheckResult(OgaNamedTensorsCount(this, &count));
+    return count;
+  }
+
+  std::unique_ptr<OgaStringArray> GetNames() const {
+    OgaStringArray* p;
+    OgaCheckResult(OgaNamedTensorsGetNames(this, &p));
+    return std::unique_ptr<OgaStringArray>(p);
+  }
+
   static void operator delete(void* p) { OgaDestroyNamedTensors(reinterpret_cast<OgaNamedTensors*>(p)); }
 };
 
@@ -305,9 +695,42 @@ struct OgaMultiModalProcessor : OgaAbstract {
     return std::unique_ptr<OgaMultiModalProcessor>(p);
   }
 
-  std::unique_ptr<OgaNamedTensors> ProcessImages(const char* str, const OgaImages* images = nullptr) const {
+  std::unique_ptr<OgaNamedTensors> ProcessImages(const char* prompt, const OgaImages* images = nullptr) const {
     OgaNamedTensors* p;
-    OgaCheckResult(OgaProcessorProcessImages(this, str, images, &p));
+    OgaCheckResult(OgaProcessorProcessImages(this, prompt, images, &p));
+    return std::unique_ptr<OgaNamedTensors>(p);
+  }
+
+  std::unique_ptr<OgaNamedTensors> ProcessImages(const std::vector<const char*>& prompts, const OgaImages* images = nullptr) const {
+    OgaNamedTensors* p;
+    auto strs = OgaStringArray::Create(prompts.data(), prompts.size());
+    OgaCheckResult(OgaProcessorProcessImagesAndPrompts(this, strs.get(), images, &p));
+    return std::unique_ptr<OgaNamedTensors>(p);
+  }
+
+  std::unique_ptr<OgaNamedTensors> ProcessAudios(const char* prompt, const OgaAudios* audios = nullptr) const {
+    OgaNamedTensors* p;
+    OgaCheckResult(OgaProcessorProcessAudios(this, prompt, audios, &p));
+    return std::unique_ptr<OgaNamedTensors>(p);
+  }
+
+  std::unique_ptr<OgaNamedTensors> ProcessAudios(const std::vector<const char*>& prompts, const OgaAudios* audios = nullptr) const {
+    OgaNamedTensors* p;
+    auto strs = OgaStringArray::Create(prompts.data(), prompts.size());
+    OgaCheckResult(OgaProcessorProcessAudiosAndPrompts(this, strs.get(), audios, &p));
+    return std::unique_ptr<OgaNamedTensors>(p);
+  }
+
+  std::unique_ptr<OgaNamedTensors> ProcessImagesAndAudios(const char* prompt, const OgaImages* images = nullptr, const OgaAudios* audios = nullptr) const {
+    OgaNamedTensors* p;
+    OgaCheckResult(OgaProcessorProcessImagesAndAudios(this, prompt, images, audios, &p));
+    return std::unique_ptr<OgaNamedTensors>(p);
+  }
+
+  std::unique_ptr<OgaNamedTensors> ProcessImagesAndAudios(const std::vector<const char*>& prompts, const OgaImages* images = nullptr, const OgaAudios* audios = nullptr) const {
+    OgaNamedTensors* p;
+    auto strs = OgaStringArray::Create(prompts.data(), prompts.size());
+    OgaCheckResult(OgaProcessorProcessImagesAndAudiosAndPrompts(this, strs.get(), images, audios, &p));
     return std::unique_ptr<OgaNamedTensors>(p);
   }
 
@@ -317,7 +740,7 @@ struct OgaMultiModalProcessor : OgaAbstract {
     return p;
   }
 
-#if __cplusplus >= 202002L
+#if OGA_USE_SPAN
   OgaString Decode(std::span<const int32_t> tokens) const {
     const char* p;
     OgaCheckResult(OgaProcessorDecode(this, tokens.data(), tokens.size(), &p));
@@ -326,6 +749,97 @@ struct OgaMultiModalProcessor : OgaAbstract {
 #endif
 
   static void operator delete(void* p) { OgaDestroyMultiModalProcessor(reinterpret_cast<OgaMultiModalProcessor*>(p)); }
+};
+
+struct OgaAdapters : OgaAbstract {
+  static std::unique_ptr<OgaAdapters> Create(const OgaModel& model) {
+    OgaAdapters* p;
+    OgaCheckResult(OgaCreateAdapters(&model, &p));
+    return std::unique_ptr<OgaAdapters>(p);
+  }
+
+  void LoadAdapter(const char* adapter_file_path,
+                   const char* adapter_name) {
+    OgaCheckResult(OgaLoadAdapter(this, adapter_file_path, adapter_name));
+  }
+
+  void UnloadAdapter(const char* adapter_name) {
+    OgaCheckResult(OgaUnloadAdapter(this, adapter_name));
+  }
+
+  static void operator delete(void* p) { OgaDestroyAdapters(reinterpret_cast<OgaAdapters*>(p)); }
+};
+
+struct OgaRequest : OgaAbstract {
+  static std::unique_ptr<OgaRequest> Create(OgaGeneratorParams& params) {
+    OgaRequest* p;
+    OgaCheckResult(OgaCreateRequest(&params, &p));
+    return std::unique_ptr<OgaRequest>(p);
+  }
+
+  void AddTokens(const OgaSequences& tokens) {
+    OgaCheckResult(OgaRequestAddTokens(this, &tokens));
+  }
+
+  bool IsDone() const {
+    bool is_done{};
+    OgaCheckResult(OgaRequestIsDone(this, &is_done));
+    return is_done;
+  }
+
+  bool HasUnseenTokens() const {
+    bool has_unseen_tokens{};
+    OgaCheckResult(OgaRequestHasUnseenTokens(this, &has_unseen_tokens));
+    return has_unseen_tokens;
+  }
+
+  int32_t GetUnseenToken() {
+    int32_t token;
+    OgaCheckResult(OgaRequestGetUnseenToken(this, &token));
+    return token;
+  }
+
+  void SetOpaqueData(void* data) {
+    OgaCheckResult(OgaRequestSetOpaqueData(this, data));
+  }
+
+  void* GetOpaqueData() {
+    void* data;
+    OgaCheckResult(OgaRequestGetOpaqueData(this, &data));
+    return data;
+  }
+
+  static void operator delete(void* p) { OgaDestroyRequest(reinterpret_cast<OgaRequest*>(p)); }
+};
+
+struct OgaEngine : OgaAbstract {
+  static std::unique_ptr<OgaEngine> Create(OgaModel& model) {
+    OgaEngine* p;
+    OgaCheckResult(OgaCreateEngine(&model, &p));
+    return std::unique_ptr<OgaEngine>(p);
+  }
+
+  bool HasPendingRequests() {
+    bool f;
+    OgaCheckResult(OgaEngineHasPendingRequests(this, &f));
+    return f;
+  }
+
+  void Add(OgaRequest& request) {
+    OgaCheckResult(OgaEngineAddRequest(this, &request));
+  }
+
+  void Remove(OgaRequest& request) {
+    OgaCheckResult(OgaEngineRemoveRequest(this, &request));
+  }
+
+  std::unique_ptr<OgaRequest> Step() {
+    OgaRequest* request;
+    OgaCheckResult(OgaEngineStep(this, &request));
+    return request ? std::unique_ptr<OgaRequest>(request) : nullptr;
+  }
+
+  static void operator delete(void* p) { OgaDestroyEngine(reinterpret_cast<OgaEngine*>(p)); }
 };
 
 struct OgaHandle {
@@ -346,6 +860,10 @@ inline void SetLogString(const char* name, const char* value) {
   OgaCheckResult(OgaSetLogString(name, value));
 }
 
+inline void SetLogCallback(void (*callback)(const char* string, size_t length)) {
+  OgaCheckResult(OgaSetLogCallback(callback));
+}
+
 inline void SetCurrentGpuDeviceId(int device_id) {
   OgaCheckResult(OgaSetCurrentGpuDeviceId(device_id));
 }
@@ -357,3 +875,35 @@ inline int GetCurrentGpuDeviceId() {
 }
 
 }  // namespace Oga
+
+struct OgaStreamingProcessor : OgaAbstract {
+  static std::unique_ptr<OgaStreamingProcessor> Create(OgaModel& model) {
+    OgaStreamingProcessor* p;
+    OgaCheckResult(OgaCreateStreamingProcessor(&model, &p));
+    return std::unique_ptr<OgaStreamingProcessor>(p);
+  }
+
+  std::unique_ptr<OgaNamedTensors> Process(const float* audio_data, size_t num_samples) {
+    OgaNamedTensors* out;
+    OgaCheckResult(OgaStreamingProcessorProcess(this, audio_data, num_samples, &out));
+    return std::unique_ptr<OgaNamedTensors>(out);  // May be nullptr if not enough audio
+  }
+
+  std::unique_ptr<OgaNamedTensors> Flush() {
+    OgaNamedTensors* out;
+    OgaCheckResult(OgaStreamingProcessorFlush(this, &out));
+    return std::unique_ptr<OgaNamedTensors>(out);
+  }
+
+  void SetOption(const char* key, const char* value) {
+    OgaCheckResult(OgaStreamingProcessorSetOption(this, key, value));
+  }
+
+  OgaString GetOption(const char* key) const {
+    const char* value;
+    OgaCheckResult(OgaStreamingProcessorGetOption(this, key, &value));
+    return value;
+  }
+
+  static void operator delete(void* p) { OgaDestroyStreamingProcessor(reinterpret_cast<OgaStreamingProcessor*>(p)); }
+};

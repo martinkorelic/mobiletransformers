@@ -44,6 +44,17 @@ android {
             version = "3.22.1"
         }
     }
+    // The onnxruntime-genai .so is provided BOTH by the AAR (runtime) and jniLibs (CMake link input, #10);
+    // dedupe the identical native libs at packaging. Content is the same real 0.14 binary either way.
+    packaging {
+        jniLibs {
+            pickFirsts += listOf(
+                "**/libonnxruntime-genai.so",
+                "**/libonnxruntime-genai-jni.so",
+            )
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
@@ -55,8 +66,10 @@ android {
 
 dependencies {
 
-    // ONNX Runtime GenAI implementation
-    implementation(files("./src/main/aarLibs/onnxruntime-genai.aar"))
+    // ONNX Runtime GenAI (#10/#11): the genai .so ships from jniLibs (patched to dlopen the genai-paired
+    // stock ORT as `libort_gen.so`, keeping the training ORT as `libonnxruntime.so`). Its Java classes are
+    // unused (C-API/JNI path), so the AAR is NOT a dependency — this avoids the AAR-vs-jniLibs .so conflict
+    // and lets us ship the patched binary. See spikes/genai_external_swap/README.md (ORT separation).
 
     implementation(libs.pebble)
     implementation(libs.gson)
