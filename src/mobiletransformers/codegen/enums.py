@@ -37,7 +37,7 @@ def find_repo_root(start: Path | None = None) -> Path:
 
 # Kotlin enum mirrors live under the MobileTransformers library module (Android rename #16, done 2026-07-14).
 KOTLIN_CONSTANTS_RELPATH = (
-    "android/MobileTransformersApp/MobileTransformers/src/main/java/"
+    "android/MobileTransformers/MobileTransformers/src/main/java/"
     "com/martinkorelic/mobiletransformers/constants"
 )
 

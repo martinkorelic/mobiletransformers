@@ -6,6 +6,7 @@ import json
 import shutil
 from pathlib import Path
 
+from mobiletransformers.cli import export as export_cli
 from mobiletransformers.cli import push as push_cli
 from mobiletransformers.cli.main import build_parser, main
 
@@ -70,3 +71,118 @@ def test_push_aborts_on_invalid_package(tmp_path):
     mpath.write_text(json.dumps(data))
     args = build_parser().parse_args(["push", "--package", str(pkg), "--repo", "org/x", "--dry-run"])
     assert args.func(args) == 1  # fail closed before upload
+
+
+# --- federated (#35) — the subcommand had zero CLI coverage ---------------------------------------
+def test_federated_is_registered_in_the_parser():
+    """`cli/main.py` registers it, but `docs/PUBLIC_API.md`'s table omitted it — pin the wiring."""
+    parser = build_parser()
+    args = parser.parse_args(
+        ["federated", "simulate", "--package", "pkg", "--output", "out", "--clients", "3"]
+    )
+    assert args.clients == 3
+    assert args.output == "out"
+    assert callable(args.func)
+
+
+def test_federated_simulate_fails_closed_on_a_missing_package(tmp_path, capsys):
+    parser = build_parser()
+    args = parser.parse_args(
+        ["federated", "simulate", "--package", str(tmp_path / "nope"), "--output", str(tmp_path / "o")]
+    )
+    assert args.func(args) == 1
+    assert "federated simulate failed" in capsys.readouterr().out
+
+
+def test_federated_simulate_rejects_an_unknown_strategy(tmp_path, capsys):
+    """v1 supports fedavg only; anything else must fail rather than silently fall back."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "federated",
+            "simulate",
+            "--package",
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "o"),
+            "--strategy",
+            "fedprox",
+        ]
+    )
+    assert args.func(args) == 1
+
+
+# --- export --config overlay + --validate (#15) ---------------------------------------------------
+def _export_args(argv):
+    return build_parser().parse_args(["export", *argv])
+
+
+def test_export_config_overlay_supplies_unset_knobs(tmp_path):
+    """`--config` was accepted and silently dropped while docs/EXPORT.md documented it as working.
+
+    Exercised through the pure overlay rather than a full dry-run: task discovery imports
+    `transformers`, which the core env deliberately does not install.
+    """
+    cfg = tmp_path / "export.yml"
+    cfg.write_text("export:\n  model: org/from-yaml\n  output: out-from-yaml\n  peft: mars\n  rank: 16\n")
+    args = _export_args(["--config", str(cfg)])
+    export_cli._apply_config_overlay(args)
+    assert args.model == "org/from-yaml"
+    assert args.output == "out-from-yaml"
+    assert args.peft == "mars"
+    assert args.rank == 16
+
+
+def test_export_config_accepts_a_top_level_mapping_too(tmp_path):
+    cfg = tmp_path / "export.yml"
+    cfg.write_text("model: org/flat\noutput: o\nquant: fp16\n")
+    args = _export_args(["--config", str(cfg)])
+    export_cli._apply_config_overlay(args)
+    assert args.model == "org/flat"
+    assert args.quant == "fp16"
+
+
+def test_export_cli_flags_win_over_the_config(tmp_path):
+    """Documented precedence is CLI > YAML > default."""
+    cfg = tmp_path / "export.yml"
+    cfg.write_text("export:\n  model: org/from-yaml\n  output: o\n  peft: mars\n  rank: 32\n")
+    args = _export_args(["--config", str(cfg), "--model", "org/from-cli", "--peft", "lora-xs"])
+    export_cli._apply_config_overlay(args)
+    assert args.model == "org/from-cli"
+    assert args.peft == "lora-xs"
+    assert args.rank == 32  # not passed on the CLI, so the YAML value still applies
+
+
+def test_export_config_rejects_unknown_keys(tmp_path, capsys):
+    cfg = tmp_path / "export.yml"
+    cfg.write_text("export:\n  model: m\n  output: o\n  nonsense: 1\n")
+    args = _export_args(["--config", str(cfg), "--dry-run"])
+    assert args.func(args) == 1
+    assert "unknown export key" in capsys.readouterr().out
+
+
+def test_export_requires_model_from_some_source(capsys):
+    args = _export_args(["--output", "o", "--dry-run"])
+    assert args.func(args) == 1
+    assert "--model is required" in capsys.readouterr().out
+
+
+def test_validate_subcommand_reports_a_missing_package(tmp_path, capsys):
+    """The stub used to print 'not yet wired' and return 0 for ANY input, including nonexistent ones."""
+    args = build_parser().parse_args(["validate", "--package", str(tmp_path / "absent")])
+    assert args.func(args) == 1
+    assert "validation failed" in capsys.readouterr().out
+
+
+def test_validate_subcommand_accepts_the_tiny_fixture_package(capsys):
+    pkg = Path(__file__).resolve().parents[1] / "fixtures" / "tiny_package"
+    args = build_parser().parse_args(["validate", "--package", str(pkg)])
+    assert args.func(args) == 0
+    assert "package OK" in capsys.readouterr().out
+
+
+def test_validate_rejects_a_directory_without_a_manifest(tmp_path, capsys):
+    (tmp_path / "empty").mkdir()
+    args = build_parser().parse_args(["validate", "--package", str(tmp_path / "empty")])
+    assert args.func(args) == 1
+    assert "no mobiletransformers_manifest.json" in capsys.readouterr().out

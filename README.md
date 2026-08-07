@@ -25,6 +25,53 @@ For a comprehensive understanding of the research behind MobileTransformers, inc
 
 [Master's Thesis - Parameter-Efficient Tuning of Large Language Models on Mobile Devices](https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=175561)
 
+### In-repo docs
+
+| Page | Covers |
+| --- | --- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the host exporter and the Android SDK fit together |
+| [docs/EXPORT.md](docs/EXPORT.md) | the one-command export CLI, profiles, flags |
+| [docs/MODEL_FORMAT.md](docs/MODEL_FORMAT.md) | the manifest + `weight_handoff_map.json` on-disk contracts |
+| [docs/HUB_PACKAGE_FORMAT.md](docs/HUB_PACKAGE_FORMAT.md) | package layout on the Hub; pull/verify/install |
+| [docs/ANDROID_CACHE_FORMAT.md](docs/ANDROID_CACHE_FORMAT.md) | where an installed model lives on device |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | the enum vocabulary, typed configs, extension points |
+| [docs/PUBLIC_API.md](docs/PUBLIC_API.md) | the Python, CLI and Kotlin public surfaces |
+| [docs/RAG.md](docs/RAG.md) | on-device retrieval, ingestion, grounded generation |
+| [docs/FEDERATED.md](docs/FEDERATED.md) | federated adapter exchange + the Flower simulation |
+| [docs/COMPATIBILITY_MATRIX.md](docs/COMPATIBILITY_MATRIX.md) | per-model support, generated from the matrix |
+
+> `agent_docs/` holds the **implementation plans and audit records** for the ongoing restructure. It is
+> working material, not user documentation — start with `docs/` above.
+
+---
+
+## ⚡ Quick start
+
+Everything is driven through `make`; run `make help` for the full target list.
+
+```bash
+make setup                    # core + dev environment (uv, Python 3.10)
+make check                    # lint + typecheck + enum parity + guards + unit tests
+
+# Export a model to a device-ready package (needs the export profile)
+make setup-export
+mobiletransformers export --model HuggingFaceTB/SmolLM2-135M-Instruct \
+                          --output build/pkg --genai --validate
+
+# Android
+make test-jvm                 # SDK JVM unit tests (no device, no NDK)
+make test-cpp                 # C++ host unit tests
+make android-build            # assemble the SDK + sample app
+
+# On a connected device
+make device-package MODEL=<hf-id>   # export, reshape, adb push
+make device-test                    # instrumented tests against the pushed package
+```
+
+Profiles are deliberately isolated: the `export` extra and the `ort-training-local` group **cannot**
+co-install (see [docs/EXPORT.md](docs/EXPORT.md)). Always pass an explicit `--group`/`--extra` to
+`uv run`, and reset with `make setup` before running `make check`.
+
 ---
 
 ## 🚀 What is MobileTransformers?

@@ -23,7 +23,23 @@ from mobiletransformers.exceptions import (
 )
 from mobiletransformers.utils.logging import configure_logging, get_logger
 
-__version__ = "0.1.0"
+
+def _read_version() -> str:
+    """Resolve the package version from installed metadata (#32).
+
+    ``pyproject.toml`` is the SINGLE write-site for the version; hardcoding it here made a second one
+    that could silently disagree. The fallback covers running straight from a source tree with no
+    installed distribution, and is only ever a development value.
+    """
+    from importlib.metadata import PackageNotFoundError, version  # noqa: PLC0415
+
+    try:
+        return version("mobiletransformers")
+    except PackageNotFoundError:  # pragma: no cover - source tree without an install
+        return "0.0.0+unknown"
+
+
+__version__ = _read_version()
 
 __all__ = [
     "__version__",

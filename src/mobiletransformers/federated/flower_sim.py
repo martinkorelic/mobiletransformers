@@ -69,6 +69,53 @@ def save_global_adapter(record: FederatedAdapterRecord, output_dir: str | Path) 
     return path
 
 
+def aggregate_round(
+    handoff: HandoffMap,
+    updates: Sequence[ClientUpdate | None],
+    *,
+    base_model_id: str,
+    peft_method: str,
+    round_index: int,
+    output_dir: str | Path,
+    specs: Sequence[Any] | None = None,
+) -> tuple[list[np.ndarray], Path]:
+    """FedAvg one round's client updates, wrap them in a record, and persist it.
+
+    The whole server side of a round, minus the Flower messaging: aggregate -> build the
+    :class:`FederatedAdapterRecord` in codec order -> :func:`save_global_adapter`. Pure (no ``flwr``,
+    no ORT), so the round semantics are unit-tested rather than only exercised in the manual sim.
+
+    Returns ``(aggregated arrays, saved artifact path)``. The arrays are fed back to the clients as the
+    next round's global adapter.
+    """
+    from mobiletransformers.federated.adapter_record import (  # noqa: PLC0415
+        FederatedAdapterRecord,
+        codec_tensor_specs,
+    )
+
+    aggregated = federated_average(updates)
+    tensor_specs = list(specs) if specs is not None else codec_tensor_specs(handoff)
+    if len(tensor_specs) != len(aggregated):
+        raise HandoffError(
+            f"codec declares {len(tensor_specs)} tensors but the round aggregated {len(aggregated)}"
+        )
+
+    survivors = [u for u in updates if u is not None]
+    record = FederatedAdapterRecord.from_handoff(
+        handoff,
+        aggregated,
+        base_model_id=base_model_id,
+        peft_method=peft_method,
+        round=round_index,
+        metrics={
+            "clients": float(len(survivors)),
+            "dropped": float(len(updates) - len(survivors)),
+            "numExamples": float(sum(u.num_examples for u in survivors)),
+        },
+    )
+    return aggregated, save_global_adapter(record, output_dir)
+
+
 def run_simulation(
     handoff: HandoffMap,
     *,
@@ -107,7 +154,21 @@ def run_simulation(
         num_supernodes=clients,
         backend_config=backend_config or {"client_resources": {"num_cpus": 1}},
     )
-    return Path(output_dir)
+    # The ServerApp saves one artifact per round via aggregate_round; fail closed if none appeared,
+    # rather than reporting success for an empty --output (which is what used to happen).
+    out = Path(output_dir)
+    produced = sorted(out.glob("global_adapter_round*.mtfed"))
+    if not produced:
+        raise HandoffError(
+            f"simulation finished but wrote no global adapter to {out} — no round completed aggregation"
+        )
+    return out
 
 
-__all__ = ["ClientUpdate", "federated_average", "save_global_adapter", "run_simulation"]
+__all__ = [
+    "ClientUpdate",
+    "federated_average",
+    "aggregate_round",
+    "save_global_adapter",
+    "run_simulation",
+]

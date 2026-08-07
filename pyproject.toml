@@ -101,10 +101,36 @@ line-length = 110
 # Lint/format only the new package + tests. Legacy root packages and research/ are being migrated
 # subsystem-by-subsystem and are out of the gate until they move into src/ (see DECOMPOSE notes).
 src = ["src", "tests"]
+# ANCHORED to the repository root. A bare directory name here matches ANY path component, so
+# "inference"/"evaluation" also excluded src/mobiletransformers/{inference,evaluation}/ — code landing
+# there during the migration would have been silently ungated by both ruff and mypy.
 extend-exclude = [
-  "research", "trainer", "artifact", "inference", "tools", "peft_models", "database", "evaluation",
-  "config.py", "tests/fixtures/tiny_trainable.onnx",
+  "/research/", "/trainer/", "/artifact/", "/inference/", "/tools/", "/peft_models/", "/database/",
+  "/evaluation/", "/config.py", "tests/fixtures/tiny_trainable.onnx",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# MIGRATION RATCHET — lint debt carried in by the Migration Map. Entries may only SHRINK; delete a
+# file's entry once it is clean (tests/unit/test_gate_ratchet.py fails on a stale or non-firing entry).
+# The bulk of each moved file's findings was auto-fixed at move time; what remains needs a judgement
+# call about behaviour, which does not belong in a move.
+"src/mobiletransformers/training/data.py" = ["E721", "W291", "W293"]        # S1
+"src/mobiletransformers/inference/generator.py" = ["B006", "B905"]          # S1
+"src/mobiletransformers/export/tokenizer_export.py" = ["E722", "W293"]      # S1
+"src/mobiletransformers/export/inference_package.py" = ["E501"]             # S2
+"src/mobiletransformers/peft/ablation/config.py" = ["E501"]                 # S3
+"src/mobiletransformers/peft/ablation/layer.py" = ["F841"]                  # S3
+"src/mobiletransformers/peft/ablation/model.py" = ["B007", "B028", "E501", "F841"]   # S3
+"src/mobiletransformers/peft/lora_xs/latent_utils.py" = ["E501"]            # S3
+"src/mobiletransformers/peft/mars/config.py" = ["E501"]                     # S3
+"src/mobiletransformers/peft/mars/layer.py" = ["B006", "B904", "B905", "F401", "F841"]  # S3
+"src/mobiletransformers/peft/mars/matrices.py" = ["B007"]                   # S3
+"src/mobiletransformers/peft/mars/model.py" = ["B007", "B023", "B028", "E501"]  # S3
+"src/mobiletransformers/peft/mapping.py" = ["B006", "B007", "E501"]         # S4
+"src/mobiletransformers/training/preprocessing.py" = ["E501", "F841"]       # S4
+"src/mobiletransformers/export/embedding_export.py" = ["B904"]              # S4
+"src/mobiletransformers/export/training_export.py" = ["B006", "B007", "E402", "E501", "F841"]  # S4
+"src/mobiletransformers/artifacts/builder.py" = ["B006", "E402", "E501", "F841"]  # S5
 
 [tool.ruff.lint]
 # pyflakes + pycodestyle + import-sort (I) + pyupgrade (UP) + bugbear (B).
@@ -116,12 +142,36 @@ python_version = "3.10"
 ignore_missing_imports = true
 plugins = ["pydantic.mypy"]  # teaches mypy about pydantic model defaults/aliases/factories
 files = ["src/mobiletransformers"]
-exclude = "(^|/)(research|trainer|artifact|inference|tools|peft_models|database|evaluation)/"
+# Anchored with ^ for the same reason as ruff's extend-exclude above: an unanchored alternation also
+# matched src/mobiletransformers/{inference,evaluation}/.
+exclude = "^(research|trainer|artifact|inference|tools|peft_models|database|evaluation)/"
 
 [[tool.mypy.overrides]]
 # New package modules are held to strict typing (new code pays the typing tax; legacy is ratcheted).
 module = "mobiletransformers.*"
 disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# MIGRATION RATCHET (S1): modules just moved in from the legacy roots — untyped by origin. Remove a
+# module from this list once it is annotated. Ordered AFTER the strict block above so it wins for
+# these paths only (mypy applies the most specific matching override).
+module = [
+  "mobiletransformers.training.data",
+  "mobiletransformers.training.callbacks",
+  "mobiletransformers.inference.generator",
+  "mobiletransformers.export.tokenizer_export",
+  "mobiletransformers.utils.paths",
+  "mobiletransformers.utils.templating",
+  # S3
+  "mobiletransformers.peft.*",
+  # S4
+  "mobiletransformers.training.preprocessing",
+  "mobiletransformers.export.embedding_export",
+  "mobiletransformers.export.training_export",
+  # S5
+  "mobiletransformers.artifacts.builder",
+]
+ignore_errors = true
 
 [[tool.mypy.overrides]]
 # The legacy roots are outside the gate (see `exclude`), but `src` lazy-imports a few of them (e.g. the

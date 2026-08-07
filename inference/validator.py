@@ -18,6 +18,7 @@ from tools.parser_config import TRAIN_CONFIG, ARTIFACT_CONFIG, ARTIFACT_VALIDATO
 import onnxruntime as rt
 from onnxruntime import InferenceSession, SessionOptions
 from transformers import AutoTokenizer, AutoConfig
+from mobiletransformers.config.settings import get_settings
 
 def validate_generation(model_id, model_name, model_dir, test_generation, test_generation_config, load_merged_weights=False, **kwargs):
 
@@ -42,7 +43,7 @@ def validate_generation(model_id, model_name, model_dir, test_generation, test_g
     
     if test_generation:
 
-        tokenizer = AutoTokenizer.from_pretrained(model_id, token=os.environ['HF_TOKEN'])
+        tokenizer = AutoTokenizer.from_pretrained(model_id, token=get_settings().require_hf_token())
         
         if test_generation_config["hf_tokenizer"]:
             if tokenizer.chat_template is not None:
@@ -110,7 +111,7 @@ def validate_generation(model_id, model_name, model_dir, test_generation, test_g
                 providers=['CPUExecutionProvider']
             )
 
-        config = AutoConfig.from_pretrained(model_id, token=os.environ['HF_TOKEN'])
+        config = AutoConfig.from_pretrained(model_id, token=get_settings().require_hf_token())
 
         input_names = [input_name.name for input_name in session.get_inputs()]
 

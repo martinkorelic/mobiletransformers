@@ -29,6 +29,7 @@ import textwrap
 import yaml
 
 from dotenv import load_dotenv
+from mobiletransformers.config.settings import get_settings
 load_dotenv()
 
 TRAIN_CONFIG = "TRAIN_BUILDER"
@@ -3413,7 +3414,7 @@ if __name__ == '__main__':
         # Specific
         setattr(args, "model_name", config_dict[TRAIN_CONFIG]["model_id"])
         setattr(args, "cache_dir", os.environ['HF_CACHE'])
-        extra_options["hf_token"] = os.environ['HF_TOKEN']
+        extra_options["hf_token"] = get_settings().require_hf_token()
         if config_dict[INFERENCE_CONFIG]["use_lora"]:
             extra_options["non_quant_nodes"] = config_dict[TRAIN_CONFIG]["lora_target"]
         else:

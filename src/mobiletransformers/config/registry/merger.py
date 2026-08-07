@@ -14,6 +14,8 @@ Until then ``build_merger_model`` fails closed rather than silently emitting a w
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -369,6 +371,29 @@ def _build_mars_merger(quant_in: bool, quant_out: bool) -> onnx.ModelProto:
     )
     _append_quant_metadata(model, quant_in, quant_out)
     return model
+
+
+def emit_merger_models(
+    output_dir: str,
+    peft_method: PEFTMethod,
+    quant_out: bool,
+    quant_ins: Iterable[bool] = (True, False),
+    extra_methods: Iterable[PEFTMethod] = (),
+) -> dict[str, str]:
+    """Emit the merger ONNX graph(s) a package needs, via the registry (no hand-picked factories).
+
+    Returns ``{MergerVariant.value: output_filename}`` for the handoff map's ``mergerModels``. Filenames
+    are descriptive (``merger_<variant>_<qin|fpin>_<qout|fpout>.onnx``). ``extra_methods`` lets a MARS
+    package also carry the LoRA mergers used for its non-MARS layers (device mixes per-layer).
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    emitted: dict[str, str] = {}
+    for method in (peft_method, *extra_methods):
+        for quant_in in quant_ins:
+            spec = resolve_merger(method, quant_in=quant_in, quant_out=quant_out)
+            build_merger_model(spec, os.path.join(output_dir, spec.output_filename))
+            emitted[spec.variant.value] = spec.output_filename
+    return emitted
 
 
 __all__ = ["MergerSpec", "resolve_merger", "build_merger_model"]

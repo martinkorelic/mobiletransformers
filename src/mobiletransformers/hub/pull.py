@@ -153,10 +153,25 @@ def install_package(
     if checksums.is_file():
         shutil.copy2(checksums, partial / "checksums.json")
 
+    # #21 crash safety (mirrors the Kotlin ModelPackageInstaller): move the OLD install aside, put the
+    # new one in place, and only then delete the old. Deleting first opened a window where a crash or
+    # a failed replace left no package at all — including any locally trained checkpoint.
     target = cache_root / sanitized
-    if target.exists():
-        shutil.rmtree(target)
-    os.replace(partial, target)
+    retired = cache_root / f".retired-{sanitized}-{os.getpid()}"
+    had_previous = target.exists()
+    if had_previous:
+        if retired.exists():
+            shutil.rmtree(retired)
+        os.replace(target, retired)
+    try:
+        os.replace(partial, target)
+    except OSError:
+        # Roll the previous install back so a failed update is a no-op, not data loss.
+        if had_previous:
+            os.replace(retired, target)
+        raise
+    if had_previous:
+        shutil.rmtree(retired, ignore_errors=True)
     return target
 
 

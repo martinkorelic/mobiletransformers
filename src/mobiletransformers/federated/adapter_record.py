@@ -184,13 +184,37 @@ class FederatedAdapterRecord:
         header = json.loads(data[4:header_end].decode("utf-8"))
         payload = data[header_end:]
 
+        # F1/F8: gate the WIRE record's schema before trusting any of its offsets. This used to run
+        # only if a caller happened to invoke check_format afterwards, and no caller did — so a peer
+        # record built against an incompatible codec was accepted by the only ingest path there is.
+        check_compat(
+            header.get("schemaVersion", "1.0"),
+            header.get("minReaderVersion", "1.0"),
+            FEDERATED_RECORD_READER_VERSION,
+        )
+
         tensors: list[FederatedTensor] = []
         arrays: list[np.ndarray] = []
         for t in header["tensors"]:
             start, length = t["byteOffset"], t["byteLength"]
+            # Bounds-check before slicing: byteOffset/byteLength come from an untrusted peer, and a
+            # Python slice silently clamps rather than raising.
+            if start < 0 or length < 0 or start + length > len(payload):
+                raise HandoffError(
+                    f"tensor {t['name']!r} declares bytes [{start}, {start + length}) "
+                    f"outside the {len(payload)}-byte payload"
+                )
             chunk = payload[start : start + length]
             if len(chunk) != length:
                 raise HandoffError(f"truncated payload for tensor {t['name']!r}")
+            expected = int(np.dtype(_np_dtype(t["dtype"])).itemsize)
+            for dim in t["shape"]:
+                expected *= int(dim)
+            if expected != length:
+                raise HandoffError(
+                    f"tensor {t['name']!r}: shape {tuple(t['shape'])} of {t['dtype']} needs "
+                    f"{expected} bytes, header declares {length}"
+                )
             arr = np.frombuffer(chunk, dtype=_np_dtype(t["dtype"])).reshape(tuple(t["shape"]))
             tensors.append(
                 FederatedTensor(t["name"], t["dtype"], tuple(t["shape"]), t["role"], t["aggregation"])

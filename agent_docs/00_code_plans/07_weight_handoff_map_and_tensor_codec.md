@@ -231,6 +231,19 @@ Under `external_initializer`, `mergedTensorNames["weight"] == inferenceInitializ
 
 ## Implementation notes — Python owner layer done (2026-07-13)
 
+> **This note is stale in the reader's favour (corrected 2026-08-07).** It says the cross-boundary
+> consumers are "deferred"; they are not. The C++ **both** sides landed with #9/#23 — `cpp/handoff_io.h`
+> is the one shared reader for the merge write-side and the `session_cache.h` load-side, and the C++
+> `check_compat` mirror is now exercised against the shared `tests/fixtures/check_compat_cases.json`
+> fixture by the host googletest suite (`make test-cpp`), where previously it was asserted by comment
+> only. The Kotlin read model (`packages/WeightHandoffMap.kt`) and the fail-closed load gate
+> (`internal/runtime/HandoffPrecondition.kt`) exist too. The audit scored #8 **higher** than it claimed.
+>
+> Two contract changes since this note: the map gained per-role `tensorDtypes`/`tensorShapes` (each
+> `<name>.bin` is raw external data with no header, so a packed `weight_quantized`/`scale`/`zero_point`
+> was otherwise unloadable), and checksum precedence is pinned to **sidecar over map** — see
+> `docs/MODEL_FORMAT.md`.
+
 The **Python owner layer is implemented, tested, and green** (`make check`: 108 passed, 6 skipped). The
 cross-boundary consumers (C++ merge/save, C++ load, Kotlin JNI) are deferred to their integration plans,
 exactly as this plan's own Interactions section directs — nothing here was skipped, only sequenced.

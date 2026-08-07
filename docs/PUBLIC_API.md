@@ -4,8 +4,8 @@ The SemVer-governed public surface (F5) has three peers: the **Python library AP
 **Kotlin facade**. The Python side is exactly the surface declared in `mobiletransformers.__all__`
 (owned by `00_code_plans/10`, guarded by a parity test against `src/mobiletransformers/public_api.txt`).
 
-> The Kotlin facade (`MobileTransformers.fromPretrained`, `ModelSession`, …) is defined by #17/#19 and is
-> documented here once those contracts lock. This page currently covers the **Python** + **CLI** surfaces.
+All three surfaces are documented below. See also [EXPORT.md](EXPORT.md), [MODEL_FORMAT.md](MODEL_FORMAT.md),
+[HUB_PACKAGE_FORMAT.md](HUB_PACKAGE_FORMAT.md), [ARCHITECTURE.md](ARCHITECTURE.md) and [RAG.md](RAG.md).
 
 ## Python (`import mobiletransformers`)
 
@@ -33,17 +33,38 @@ against `public_api.txt`, so any addition is a deliberate SemVer change.
 
 | Command | Purpose |
 | --- | --- |
-| `export` | HF model → device-ready package (`--dry-run` supported). |
-| `validate` | Validate a package/manifest. |
+| `export` | HF model → device-ready package (`--dry-run`, `--config`, `--validate` supported). |
+| `validate` | Validate a written package (`--package`) and/or a config YAML (`--config`). |
 | `package-model` | Assemble a Hub package from a build dir *(stub; body in a later plan)*. |
 | `push` | Validate + publish a package to the Hub. |
 | `pull` | Download a package (manifest-first, sha256-verified). |
 | `install-package` | Materialize a pulled package into the SDK cache layout. |
 | `support-matrix` | Generate `model_support_matrix.json` (+ `--docs`, `--md`). |
 | `push-adapter` | Publish a trained adapter (PEFT Mode 1 / native Mode 2). |
+| `federated` | `federated simulate` — FedAvg simulation over codec-ordered adapter records. |
 
 Run `mobiletransformers <command> --help` for flags. `make help` lists the wrapper targets
 (`export-model`, `package-model`, `android-build`, …).
+
+## Kotlin facade (`com.martinkorelic.mobiletransformers`)
+
+Obtained from `MobileTransformers.fromPretrained(context, repoId, …)`, which pulls and installs the
+package when it is not already in the cache.
+
+| Symbol | Kind | Purpose |
+| --- | --- | --- |
+| `MobileTransformers.fromPretrained` | entry point | resolve → (pull) → load; returns a `MobileTransformerModel`. |
+| `MobileTransformerModel` | handle | `train`/`trainingJob`/`merge`/`generate`/`retrieve`/`ingest`/`generateWithRag`/`applyPeft`/`pushAdapter`/`close`. |
+| `TrainingJob` | lifecycle | `status`/`events` flows, cooperative `cancel`, `checkpoint()`/`canResume`. |
+| `RuntimeCapabilities`, `EngineCapabilities` | capability | installed features, resolved engine, merged-weight support. |
+| `InferenceEngine` | enum | `NATIVE` (the floor) \| `GENAI`. |
+| `TrainConfig`, `GenerationConfig`, `RagConfig`, `DatasetConfig`, `PeftConfig`, `HubConfig`, `DeviceConfig` | config | public configs; mapped to the internal `ORT*Config` types. |
+| `TrainingResult`, `TrainingSummary`, `GenerationResult`, `MergeResult`, `RetrievalResult`, `GroundedResult`, `IngestResult`, `PushResult` | results | plain data; no `ORT*`/`*Native` type appears on this surface. |
+| `TrainCallback`, `GenerateCallback`, `RetrieveCallback` | callbacks | streaming progress. |
+| `MobileTransformersException` | errors | sealed hierarchy (`PeftMismatch`, `FeatureNotInstalled`, `EngineUnavailable`, `ModelNotInstalled`, `MissingArtifact`, `NotImplementedFeature`). |
+| `constants/*` | enums | wire-value mirrors of the Python enums, parity-checked by `make parity`. |
+
+Internal packages (`repository`, `internal.*`, `ORT*`/`*Native`) are **not** public and may change.
 
 ## Stability
 

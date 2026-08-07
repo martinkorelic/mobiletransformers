@@ -24,8 +24,43 @@ Common flags (see `mobiletransformers export --help`):
 | `--include-rag` | off | Also emit the embedding/RAG variant subtree. |
 | `--embedding-model` | — | Embedding model id (with `--include-rag`). |
 | `--genai` | off | Declare GenAI engine support for the variant (Native is always supported). |
-| `--config` | — | Config YAML overlay (CLI > env > YAML > default). |
+| `--stages` | auto | Comma-separated `inference,training,embedding`; default is auto by profile. |
+| `--config` | — | YAML supplying defaults for any flag not passed (CLI > YAML > default). |
+| `--validate` | off | Validate the written package against the manifest contract before returning. |
 | `--dry-run` | off | Resolve + print the plan and a manifest skeleton; write nothing. |
+
+### `--config`
+
+Any knob above except `--validate`/`--dry-run` may come from YAML instead of the command line —
+including `--model` and `--output`. Explicit flags always win; unknown keys are rejected rather than
+ignored.
+
+```yaml
+# export.yml — either an `export:` block or a flat mapping
+export:
+  model: HuggingFaceTB/SmolLM2-135M-Instruct
+  output: build/pkg
+  peft: mars
+  rank: 16
+  quant: int4
+  genai: true
+```
+
+```bash
+mobiletransformers export --config export.yml            # everything from YAML
+mobiletransformers export --config export.yml --rank 32  # ...with rank overridden
+```
+
+### `--validate`
+
+Re-reads the package just written and runs the #13 manifest validation over it (every declared file
+resolves, the variant subtrees exist, the weight-handoff reference is present). A package that does not
+validate fails the command, rather than being discovered later on a device. The same check is available
+standalone:
+
+```bash
+mobiletransformers validate --package build/pkg
+```
 
 `--dry-run` needs no heavy dependencies — it resolves the export plan and prints the
 `mobiletransformers_manifest.json` skeleton, so you can inspect variant selection and the download plan

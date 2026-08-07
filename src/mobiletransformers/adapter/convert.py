@@ -75,7 +75,12 @@ def _read_checkpoint_factors(checkpoint_dir: Path, names: Iterable[str]) -> dict
     if not checkpoint_dir.exists():  # pragma: no cover - env-gated path
         raise ExportError(f"no ORT checkpoint at {checkpoint_dir}")
     wanted = set(names)
-    state = CheckpointState.load_checkpoint(str(checkpoint_dir))  # pragma: no cover - env-gated
+    try:  # pragma: no cover - env-gated
+        state = CheckpointState.load_checkpoint(str(checkpoint_dir))
+    except Exception as exc:  # noqa: BLE001 - ORT raises its own runtime errors here
+        # Normalize to ExportError so callers (cli/push_adapter) can distinguish "cannot produce
+        # weights" from a genuine bug, and fail closed rather than publish a weightless adapter.
+        raise ExportError(f"failed to load the ORT checkpoint at {checkpoint_dir}: {exc}") from exc
     return {  # pragma: no cover - env-gated
         param_name: parameter.data for param_name, parameter in state.parameters if param_name in wanted
     }

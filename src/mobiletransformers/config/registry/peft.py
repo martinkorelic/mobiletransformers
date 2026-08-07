@@ -12,8 +12,10 @@ is a lazy dotted path (resolved only when a real PEFT wrap runs, in the training
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from mobiletransformers.config.constants import MergerVariant, PEFTMethod
+from mobiletransformers.config.registry.architecture import import_from_path
 from mobiletransformers.exceptions import UnsupportedModelError
 
 
@@ -31,6 +33,41 @@ class PEFTMethodSpec:
     merger_variant_fp: MergerVariant | None  # merger variant when output is not quantized
     merger_variant_q: MergerVariant | None  # merger variant when output is quantized
     builds_mapping: bool = True
+    #: Lazy dotted path to this method's adapter-mapping builder (same lazy-import convention as
+    #: ``config_class``). ``None`` when ``builds_mapping`` is False. The builders differ in substance
+    #: — MARS tracks shared-module identity and qkv/mlp adapter indices, LoRA is a flat module scan —
+    #: so this dispatches to them rather than pretending one generic walk covers both.
+    mapping_builder: str | None = None
+
+
+#: PEFT target modules keyed by HF ``config.model_type`` — the SINGLE source for what MARS/ablation
+#: wrap when the user names no explicit ``target_modules``. Previously duplicated byte-for-byte across
+#: ``peft/mars/utils.py`` and ``peft/ablation/utils.py`` under two different dict names,
+#: which is exactly the drift #6 exists to remove; both now re-export this table.
+#:
+#: NOTE this is keyed by ``model_type`` (``llama``, ``t5``, ...) and deliberately NOT collapsed onto
+#: :attr:`ArchitectureSpec.target_modules`, which is keyed by ``config.architectures[0]``
+#: (``LlamaForCausalLM``, ...) and covers only the 8 architectures the ONNX export path supports.
+#: The two key spaces are different and this one is far wider — folding them would silently drop
+#: PEFT support for t5/mt5/bart/gpt2/bloom/gptj/gpt_neo(x)/bert/roberta/deberta(-v2)/gpt_bigcode.
+PEFT_TARGET_MODULES_BY_MODEL_TYPE: dict[str, list[str]] = {
+    "t5": ["q", "k", "v", "o", "wi", "wo"],
+    "mt5": ["q", "k", "v", "o", "wi_0", "wi_1", "wo"],
+    "bart": ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"],
+    "gpt2": ["c_attn"],
+    "bloom": ["query_key_value"],
+    "opt": ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"],
+    "gptj": ["q_proj", "v_proj"],
+    "gpt_neox": ["query_key_value"],
+    "gpt_neo": ["q_proj", "v_proj"],
+    "llama": ["q_proj", "v_proj"],
+    "bert": ["query", "value"],
+    "roberta": ["query", "value"],
+    "deberta-v2": ["query_proj", "key_proj", "value_proj", "dense"],
+    "gpt_bigcode": ["c_attn"],
+    "deberta": ["in_proj"],
+    "qwen2": ["q_proj", "v_proj"],
+}
 
 
 _LORA_COMPONENTS = (
@@ -49,6 +86,7 @@ PEFT_REGISTRY: dict[PEFTMethod, PEFTMethodSpec] = {
         _LORA_COMPONENTS,
         MergerVariant.LORA,
         MergerVariant.LORA_Q,
+        mapping_builder="mobiletransformers.peft.mapping.create_lora_mapping",
     ),
     PEFTMethod.LORA_XS: PEFTMethodSpec(
         PEFTMethod.LORA_XS,
@@ -56,13 +94,16 @@ PEFT_REGISTRY: dict[PEFTMethod, PEFTMethodSpec] = {
         _LORA_COMPONENTS,
         MergerVariant.LORA,
         MergerVariant.LORA_Q,
+        # LoRA-XS reparameterizes an existing LoRA wrap, so it shares LoRA's module layout.
+        mapping_builder="mobiletransformers.peft.mapping.create_lora_mapping",
     ),
     PEFTMethod.MARS: PEFTMethodSpec(
         PEFTMethod.MARS,
-        "peft_models.mars.config.MarsConfig",
+        "mobiletransformers.peft.mars.config.MarsConfig",
         _MARS_COMPONENTS,
         MergerVariant.MARS_Q,
         MergerVariant.MARS_Q,
+        mapping_builder="mobiletransformers.peft.mapping.create_mars_adapter_mapping",
     ),
     # "all" (all linear layers trainable) and "nolora" produce no adapter mapping and no merger.
     PEFTMethod.ALL: PEFTMethodSpec(PEFTMethod.ALL, None, (), None, None, builds_mapping=False),
@@ -78,4 +119,31 @@ def get_peft_spec(method: PEFTMethod) -> PEFTMethodSpec:
     return spec
 
 
-__all__ = ["AdapterComponent", "PEFTMethodSpec", "PEFT_REGISTRY", "get_peft_spec"]
+def build_adapter_mapping(method: PEFTMethod, model: Any, **kwargs: Any) -> dict[str, Any]:
+    """Build the base-layer -> adapter-tensor mapping for ``method`` (#6 A3).
+
+    The ONE entry point for adapter mapping: callers pass the resolved :class:`PEFTMethod` and never
+    branch on a method string themselves. It returns ``{}`` for methods that produce no adapters
+    (``all`` / ``nolora``) and fails closed on a method whose spec claims to build a mapping but
+    registers no builder.
+
+    ``**kwargs`` are forwarded to the resolved builder (e.g. MARS's ``shared_qkv`` /
+    ``shared_mlp_enabled``); a builder that does not accept them will say so.
+    """
+    spec = get_peft_spec(method)
+    if not spec.builds_mapping:
+        return {}
+    if spec.mapping_builder is None:
+        raise UnsupportedModelError(
+            f"PEFT method {method.value!r} declares builds_mapping but registers no mapping_builder"
+        )
+    return dict(import_from_path(spec.mapping_builder)(model, **kwargs))
+
+
+__all__ = [
+    "AdapterComponent",
+    "PEFTMethodSpec",
+    "PEFT_REGISTRY",
+    "get_peft_spec",
+    "build_adapter_mapping",
+]

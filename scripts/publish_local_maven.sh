@@ -1,12 +1,30 @@
 #!/usr/bin/env bash
-# Publish the :MobileTransformers SDK library to the local Maven repository (~/.m2).
+# Publish the :MobileTransformers SDK to the local Maven repository (~/.m2) (#30).
 #
-# STUB (created by #28 / 05_code_plans/01). The real body — the `maven-publish` Gradle wiring and
-# `publishToMavenLocal` invocation — is owned by #30 (05_code_plans/03, AAR & Maven).
+#   scripts/publish_local_maven.sh [-Pversion=<x>]
+#
+# Publishes com.martinkorelic.mobiletransformers:mobiletransformers-android:<version> — AAR, sources
+# jar and POM — so `examples/consumer-app` (or any external project with mavenLocal()) can resolve it.
 set -euo pipefail
 
-GRADLE_ROOT="android/MobileTransformersApp"
+GRADLE_ROOT="android/MobileTransformers"
 
-echo "scripts/publish_local_maven.sh is a stub; the mavenLocal publication is owned by #30 (05_code_plans/03)." >&2
-echo "Interim: once maven-publish is wired, run '(cd ${GRADLE_ROOT} && ./gradlew publishToMavenLocal)'." >&2
-exit 1
+: "${JAVA_HOME:=}"
+if [ -z "${JAVA_HOME}" ] && [ -d /opt/android-studio/jbr ]; then
+  export JAVA_HOME=/opt/android-studio/jbr
+fi
+
+# Same ABI caveat as android_build_aar.sh: pass -Pandroid.injected.build.abi=<abi> when the
+# vendored libraries are only complete for one ABI.
+echo "==> publishing to mavenLocal"
+(cd "${GRADLE_ROOT}" && ./gradlew :MobileTransformers:publishToMavenLocal "$@")
+
+COORD_DIR="${HOME}/.m2/repository/com/martinkorelic/mobiletransformers/mobiletransformers-android"
+if [ ! -d "${COORD_DIR}" ]; then
+  echo "error: publish reported success but ${COORD_DIR} does not exist." >&2
+  exit 1
+fi
+
+echo "==> published:"
+find "${COORD_DIR}" -type f \( -name '*.aar' -o -name '*.pom' -o -name '*-sources.jar' \) \
+  -printf '    %p\n' | sort

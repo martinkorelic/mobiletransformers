@@ -15,6 +15,7 @@ from deepeval.models.llms import GeminiModel
 from database.query import ObjectBoxQueryEngine
 from dotenv import load_dotenv
 from deepeval.metrics.g_eval import Rubric
+from mobiletransformers.config.settings import get_settings
 
 load_dotenv()
 
@@ -25,7 +26,7 @@ TEST_DATA_TYPE = "complex"
 CHUNK_DATABASE_DIR = "build/ehr_chunk_db"
 DOCUMENT_DATABASE_DIR = "build/ehr_document_db"
 EMBEDDING_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
-GEMINI_API_KEY=os.environ["GEMINI_API_KEY"]
+GEMINI_API_KEY=get_settings().gemini_api_key
 
 
 if SLM_TO_TEST == "tinyllama":

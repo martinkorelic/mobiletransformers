@@ -6,7 +6,7 @@
 # environment). CI (#29) invokes these targets, not raw commands.
 
 .PHONY: help setup setup-export setup-train setup-genai \
-        lint format typecheck parity test test-smoke test-train check \
+        lint format typecheck parity guard test test-smoke test-train test-jvm test-cpp test-integration check consumer-app \
         export-model package-model android-build device-package device-test build-aar publish-local docs clean-generated
 
 # Overridable export knobs (used by `export-model`).
@@ -15,7 +15,8 @@ OUTPUT  ?= build/package
 PEFT    ?= lora
 QUANT   ?= int4
 CONFIG  ?=
-GRADLE  := cd android/MobileTransformersApp && ./gradlew
+GRADLE  := cd android/MobileTransformers && ./gradlew
+CPP_DIR := android/MobileTransformers/MobileTransformers/src/main/cpp
 
 help:  ## List every target with its description.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -49,6 +50,20 @@ typecheck:  ## Static type check (mypy).
 parity:  ## Cross-language enum/schema parity gate (Python source of truth vs. Kotlin/schemas).
 	uv run python -m mobiletransformers.codegen.enums --check
 
+guard:  ## CI ratchets: #4 secret reads + #6 registry-dispatch literals (Python, legacy roots, C++).
+	uv run pytest tests/unit/test_guards.py -q
+
+test-jvm:  ## Android SDK JVM unit tests (no device, no NDK, no vendored native libs).
+	$(GRADLE) :MobileTransformers:testDebugUnitTest
+
+test-cpp:  ## C++ host unit tests (googletest; ORT-free headers only, no NDK/device).
+	cmake -S $(CPP_DIR)/tests -B build/cpp-tests -DCMAKE_BUILD_TYPE=Release >/dev/null
+	cmake --build build/cpp-tests -j
+	ctest --test-dir build/cpp-tests --output-on-failure
+
+test-integration:  ## Integration tests (env-gated; skip when their profile is absent).
+	uv run pytest tests/integration
+
 test:  ## Python unit tests (core env, no heavy deps).
 	uv run pytest tests/unit tests/fixtures tests/export tests/hub tests/support tests/cli tests/adapter tests/federated
 
@@ -58,7 +73,7 @@ test-smoke:  ## Export/package/manifest wiring smoke (core-runnable subset).
 test-train:  ## ORT-training smoke — requires the cp312 source-built wheel (ort-training-local).
 	uv run --python 3.12 --group ort-training-local pytest tests/integration/test_ort_training_smoke.py
 
-check: lint typecheck parity test  ## lint + typecheck + parity + tests (the standing gate).
+check: lint typecheck parity guard test  ## lint + typecheck + parity + guards + tests (the standing gate).
 
 # --- one-command export / package (wraps #15; no logic here) ------------------------------------
 export-model:  ## MODEL=<hf-id> [OUTPUT= PEFT= QUANT=] -> device-ready package (wraps #15).
@@ -69,13 +84,16 @@ package-model:  ## Validate + assemble an existing build dir into a Hub package 
 
 # --- android / publish (bodies owned by #30; thin wrappers over Gradle + scripts/) --------------
 android-build:  ## gradle assembleDebug (SDK + sample app).
-	$(GRADLE) :MobileTransformers:assembleDebug :app:assembleDebug
+	$(GRADLE) :MobileTransformers:assembleDebug :MobileTransformersApp:assembleDebug
 
 device-package:  ## MODEL=<hf-id> [VARIANT= TRAIN=1] -> export + adb push a real package for device tests (#1-29 W6).
 	MODEL=$(MODEL) scripts/device_package.sh
 
 device-test:  ## Run the instrumented device suites over the pushed package (skips w/o a device/package).
 	$(GRADLE) :MobileTransformers:connectedDebugAndroidTest
+
+consumer-app:  ## Build examples/consumer-app against the mavenLocal artifact (#30 proof).
+	cd examples/consumer-app && ./gradlew assembleDebug
 
 build-aar:  ## Assemble the release AAR (#30 owns the script body).
 	scripts/android_build_aar.sh

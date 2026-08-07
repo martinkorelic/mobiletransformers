@@ -426,29 +426,75 @@ def _build_inference_stage(
         "transformersVersion": result.transformers_version,
         "trustRemoteCode": result.trust_remote_code,
     }
+
+    # #15 DoD: record HOW this graph was produced, next to the graph. Without it a shipped package
+    # cannot be traced back to the exporter/task that made it.
+    _write_json(
+        inf / "optimum_config.json",
+        {
+            "modelId": plan.model_id,
+            "task": result.task,
+            "modelType": result.model_type,
+            "optimumOnnxVersion": result.optimum_onnx_version,
+            "transformersVersion": result.transformers_version,
+            "trustRemoteCode": result.trust_remote_code,
+            "quantization": plan.quant,
+            "supportedEngines": list(plan.supported_engines),
+        },
+    )
     return StageOutput(
         stage_dirs={"inference": inf, "tokenizer": tok},
         report={k: v for k, v in report.items() if v is not None},
     )
 
 
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Deterministic JSON write (sorted keys) so package checksums are stable."""
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _populate_tokenizer_stage(
     plan: ExportPlan, result: Any, inf: Path, tok: Path, *, token: str | None, log: Any
 ) -> None:
-    """Copy the exported tokenizer files into the tokenizer stage + best-effort emit the on-device
-    ``mobiletransformers_tokenizer_config.json`` (Android Native tokenizer; the device leg)."""
+    """Copy the exported tokenizer files into the tokenizer stage, emit ``chat_template.jinja``, and
+    the on-device ``mobiletransformers_tokenizer_config.json`` (Android Native tokenizer)."""
     import shutil
 
     for name in getattr(result, "tokenizer_files", ()):  # relative names under the export dir
         src = inf / name
         if src.is_file():
             shutil.copy2(src, tok / Path(name).name)
-    try:
-        from tools.tokenizer_export import export_tokenizer_config
 
+    # #15 DoD: the chat template as a standalone file. It is reshaped to shared/chat_template.jinja and
+    # flattened into tokenizer/ by the installers, which is where the device conversation state reads it.
+    _emit_chat_template(plan, tok, token=token, log=log)
+
+    # Migration Map S1: this now lives in the package, so it resolves from an installed wheel too.
+    from mobiletransformers.export.tokenizer_export import export_tokenizer_config
+
+    try:
         export_tokenizer_config(plan.model_id, output_dir=str(tok), hf_token=token)
-    except Exception as exc:  # noqa: BLE001 - the on-device tokenizer config is a deferred device leg
-        log.warning("mobiletransformers_tokenizer_config.json not emitted (device-leg tokenizer): %s", exc)
+    except Exception as exc:  # noqa: BLE001 - a model-specific tokenizer quirk should not kill the export
+        log.warning("mobiletransformers_tokenizer_config.json not emitted: %s", exc)
+
+
+def _emit_chat_template(plan: ExportPlan, tok: Path, *, token: str | None, log: Any) -> None:
+    """Write the tokenizer's Jinja chat template to ``chat_template.jinja`` when the model has one."""
+    try:
+        from transformers import AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(plan.model_id, token=token)
+        template = getattr(tokenizer, "chat_template", None)
+    except Exception as exc:  # noqa: BLE001 - a base model without a chat template is normal
+        log.warning("chat_template.jinja not emitted: %s", exc)
+        return
+    if not template:
+        log.info("%s declares no chat_template; skipping chat_template.jinja", plan.model_id)
+        return
+    (tok / "chat_template.jinja").write_text(template, encoding="utf-8")
 
 
 def _emit_genai_config(plan: ExportPlan, inference_dir: Path, result: Any, *, token: str | None) -> None:
@@ -565,11 +611,15 @@ def _build_training_stage(
     train_export.mkdir(parents=True, exist_ok=True)
     train_stage.mkdir(parents=True, exist_ok=True)
 
-    # Lazy legacy imports (torch/peft/optimum/onnxruntime.training — the ort-training-local profile).
-    from artifact.onnx_builder import gen_artifacts  # type: ignore[import-not-found]
-    from inference.export_inference_package import export_inference_package  # type: ignore[import-not-found]
-    from trainer.builder import optimum_hf_export  # type: ignore[import-not-found]
+    # Migration Map S2: in the package now, and core-importable (onnx only) — so it is a normal import.
+    # Migration Map S4: training_export is in the package (its torch/optimum imports stay lazy inside).
+    # Migration Map S5: the last legacy arrow is gone — the export path is fully in-package, so it
+    # resolves from an installed wheel. Its torch/onnxruntime-training imports remain lazy inside.
     from transformers import AutoConfig
+
+    from mobiletransformers.artifacts.builder import gen_artifacts
+    from mobiletransformers.export.inference_package import export_inference_package
+    from mobiletransformers.export.training_export import optimum_hf_export
 
     quantized = plan.quant != "fp16"
     # optimum_hf_export picks AutoModelForCausalLM for text-generation; strip the KV-cache suffix.
@@ -607,6 +657,21 @@ def _build_training_stage(
         peft_method=plan.peft_method,
         quant_in=quantized,
         quant_out=quantized,
+    )
+
+    # #15 DoD: name the trainable tensors in the package itself. The count alone (in the manifest)
+    # says how many; this says WHICH, so an adapter push or a federated round can be checked against
+    # the package without re-deriving the PEFT mapping.
+    peft_mapping = extended_config.get("peft_mapping") or {}
+    _write_json(
+        train_stage / "trainable_parameters.json",
+        {
+            "peftMethod": plan.peft_method.value,
+            "rank": plan.rank,
+            "trainableParameterCount": extended_config.get("trainable_parameter_count"),
+            "baseLayers": sorted(peft_mapping),
+            "requiresGrad": sorted(extended_config.get("requires_grad") or []),
+        },
     )
 
     report = {

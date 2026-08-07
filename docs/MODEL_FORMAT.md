@@ -116,13 +116,14 @@ Each `entries[]` element is one trainable layer's full identity:
 | Field | Meaning |
 | --- | --- |
 | `trainingBaseLayerName` | the training-side base layer (e.g. `backbone.…q_proj.base_layer`). |
-| `dtype` / `shape` | tensor dtype (`float16`/`float32`/`int8`/`uint8`/`int4`) and shape. |
+| `dtype` / `shape` | the **weight-like** role's dtype (`float16`/`float32`/`int8`/`uint8`/`int4`) and shape. |
+| `tensorDtypes` / `tensorShapes` | role → that role's **own** on-disk dtype/shape — see "Per-role dtype and shape". |
 | `checkpointNames` | role → ORT-checkpoint tensor name (the frozen `weight` + the adapter A/B factors). |
 | `mergerOutputNames` | role → the merger graph's output name. |
 | `mergedTensorNames` | role → the name the on-device merger stamps. |
 | `inferenceInitializerNames` | role → the initializer name in `inference/model.onnx`. |
 | `externalDataLocation` | role → the flat per-tensor `.bin` filename in `inference/`. |
-| `sha256` | role → integrity hash. |
+| `sha256` | role → integrity hash of the **shipped** (pre-merge) bytes — see "Checksum precedence". |
 | `genaiInputNames` | role → GenAI input name (when GenAI consumes the tensor as an input). |
 | `quantization` | optional `{ weightQuantizedName, scaleName, zeroPointName }`. |
 | `transposePolicy` | `no_transpose` \| `already_transposed_for_inference`. |
@@ -138,6 +139,47 @@ Roles are drawn from the fixed order `("weight", "weight_quantized", "scale", "z
 - **No two entries** may claim the same `externalDataLocation` file or the same inference initializer name.
 - Serialization is byte-deterministic (`to_json()` sorts keys and sorts entries by canonical weight name), so
   the manifest's `sha256` over this file is stable.
+
+### Per-role dtype and shape
+
+Each `<name>.bin` is an **ONNX external-data blob: raw tensor bytes with no header**. Nothing in the
+file describes its element type or dimensions, so the map is the device loader's only source — and it
+must describe every role separately, because a quantized entry's roles do not share a layout:
+
+| Role | Typical dtype | Shape |
+| --- | --- | --- |
+| `weight` | `float16` | the logical `[out, in]` |
+| `weight_quantized` | `uint8` (int4 packed two-per-byte) | packed, narrower than the logical shape |
+| `scale` | `float16` | one per quantization group |
+| `zero_point` | `uint8` | one per quantization group |
+
+`tensorDtypes[role]` / `tensorShapes[role]` carry each role's own pair, taken from the initializers as
+actually observed at export (`_classify_initializers`). The entry-level `dtype`/`shape` describe the
+weight-like role only and remain as the fallback for maps written before these fields existed — sound
+for a single non-quantized role, which is why `validate()` rejects a quantized entry that omits them.
+
+The device loader (`session_cache.h::load_tensor_raw`) **constructs** the tensor from this declaration
+rather than checking a parsed header against it, and fails closed when the file size is not exactly
+`numel × element_size`.
+
+### Checksum precedence: the sidecar wins
+
+Each `<name>.bin` has **two** possible integrity sources, and they answer different questions:
+
+| Source | Written by | Covers |
+| --- | --- | --- |
+| `<name>.bin.sha256` (sidecar) | the device merger, `weight_merger.cpp::write_raw_tensor_atomic`, atomically on **every** merge | the **live** bytes currently on disk |
+| `entries[].sha256[role]` (in the map) | the exporter, once, at package build | the **shipped** bytes as published |
+
+**A reader must prefer the sidecar and fall back to the map.** After an on-device train→merge the
+`.bin` and its sidecar are both rewritten, but the map is not — C++ only ever *reads*
+`weight_handoff_map.json`. A reader that preferred the map would therefore compare post-merge bytes
+against the pre-merge shipped digest and reject a perfectly correct merge.
+
+Absence of both is fail-closed: the load gate throws rather than skipping verification. A stale
+*sidecar* still fails, so the precedence never weakens the gate — it only picks the authority that is
+actually kept current. Enforced by `HandoffPrecondition.loadMergedWeightsReady`
+(`internal/runtime/HandoffPrecondition.kt`).
 
 The map is produced offline by `TrainableTensorCodec.from_peft_mapping(...)` (which joins the training-side
 `peft_mapping` with the *observed* inference initializers — a naming drift raises at build time, never

@@ -80,8 +80,16 @@ class HandoffEntry:
     """One trainable MatMul's full identity across train -> merge -> inference."""
 
     training_base_layer_name: str
+    #: Entry-level dtype/shape: the *weight-like* role's. Kept for compatibility and as the fallback
+    #: for readers that predate ``tensorDtypes``/``tensorShapes``.
     dtype: str
     shape: tuple[int, ...]
+    #: Per-role on-disk dtype/shape, one pair per role in ``external_data_location``. Required by the
+    #: device loader: each ``<name>.bin`` holds RAW external-data bytes with no header, so the reader
+    #: has no other way to learn the element type and shape of a packed ``weight_quantized`` / ``scale``
+    #: / ``zero_point`` tensor, whose layout differs from the entry-level weight's.
+    tensor_dtypes: dict[str, str] = field(default_factory=dict)
+    tensor_shapes: dict[str, tuple[int, ...]] = field(default_factory=dict)
     checkpoint_names: dict[str, str] = field(default_factory=dict)
     merger_output_names: dict[str, str] = field(default_factory=dict)
     merged_tensor_names: dict[str, str] = field(default_factory=dict)
@@ -103,6 +111,14 @@ class HandoffEntry:
             r in self.inference_initializer_names for r in _QUANTIZED_ROLES
         )
 
+    def dtype_for(self, role: str) -> str:
+        """On-disk dtype of ``role``'s ``.bin``, falling back to the entry-level weight dtype."""
+        return self.tensor_dtypes.get(role, self.dtype)
+
+    def shape_for(self, role: str) -> tuple[int, ...]:
+        """On-disk shape of ``role``'s ``.bin``, falling back to the entry-level weight shape."""
+        return self.tensor_shapes.get(role, self.shape)
+
     def tensor_specs(self) -> list[TensorSpec]:
         """One :class:`TensorSpec` per role, in canonical role order."""
         specs = []
@@ -110,8 +126,10 @@ class HandoffEntry:
             specs.append(
                 TensorSpec(
                     name=self.inference_initializer_names[role],
-                    dtype=self.dtype,
-                    shape=self.shape,
+                    # Per-role, not the entry-level weight's: a scale/zero_point tensor has its own
+                    # dtype and shape, and reporting the weight's here was silently wrong.
+                    dtype=self.dtype_for(role),
+                    shape=self.shape_for(role),
                     role=role,
                     transpose_policy=self.transpose_policy,
                     aggregation_role="merged_base_plus_adapter",
@@ -131,6 +149,8 @@ class HandoffEntry:
             "genaiInputNames": dict(self.genai_input_names),
             "dtype": self.dtype,
             "shape": list(self.shape),
+            "tensorDtypes": dict(self.tensor_dtypes),
+            "tensorShapes": {role: list(shape) for role, shape in self.tensor_shapes.items()},
             "transposePolicy": self.transpose_policy,
         }
         if self.quantization is not None:
@@ -143,6 +163,8 @@ class HandoffEntry:
             training_base_layer_name=data["trainingBaseLayerName"],
             dtype=data["dtype"],
             shape=tuple(data.get("shape", [])),
+            tensor_dtypes=dict(data.get("tensorDtypes", {})),
+            tensor_shapes={role: tuple(shape) for role, shape in data.get("tensorShapes", {}).items()},
             checkpoint_names=dict(data.get("checkpointNames", {})),
             merger_output_names=dict(data.get("mergerOutputNames", {})),
             merged_tensor_names=dict(data.get("mergedTensorNames", {})),
@@ -266,6 +288,22 @@ class HandoffMap:
                             f"inference initializer {obs_name!r} (not derived from base_layer_name)"
                         )
 
+            # Every role with a .bin must declare its OWN on-disk dtype/shape: the device loader reads
+            # raw external-data bytes (no TensorProto header), so a missing pair leaves the tensor
+            # unloadable. Entries predating tensorDtypes/tensorShapes carry neither and fall back to
+            # the entry-level pair — sound only for a single non-quantized role, hence the extra gate.
+            if entry.tensor_dtypes or entry.tensor_shapes:
+                for role in entry.external_data_location:
+                    if role not in entry.tensor_dtypes:
+                        raise HandoffError(f"{where}: role {role!r} missing tensorDtypes entry")
+                    if role not in entry.tensor_shapes:
+                        raise HandoffError(f"{where}: role {role!r} missing tensorShapes entry")
+            elif entry.quantization is not None:
+                raise HandoffError(
+                    f"{where}: quantized entry must declare per-role tensorDtypes/tensorShapes "
+                    "(the entry-level dtype/shape describes only the weight-like role)"
+                )
+
             # No two entries may claim the same external file or the same inference initializer name.
             for loc in entry.external_data_location.values():
                 if loc in seen_external:
@@ -364,6 +402,11 @@ class TrainableTensorCodec:
                     training_base_layer_name=training_base,
                     dtype=weight_like.dtype,
                     shape=weight_like.shape,
+                    # Keep each role's OWN observed dtype/shape. The device reads raw external-data
+                    # bytes with no header, so collapsing these onto the weight-like role left a
+                    # packed weight_quantized/scale/zero_point unloadable.
+                    tensor_dtypes={obs.role: obs.dtype for obs in group},
+                    tensor_shapes={obs.role: obs.shape for obs in group},
                     checkpoint_names=checkpoint_names,
                     merger_output_names={role: f"merged_{role}" for role in inference_names},
                     merged_tensor_names=dict(inference_names),

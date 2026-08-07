@@ -15,7 +15,7 @@ set -euo pipefail
 ORT_VER="${ORT_VER:-1.27.0}"          # stock ORT paired with onnxruntime-genai 0.14 (needs >=1.26)
 ABI="${ABI:-arm64-v8a}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-JNI="$REPO_ROOT/android/MobileTransformersApp/MobileTransformers/src/main/jniLibs/$ABI"
+JNI="$REPO_ROOT/android/MobileTransformers/MobileTransformers/src/main/jniLibs/$ABI"
 GENAI_SO="$JNI/libonnxruntime-genai.so"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 

@@ -41,4 +41,4 @@ adb shell "rm -rf $DEVICE_DEST && mkdir -p $DEVICE_DEST"
 adb push "$DEVICE_CACHE/." "$DEVICE_DEST"
 
 echo ">> [4/4] done. Run the instrumented suites:"
-echo "   (cd android/MobileTransformersApp && JAVA_HOME=/opt/android-studio/jbr ./gradlew :MobileTransformers:connectedDebugAndroidTest)"
+echo "   (cd android/MobileTransformers && JAVA_HOME=/opt/android-studio/jbr ./gradlew :MobileTransformers:connectedDebugAndroidTest)"

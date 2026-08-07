@@ -8,7 +8,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-AAR="${1:-$REPO_ROOT/android/MobileTransformersApp/MobileTransformers/src/main/aarLibs/onnxruntime-genai.aar}"
+AAR="${1:-$REPO_ROOT/android/MobileTransformers/MobileTransformers/src/main/aarLibs/onnxruntime-genai.aar}"
 ABI="${ABI:-arm64-v8a}"
 
 if [[ ! -f "$AAR" ]]; then

@@ -92,6 +92,71 @@ def test_quantized_scale_from_base_layer_name_is_rejected() -> None:
         HandoffMap(entries=[e]).validate()
 
 
+# --- per-role on-disk dtype/shape (the raw-bytes device loader's only source) ----------------------
+def test_per_role_dtype_shape_round_trip() -> None:
+    e = _good_entry()
+    e.tensor_dtypes = {"weight": "float16"}
+    e.tensor_shapes = {"weight": (4096, 4096)}
+    restored = HandoffEntry.from_dict(e.to_dict())
+    assert restored.tensor_dtypes == {"weight": "float16"}
+    assert restored.tensor_shapes == {"weight": (4096, 4096)}
+    assert restored.dtype_for("weight") == "float16"
+    assert restored.shape_for("weight") == (4096, 4096)
+
+
+def test_per_role_lookup_falls_back_to_entry_level() -> None:
+    """Maps written before tensorDtypes/tensorShapes existed still resolve their single role."""
+    e = _good_entry()
+    assert not e.tensor_dtypes and not e.tensor_shapes
+    assert e.dtype_for("weight") == "float16"
+    assert e.shape_for("weight") == (4096, 4096)
+
+
+def test_tensor_specs_report_each_roles_own_dtype_and_shape() -> None:
+    """A scale tensor is not shaped like the weight it scales — reporting the weight's was wrong."""
+    e = _good_entry()
+    seed = "model.layers.0.attn.q_proj.MatMul"
+    e.merged_tensor_names = {"weight_quantized": f"{seed}.qweight", "scale": f"{seed}.scales"}
+    e.inference_initializer_names = dict(e.merged_tensor_names)
+    e.external_data_location = {r: f"{n}.bin" for r, n in e.merged_tensor_names.items()}
+    e.tensor_dtypes = {"weight_quantized": "uint8", "scale": "float16"}
+    e.tensor_shapes = {"weight_quantized": (4096, 2048), "scale": (4096, 32)}
+
+    by_role = {spec.role: spec for spec in e.tensor_specs()}
+    assert (by_role["weight_quantized"].dtype, by_role["weight_quantized"].shape) == (
+        "uint8",
+        (4096, 2048),
+    )
+    assert (by_role["scale"].dtype, by_role["scale"].shape) == ("float16", (4096, 32))
+
+
+def test_role_missing_per_role_dtype_is_rejected() -> None:
+    e = _good_entry()
+    e.tensor_shapes = {"weight": (4096, 4096)}  # shapes declared, dtypes not
+    with pytest.raises(HandoffError, match="missing tensorDtypes"):
+        HandoffMap(entries=[e]).validate()
+
+
+def test_quantized_entry_without_per_role_dtype_shape_is_rejected() -> None:
+    """The entry-level dtype/shape describes only the weight-like role, so it cannot stand in here."""
+    seed = "model.layers.0.attn.q_proj.MatMul"
+    e = _good_entry()
+    e.merged_tensor_names = {
+        "weight_quantized": f"{seed}.qweight",
+        "scale": f"{seed}.scales",
+        "zero_point": f"{seed}.qzeros",
+    }
+    e.inference_initializer_names = dict(e.merged_tensor_names)
+    e.external_data_location = {r: f"{n}.bin" for r, n in e.merged_tensor_names.items()}
+    e.quantization = {
+        "weightQuantizedName": f"{seed}.qweight",
+        "scaleName": f"{seed}.scales",
+        "zeroPointName": f"{seed}.qzeros",
+    }
+    with pytest.raises(HandoffError, match="must declare per-role tensorDtypes/tensorShapes"):
+        HandoffMap(entries=[e]).validate()
+
+
 def test_duplicate_external_location_rejected() -> None:
     a, b = _good_entry(0), _good_entry(1)
     b.external_data_location = dict(a.external_data_location)  # collide

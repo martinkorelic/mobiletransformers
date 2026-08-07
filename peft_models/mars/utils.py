@@ -1,18 +1,17 @@
-TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING = {
-    "t5": ["q", "k", "v", "o", "wi", "wo"],
-    "mt5": ["q", "k", "v", "o", "wi_0", "wi_1", "wo"],
-    "bart": ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"],
-    "gpt2": ["c_attn"],
-    "bloom": ["query_key_value"],
-    "opt": ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"],
-    "gptj": ["q_proj", "v_proj"],
-    "gpt_neox": ["query_key_value"],
-    "gpt_neo": ["q_proj", "v_proj"],
-    "llama": ["q_proj", "v_proj"],
-    "bert": ["query", "value"],
-    "roberta": ["query", "value"],
-    "deberta-v2": ["query_proj", "key_proj", "value_proj", "dense"],
-    "gpt_bigcode": ["c_attn"],
-    "deberta": ["in_proj"],
-    "qwen2": ["q_proj", "v_proj"],
-}
+"""DEPRECATED shim — moved to ``mobiletransformers.peft.mars.utils`` (Migration Map S3)."""
+
+import warnings
+
+from mobiletransformers.peft.mars.utils import (  # noqa: F401
+    TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING,
+)
+
+warnings.warn(
+    "peft_models.mars.utils moved to mobiletransformers.peft.mars.utils.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+__all__ = [
+    "TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING",
+]

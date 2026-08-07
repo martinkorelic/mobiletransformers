@@ -4,10 +4,10 @@ MobileTransformers runs retrieval on-device: an embedding model produces query/d
 on-device vector store (ObjectBox HNSW) does nearest-neighbour search, and the retrieved context is fed
 to generation.
 
-> **Scope of this page.** The **vector-store boundary** (`03_code_plans/03`, #25) is implemented and
-> documented below. **Ingestion/chunking** (`03_code_plans/04`, #26) and **grounded generation +
-> `RagConfig`** (`03_code_plans/05`, #27) are not yet implemented — this page is extended when those
-> contracts lock.
+> **Scope of this page.** The **vector-store boundary** (#25), **ingestion/chunking** (#26) and
+> **grounded generation + `RagConfig`** (#27) are all implemented and documented below. The remaining
+> gap is device acceptance: the instrumented `RagDeviceTest` and the ObjectBox parity smoke both
+> require a package pushed to a device.
 
 ## The `VectorStore` boundary
 
@@ -54,9 +54,41 @@ call plus a declared `@HnswIndex VectorEntity<dim>` entity (an ObjectBox platfor
 The embedding model and its dimension come from the pulled package's embedding/RAG variant; the
 dimension must be one the registry supports or installation/retrieval fails closed.
 
+`searchType` is validated against the `SearchType` enum (`semantic` | `text`) when the config is
+parsed, and `ORTRetriever` dispatches on the enum — an unrecognized value fails closed at the parse
+boundary rather than reaching the retriever.
+
+## Ingestion and chunking (#26)
+
+`model.ingest(path, RagConfig(...))` chunks a document, embeds each chunk and inserts it into the
+vector store. The loader is resolved from the file extension through `DOCUMENT_LOADER_REGISTRY`:
+
+| Extension | Loader | Notes |
+| --- | --- | --- |
+| `.txt` | plain text | whole file, then chunked |
+| `.md` | markdown | treated as text; no structural parsing |
+| `.jsonl` | JSON Lines | one document per line |
+
+**PDF and Word are rejected fail-closed** — there is no on-device extractor, and silently importing an
+empty document would poison retrieval. Convert to `.txt`/`.md` first.
+
+Chunking is pure character windowing (`chunkSize` / `chunkOverlap` on `RagConfig`), so it is JVM-testable
+and independent of the tokenizer. `IngestionProgress` reports per-chunk progress.
+
+## Grounded generation (#27)
+
+`model.generateWithRag(query, rag, generation, promptStrategy)` runs retrieve → assemble → generate and
+returns a `GroundedResult` carrying the answer, the matches, **and the assembled prompt** so the exact
+context sent to the model is inspectable. `PromptAssembler` is overridable via `PromptStrategy`.
+
+`RagConfig` carries `topK`, `minScore` (a similarity floor applied during search), `searchType` and
+`indexingMode`. A changed config applies on every call: query-shaping fields are pushed onto the live
+retriever, and a change of embedding model rebuilds it.
+
+`indexingMode` is `precompute` in v1; `dynamic` fails closed rather than silently behaving like
+`precompute`.
+
 ## Not yet (tracked)
 
-- **Ingestion / chunking** (`ingestData()`, `.txt`/`.md`/`.jsonl`, document-loader registry) — #26.
-- **Grounded generation** (public `RagConfig`, retrieve → assemble prompt → generate) — #27.
-- The `searchType` field becomes the `SearchType` enum (`semantic`/`text`) when the facade lands
-  (#17/#19).
+- **Device acceptance**: the instrumented `RagDeviceTest` (#26/#27) and the ObjectBox parity smoke
+  (#25) both `assumeTrue` on a package pushed to a device.

@@ -1,6 +1,23 @@
 # Android Gradle / Module / App Rename Migration
 **Priority (global #):** 16  |  **Prerequisites:** none  |  **Blocks:** #17 (`05_android_facade_foundation.md`)
 
+> ## As built (updated 2026-08-07) — read before this plan's body
+>
+> The rename landed, but **four contracts below were deliberately not followed**. The as-built state is
+> authoritative; the body is kept as the planning record.
+>
+> | Item | This plan said | As built | Why |
+> | --- | --- | --- | --- |
+> | Native library + JNI symbols | **Option A**: keep `libortmobile.so`, `loadLibrary("ortmobile")`, `Java_com_martinkorelic_ortmobile_*` | **Option B**: renamed in lockstep — `libmobiletransformers.so`, `loadLibrary("mobiletransformers")`, `Java_com_martinkorelic_mobiletransformers_*` (31 symbols) | user-confirmed during #16; leaving the native half on the retired brand would have meant a second churn of the same surface later |
+> | `Aliases.kt` compat shims | add deprecated typealiases under `com.martinkorelic.ortmobile` | **skipped** | #16 retired the `ortmobile` brand completely and the SDK has never been published, so there is no external caller to alias |
+> | Maven group | `com.martinkorelic` | `com.martinkorelic.mobiletransformers` | contradicted `05_code_plans/03` (#30), which owns publication; its value wins. Pinned by `tests/unit/test_version_sites.py` |
+> | `jniLibs.srcDirs("libs")` | "leave unchanged" (step 5) | **removed** | it pointed at a module-root `libs/` directory that does not exist; the genai `.aar files(...)` reference in the same step is likewise gone (the `.so` ships from `jniLibs`) |
+>
+> The Gradle naming contract itself (`rootProject.name`, both module ids, namespaces, `applicationId`,
+> the inter-module dependency) **is** as specified — the workspace was renamed to match this plan on
+> 2026-08-07, having previously drifted to root `MobileTransformersApp` with the sample app left as
+> `:app`.
+
 ## Purpose
 
 Perform the `ORTTransformer` → `MobileTransformers` Gradle workspace rename as **one isolated, build-verified change** before any facade work begins. This plan renames the Gradle root, both modules, their directories, the Kotlin package namespaces, the app `applicationId`, and the inter-module project dependency — and nothing else. No new public API, no engine changes, no JNI symbol renames.
@@ -50,7 +67,7 @@ This pass changes only identifiers, not data shapes. The contracts that must rem
 - **App module `namespace`**: `com.martinkorelic.orttransformer` → `com.martinkorelic.mobiletransformers.app`.
 - **App `applicationId`**: currently `com.martinkorelic.ortmobile` → `com.martinkorelic.mobiletransformers.app`. (Note: the current app `namespace` and `applicationId` already differ; both converge to the new `.app` value.)
 - **Inter-module dependency** in app `build.gradle.kts`: `implementation(project(":ORTransformersMobile"))` → `implementation(project(":MobileTransformers"))`.
-- **AAR Maven coordinate** (publishing metadata, added but not necessarily published this pass): artifactId `mobiletransformers-android`, group `com.martinkorelic` (e.g. `com.martinkorelic:mobiletransformers-android`).
+- **AAR Maven coordinate** — SUPERSEDED, see "As built": artifactId `mobiletransformers-android`, group **`com.martinkorelic.mobiletransformers`** (per `05_code_plans/03`, which owns publication).
 
 ### Compatibility aliases (`Aliases.kt`)
 Under `package com.martinkorelic.ortmobile`, provide deprecated typealiases so external callers importing the old package still compile for one release:

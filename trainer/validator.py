@@ -29,6 +29,7 @@ from tools.parser_config import TASK_NAME_TO_DATASET, TRAIN_CONFIG, ARTIFACT_CON
 import numpy as np
 import json
 import os
+from mobiletransformers.config.settings import get_settings
 
 class CosineLRScheduler:
     """Cosine Learning Rate Scheduler for ONNX Runtime Training."""
@@ -151,7 +152,7 @@ class ORTDataCurator:
                  shuffle=False) -> None:
         
         self.model_id = model_id
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, token=os.environ['HF_TOKEN'])
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, token=get_settings().require_hf_token())
         self.collator = DataCollatorForSupervisedDataset(self.tokenizer)
 
         self.max_dataset_length = max_dataset_length

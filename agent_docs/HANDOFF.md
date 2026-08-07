@@ -1,13 +1,26 @@
 # Restructure Implementation — Handoff
 
-**Branch:** `restructure` · **Nothing is committed** (the human commits). **Date:** 2026-07-13.
+**Branch:** `restructure` · **Date of last entry:** 2026-08-07.
 
 This is the running handoff for the staged restructure in `agent_docs/IMPLEMENTATION_ORDER.md`. It
 records what is done, the environment/gotchas a cold agent needs, and the next steps.
 
+> **⚠️ START AT THE END OF THIS FILE (updated 2026-08-07).** Reading order:
+>
+> 1. **"## Remediation pass (2026-08-07)"** at the very end — the authoritative current status.
+> 2. **"## Verified audit (2026-08-07)"** — what the six-agent audit found. Still worth reading: it
+>    explains *why* each fix exists. Its P1/P2 lists are now largely closed; the remediation section
+>    says which.
+> 3. Everything between here and the audit is the **historical session log** — what each session
+>    *claimed*, written by the agent that did the work. Several claims were overstated. Use it only for
+>    the environment/gotchas section below.
+>
+> Two premises repeated throughout the log are false: (1) "Nothing is committed" — the tree **is**
+> committed at `54e0a8e`; (2) the per-session "code-complete" labels.
+
 ---
 
-## Status: plans #1–#8 done, #9 code-complete (global order)
+## Status (as claimed by the session log — see audit for verified status)
 
 | # | Plan | State |
 | --- | --- | --- |
@@ -656,3 +669,377 @@ green: Python `make check` **215 passed**, enum parity OK, Android **125 SDK JVM
 (a device is connected). Boxes stay `[ ]` until their device legs run. **Deferred/manual:** the full
 `optimum_hf_export` real-model training run, WorkManager scheduling + real Hub network, real authenticated
 adapter upload, and the Gate 0.2 device RSS table. **Nothing committed** (human commits).
+
+---
+
+# Verified audit (2026-08-07)
+
+**Method.** Six independent audit agents, one per code-plan directory, each read its tier doc + every
+plan file + the matching `IMPLEMENTATION_ORDER.md` self-checks, then verified every claim against the
+actual tree (read-only; no repo file was modified by the auditors). Claims in this handoff and in
+`IMPLEMENTATION_ORDER.md` were treated as unverified hypotheses. Host gates were re-run: **`make check`
+green — 215 passed / 10 skipped**, ruff + mypy + `codegen.enums --check` clean.
+
+**Full per-plan detail with `file:line` evidence lives in `agent_docs/audits/`:**
+`audit_tier0_00.md` · `audit_tier0_01.md` · `audit_tier1_02.md` · `audit_tier2_03.md` ·
+`audit_tier3_04.md` · `audit_release_05.md`. **Read the relevant one before implementing a fix** — the
+tables below are the index, not the record.
+
+## Headline
+
+**Overall ≈65% complete across all 37 plans; ≈73% excluding Tier 3** (which is spike-gated and by
+design never blocks v1.0). The restructure is real and substantial — the Python contract layer,
+the export front door, the handoff-map spine, the Android package/facade surface and the RAG boundary
+all exist, are typed, and are genuinely tested. The deficit is not missing scaffolding; it is
+**(i) a handful of plans marked done whose *consumption* half never landed, (ii) fail-closed gates that
+log instead of raising, and (iii) an untested seam between the Python export and the Android runtime
+that no device test has ever crossed.**
+
+| Tier | Plans | Verified | Notes |
+| --- | --- | --- | --- |
+| Tier 0 — `00_code_plans` | #1,2,4,5,6,8,13,16,17,18 | **81%** | #6 registry-consumption orphaned; #18 dead code |
+| Tier 0 — `01_code_plans` | #3,7,9,10,11,12 | **72%** | GenAI unreachable; #9 has no offline merge writer |
+| Tier 1 — `02_code_plans` | #14,15,19,20,21,22 | **77%** | #15 `--validate` missing; Kotlin variant-select unwired |
+| Tier 2 — `03_code_plans` | #23,24,25,26,27 | **77%** | C++ load silently downgrades; engine parity not held |
+| Tier 3 — `04_code_plans` | #33,34,35,36,37 | **18%** | #35 partial; #34/#36/#37 not started by design |
+| Release — `05_code_plans` | #28,29,30,31,32 | **48%** | #30/#32 unstarted; CI's Android leg self-skips forever |
+
+## Corrected per-plan status
+
+Replaces the `Done` column in `IMPLEMENTATION_ORDER.md` where they disagree. **Claim** = what the tree
+said before this audit.
+
+| # | Plan | Claim | Verified | Verdict |
+| --- | --- | --- | --- | --- |
+| 1 | package & uv scaffolding | `[x]` | 97% | Genuinely done |
+| 2 | dependency profiles & ORT wheel | `[x]` | 85% | Done; `export-rocm` empty, Android manifest fields null |
+| 3 | source-built ORT training | `[x]` | 90% | True; Android AAR half of Gate 0.3 never built |
+| 4 | config layering | `[x]` | 85% | Layers real; legacy secret-read migration + CI grep guard not done |
+| 5 | code quality & module health | `[x]` | 80% | Tooling green; exception discipline weak and violated |
+| 6 | typed models/enums/registries | `[x]` | **55%** | ⚠️ **Contract layer done, consumption half orphaned — un-tick** |
+| 7 | optimum ONNX export | `[x]` | 93% | Best-evidenced plan in the tree |
+| 8 | weight handoff map & codec | `[x]` | 85% | **Better than claimed** (C++ both sides landed; note is stale) |
+| 9 | unified merger & external data | code-complete | **70%** | ⚠️ Overstated — 2 DoD bullets objectively unmet |
+| 10 | GenAI swap spike | `[x]` ADOPT | 80% | Evidence real; gate closed with 2 of 6 criteria unproven |
+| 11 | inference engine abstraction | code-complete | **65%** | ⚠️ **GenAI unreachable end-to-end** |
+| 12 | memory-mapping experiments | code-complete | **45%** | Harness only; 2 of 4 experiments absent; live use-after-unmap |
+| 13 | manifest-first package & cache | `[x]` | 78% | Installer skips verify + post-install probe/rollback |
+| 14 | hub package format | `[x]` | 88% | Solid; `docs/HUB_PACKAGE_FORMAT.md` (own DoD) absent |
+| 15 | one-command export CLI | `[x]` | **70%** | ⚠️ `--validate` missing entirely; `--config` accepted-and-dropped |
+| 16 | Android Gradle rename | `[x]` | 95% | Genuinely done (but see master-plan naming drift below) |
+| 17 | Android facade foundation | code-complete | 82% | Solid; `ORT*` leaks into public API via `TrainingResult` |
+| 18 | training lifecycle | code-complete | **72%** | ⚠️ `TrainingJob` is **dead code** — unreachable from the facade |
+| 19 | HF-style Kotlin facade | code-complete | 78% | Manifest never validated on load; `applyPeft` rank/alpha dropped |
+| 20 | optimum support matrix | `[x]` | 75% | Two normative violations; one status is a self-proxy |
+| 21 | hub pull & cache flow | `[x]` | 70% | ⚠️ Kotlin `VariantSelector` + WorkManager worker never called |
+| 22 | adapter push-back | `[x]` "genuinely done" | **80%** | ⚠️ Mode-1 CLI uploads **no weights** |
+| 23 | inference handoff & native hardening | code-complete | 75% | ⚠️ C++ load failure silently downgrades to base weights |
+| 24 | sampling & streaming config | code-complete | **65%** | ⚠️ Parity claim contradicted by GenAI code |
+| 25 | vector store boundary | `[x]` | **90%** | The one `[x]` that fully holds up |
+| 26 | RAG ingestion & chunking | code-complete | 80% | Real; `maxTextLength` dead; PDF/Word never documented |
+| 27 | RAG config & grounded generation | code-complete | 75% | Real flow + **real override bug** |
+| 28 | Makefile & CLI entrypoints | `[x]` | 90% | Honest; acceptance tests never written |
+| 29 | staged CI pipeline | `[x]` | **70%** | ⚠️ Android leg self-skips forever; export-smoke ≠ its contract |
+| 30 | AAR & Maven publication | — | 10% | Not started (confirmed); zero `maven-publish` anywhere |
+| 31 | docs set & compat matrix | partial | 65% | 8/10 pages; `RAG.md`/`PUBLIC_API.md` now drifted |
+| 32 | versioning, license, release | — | 5% | Not started; still CC-BY-NC-4.0 |
+| 33 | encoder model support | `[ ]` | 15% | Prereq footholds only; no `TASK_REGISTRY` |
+| 34 | training scheduler / WorkManager | `[ ]` | 8% | Not started; **and a live crash bug** (see P1) |
+| 35 | federated codec & Flower sim | code-complete | **60%** | ⚠️ Codec real; the Flower half is a stub |
+| 36 | federated Android gateway | `[ ]` | 2% | Not started by design; correctly gated on #35 |
+| 37 | FunctionGemma gate & intents | `[ ]` | 5% | Not started by design; gate open, result unrecorded |
+
+## P1 — Defects that break something today
+
+These are not "unfinished"; they are wrong. Fix before any device session.
+
+1. **GenAI is unreachable end-to-end.** `ConfigMappers.kt:88` sets `type="genai"` but never sets
+   `ORTGenerationConfig.engine`, so `ModelRuntimeFactory.selectEngine` always sees `null` → NATIVE; and
+   `LLMRepository.kt:357/391/441` still `when(type){"native"->… else->Log.e}`, so a GenAI config
+   constructs nothing and `generate` returns `""`. **`DualEngineParityTest` — the Gate 0.1 #1 harness —
+   cannot pass today.** Two small edits fix it. *(#11)*
+2. **The merge→load checksum contract self-contradicts.** The exporter stamps `entry.sha256[role]`;
+   the device merger refreshes only the `.bin.sha256` sidecar and never rewrites the map;
+   `HandoffPrecondition.kt:60-69` prefers the map → **post-merge load throws
+   `MissingArtifactException`.** This blocks #9's native-load smoke *and* #19's train→merge→generate.
+   *(#9/#23)*
+3. **C++ merged-weight load silently downgrades.** `session_cache.h:740-744` only `LOGE`s when
+   `WeightSessionCache::init` fails, then creates the session with base weights. Since dtype/shape
+   validation is C++-only, a shape-mismatched merged tensor silently produces an untrained model — the
+   exact thing #23's DoD forbids. *(#23)*
+4. **A linear-schedule training run crashes on checkpoint save.** `ORTTrainerNative.kt:127` calls
+   `scheduler.stateDict()` on every checkpoint, but `LinearLRScheduler.stateDict()`/`loadFromState()`
+   are still `TODO` at `ORTScheduler.kt:157,161`. Worse than the "state drifts" the plan predicted.
+   *(#34, but it breaks #18 today)*
+5. **Use-after-unmap in the mmap path.** `mmap_regions_` is freed in `clearWeights()`
+   (`session_cache.h:216`), which the session ctor calls right after session creation (`:517`) — the
+   first `MTF_MMAP_WEIGHTS=1` run hits freed memory. Default-off, so latent. *(#12)*
+6. **RAG config override applies only once per session.** `RagRepository.initialize:37` short-circuits
+   on `ortRetriever != null` and `retrieve` passes `null` config down; a second `retrieve`/
+   `generateWithRag` with a changed `minScore`/`topK`/`searchType` is **silently ignored**. *(#27)*
+7. **Adapter Mode-1 push uploads no weights.** `cli/push_adapter.py` never calls
+   `materialize_peft_weights`, so a Mode-1 push publishes `adapter_config.json` with no
+   `adapter_model.safetensors`. That path also skips in CI (no torch/safetensors), so nothing caught it.
+   *(#22)*
+8. **Device merge is fail-open.** `weight_merger.cpp` `save_merged_parameters:967-971` logs and
+   `continue`s on a missing handoff entry; `merge_and_export_weights` returns `true` unconditionally
+   (`:1085`). A partial merge reports success. *(#9)*
+
+## P2 — "Done" plans whose second half never landed
+
+9. **#6's registry-consumption half is orphaned and has no owner.** Its own DoD grep guard **fails in
+   all four named places**: `trainer/builder.py:286-350` (PEFT `train_method ==` chain),
+   `inference/builder.py:3237-3269` (13-branch arch ladder), `weight_merger.cpp:672/708/759`
+   (`merger_type ==`), plus duplicate target tables in `peft_models/{mars,ablation}/utils.py`.
+   `build_adapter_mapping` (a normative A3 symbol) exists nowhere. #6 deferred this to #7/#9; **both are
+   closed and did neither.** `make parity` passes because it only checks that the mirror *files* match —
+   not that anything uses them, which gives false assurance.
+10. **Kotlin closed-set fields are still `String` with a silently-defaulting parser.**
+    `FileUtil.kt:154` defaults an unknown `schedulerType` to Linear with a `println` — a direct
+    violation of the canonical "typed fail-closed parsing via enum `fromWire()`" decision. The
+    `SearchType` String→enum swap (deferred #25→#17/#19) never landed either: `ORTRagConfig.kt:23` is
+    still `String`, `ORTRetriever.query:85` still string-dispatches.
+11. **#18's `TrainingJob`/`TrainingJobManager` are dead code** — zero references outside `training/`.
+    The facade's `train()` returns `TrainingResult` directly, so `status`/`events`/`cancel`/`canResume`
+    are unreachable from the public API. Also: `IMPLEMENTATION_ORDER.md:306` ticks "session lock …
+    defined for reuse by #34", but **there is no session lock anywhere in the library**.
+12. **#9 has no offline merge writer.** `artifact/merger.py` only emits merger *graphs*; its own header
+    says the numerical merge runs on device. So the DoD's "offline and device both write to the exact
+    map filenames" is only true of the emit half, and both the atomic-overwrite smoke and the
+    offline-vs-device byte-parity test are **structurally unwritable** as specified.
+13. **#24's engine parity is broken three ways, all host-detectable:** `ORTGeneratorGenAI.kt:118-123`
+    keeps its own private sampling `when` with **silent-greedy fallback** (the exact magic #24 removed
+    from Native); loop bound `<=` (Native `:174`) vs `<` (GenAI `:73`) → off-by-one token count;
+    `onCompletion.avgTokensPerSecond` hardcoded `0.0` on GenAI.
+14. **#21's Android half is built but not wired.** `VariantSelector` is never called (`HubDownloader`
+    just takes `defaultVariant`, so ABI/memory/storage are ignored) and `PackageDownloadWorker` is never
+    enqueued anywhere. `ModelPackageInstaller.kt:41-47` also **deletes the live cache dir before**
+    renaming, violating the plan's crash-safety rule.
+15. **#35's Flower half is a stub.** `build_server_app` (`flower_client.py:79-91`) discards its args and
+    returns a bare `ServerApp()`; `run_local_training_step:40-49` discards the incoming adapter and
+    loops `optimizer.step()` with no forward pass, returning hardcoded `trainLoss: 0.0`; `run_simulation`
+    never calls `save_global_adapter`, so the CLI's `--output` is never written. The DoD is unreachable
+    even with flwr installed. The codec half, by contrast, is real and good.
+
+## P3 — Master-plan-level gaps owned by no code plan
+
+16. **The Migration Map was never executed.** Every target subpackage in
+    `00_repository_restructure_plan.md`'s hierarchy is an empty placeholder — `src/mobiletransformers/`
+    `peft/`, `training/`, `inference/`, `rag/`, `evaluation/` are all 0-line `__init__.py`. The legacy
+    roots still hold ~15k lines (`trainer` 3965, `inference` 4503, `peft_models` 2989, `evaluation`
+    2881, `database` 1421, `artifact` 1383, `tools` 441). Master-plan steps 15-17 are untouched.
+17. **Consequence: the wheel is broken for the real export path.** `export/pipeline.py:569-571` and
+    `:447` import `artifact.onnx_builder`, `inference.export_inference_package`, `trainer.builder`,
+    `tools.tokenizer_export`, but `pyproject.toml:94` packages only `src/mobiletransformers`. Export
+    works from a checkout and **fails from an installed wheel**. Either vendor those four modules into
+    the package or declare the CLI checkout-only.
+18. **Android naming drift vs the master plan.** Target was root `MobileTransformers` with modules
+    `:MobileTransformers` + `:MobileTransformersApp`; actual is root **`MobileTransformersApp`** with
+    `:MobileTransformers` + **`:app`**. The sample-app module rename never happened and the workspace
+    root took the app's name. Decide: fix, or amend the master plan + `00_code_plans/04`.
+19. **Tier-1 doc requirements no plan owns:** the starter model zoo (generation + upload + license
+    checks), the entire "MobileTransformersApp Improvements" section (package-cache screen,
+    dev-settings screen, adapter share action), `docs/ANDROID_CACHE_FORMAT.md`, the `default/` package
+    alias, and HEAD/`etag` metadata.
+20. **No test harness exists for two languages.** No C++ test target anywhere (so #8's save→load smoke
+    and the C++ `check_compat` mirror have nowhere to live — all C++ is compile/link-verified only),
+    and no Robolectric in the SDK module (so #13's and #17's `LLMRepository`-shape integration tests are
+    substituted with file-existence proxies).
+21. **Two named CI guards do not exist.** The #4 secrets grep and the #6 dispatch-literal grep are
+    described as CI guards but appear in neither `Makefile` nor `ci.yml`; they pass by luck of the last
+    manual run.
+
+## Gate status
+
+- **Gate 0.1 (GenAI adopt) — recorded ADOPT with 2 of 6 criteria unproven.** Criteria 6/2/5/7 are
+  genuinely evidenced in `spikes/genai_external_swap/README.md`. Criterion 1 (same package correct under
+  BOTH engines) is unproven — see P1.1. Criterion 4 (RSS within `ACCEPTED_RSS_DELTA`) is unproven **and
+  the threshold was never ratified** — zero hits for `ACCEPTED_RSS_DELTA` in the tree. Criterion 3
+  (not constant-folded) is inferred, never asserted; the guard the plan required doesn't exist.
+- **Gate 0.2 (mmap/RSS) — not reached.** No four-point RSS table anywhere; the ≥15% margin was never
+  ratified; experiments (b) and (d) have no code.
+- **Gate 0.3 (ORT training) — PASS for the desktop leg**, correctly evidenced. The Android AAR half was
+  never built: `manifest.json` `ndk_version`/`android_api_level`/`abis`/`android.aar_sha256` are null,
+  so "the device build matches the desktop wheel's ORT revision" is asserted by comment only.
+
+## The single unblocker
+
+Almost every open device leg — #9's byte-parity and load smoke, #11's dual-engine smoke, #17's
+load→generate, #19's train→merge→generate, #23's reset smoke, #24's callback parity, #26/#27's RAG
+device tests, Gate 0.1 #1/#4 — `assumeTrue`s on **one real #9 package pushed to a device**. The
+instrumented test classes all exist and all skip. Producing and pushing that package
+(`make device-package [TRAIN=1] MODEL=<id>` → `make device-test`) is the one action that converts the
+largest block of open work — **but P1.1 and P1.2 must be fixed first or the GenAI and post-merge legs
+will fail regardless.**
+
+## Consolidated backlog
+
+### A. Host-doable now, highest value first
+1. Fix P1.1 (GenAI wiring: `ConfigMappers` engine field + `LLMRepository` engine dispatch).
+2. Fix P1.2 (post-merge checksum: have the device merger rewrite `entry.sha256[role]`, or have
+   `HandoffPrecondition` prefer the sidecar after a merge — pick one and pin it in `MODEL_FORMAT.md`).
+3. Fix P1.3 (`session_cache.h:740-744` propagate init failure) and P1.8 (merge fail-closed + abort).
+4. Fix P1.4 (`LinearLRScheduler.stateDict()/loadFromState()` + `ORTSchedulerTest.kt`) — JVM-only,
+   closes a crash and most of what #34 needs from #18.
+5. Fix P1.6 (`RagRepository` re-apply changed config) and P1.7 (`push_adapter` → `materialize_peft_weights`).
+6. Fix P2.13 (GenAI `SamplingMethod.fromWire(...).nativeOrdinal`; reconcile loop bound; align
+   `InferenceProgress` payloads) + a host callback-parity test over two fake `ModelRuntime`s — this
+   moves parity off the device entirely.
+7. Land P2.9 (the #6 registry consumption: `trainer/builder.py`, `inference/builder.py`,
+   `weight_merger.cpp`, `build_adapter_mapping`) and P2.10 (Kotlin enum swap + fail-closed `FileUtil`).
+   Then add `make guard` (secrets + dispatch greps) to the CI fast job as a ratchet.
+8. Wire P2.14 (`VariantSelector` into `HubDownloader`; enqueue `PackageDownloadWorker`; rename-then-
+   delete in `ModelPackageInstaller` **and** `hub/pull.py:157`).
+9. #15: add `--validate`; wire or delete `--config` (and fix `docs/EXPORT.md:27`); emit
+   `optimum_config.json`, `train/trainable_parameters.json`, `shared/chat_template.jinja`.
+10. Decide P3.16/P3.17 — at minimum make the wheel self-contained or mark the CLI checkout-only.
+11. #35: wire `check_format` into `deserialize`; make the server app actually aggregate and save per round.
+12. Docs de-drift: `docs/RAG.md` (says #26/#27 "not yet implemented" — they are), `PUBLIC_API.md`
+    (missing `federated` CLI + Kotlin facade), write `docs/ARCHITECTURE.md` (its #23/#24 blocker is gone).
+13. Release plumbing that needs no decision: `maven-publish` block + coordinates + POM + Gradle
+    `version`/`group`, real `android_build_aar.sh`/`publish_local_maven.sh` bodies,
+    `THIRD_PARTY_NOTICES.md`, version-site reconciliation + invariant test, `CITATION.cff` fix
+    (it advertises a `1.0.0 / 2025-10-18` release that does not exist), CI: add the Kotlin/JVM test job,
+    fix the stale `aarLibs/` gate to check `jniLibs/` + `cpp/includes/`.
+14. Test infrastructure: Robolectric in the SDK module; a googletest target under `cpp/`.
+
+### B. Device-required (all already written as skipping `androidTest` classes)
+`FacadeLoadGenerateTest` (#17/#23) · `DualEngineParityTest` (#11/#24, after P1.1) ·
+`TrainMergeGenerateTest` (#18/#19, after P1.2) · `ConversationResetTest` (#23) · `RagDeviceTest`
+(#26/#27) · Gate 0.1 #4 + Gate 0.2 RSS tables (#10/#12) · ObjectBox parity smoke (#25, class not yet
+written) · #21 WorkManager scheduling + real Hub network · #22 authenticated upload · #16 x86_64 link.
+
+### C. Manual / user-run (env-mutating or external)
+Produce + push the real #9 package · the two-profile `--stages training` export under
+`ort-training-local` · #2's `uv sync` conflict-pair assertions (must be user-run: they mutate the shared
+`.venv`) · `scripts/build_ort_training_android.sh` to fill the manifest's Android fields · the #35
+N-client sim (needs out-of-band flwr; **no device**) · live un-mocked `support-matrix` run · a real
+`snapshot_download` pull · the **CC-BY-NC-4.0 → Apache-2.0 relicense decision** (needs both rights
+holders in `CITATION.cff`; note the non-commercial clause directly contradicts the consumable-Maven-AAR
+goal that #30 exists to deliver) · the CI native-dep provisioning decision.
+
+## Bookkeeping corrections to apply to `IMPLEMENTATION_ORDER.md`
+
+- Un-tick **#6** (`[x]` → `[ ]`) — its own grep-guard DoD fails; re-assign the consumption half to a
+  named plan (it currently has no owner).
+- Re-label **#35** from "code-complete" to "partial" (`:100`); re-label **#9**, **#11**, **#24**, **#15**,
+  **#22**, **#29** to reflect the verified state above.
+- Correct **#18**'s session-lock tick (`:306`) — no session lock exists.
+- Correct **#22**'s "genuinely done" — Mode-1 ships no weights.
+- Mark **#7**'s and **#25**'s expired deferrals: `inference/builder.py`'s ladder was gated on the
+  Optimum-vs-GenAI decision, which was made 2026-07-15; `SearchType`'s enum swap was gated on #17/#19,
+  both landed. Both debts are now ownerless.
+- Delete the stale "build-side emit deferred" note in `00_code_plans/07` — #8 is **more** done than it claims.
+- Rewrite `00_code_plans/04`'s Gradle-naming contract to option B (what was actually built), and resolve
+  the master-plan naming drift in P3.18.
+- Drop the "Nothing is committed" premise everywhere — the tree is committed at `54e0a8e`.
+
+---
+
+# Remediation pass (2026-08-07)
+
+Everything host-doable from the audit's backlog, in nine phases. **This section supersedes the audit's
+status.** Gates at the end of the pass:
+
+| Gate | Before | After |
+| --- | --- | --- |
+| Python `make check` | 215 passed / 10 skipped | **367 passed / 10 skipped** |
+| Kotlin JVM (`make test-jvm`) | 125, laptop-only | **149**, runs on every PR |
+| C++ (`make test-cpp`) | *no test target existed* | **12**, runs on every PR |
+| Guards (`make guard`) | — | **5** (secrets + dispatch ratchets) |
+| `make parity` · arm64 `assembleDebug` · `uv lock --check` | green | green |
+| Wheel | **broken for the export path** | **self-contained** (verified in a clean venv) |
+
+## P1 — all eight closed
+
+1. **GenAI unreachable** — worse than reported: it was a *deadlock*, not a log line (the
+   `CompletableDeferred` was never completed, so `generate` suspended forever). `ConfigMappers` now sets
+   the `engine` field the runtime factory actually reads, and `LLMRepository`'s three string dispatches
+   are collapsed so `ModelRuntimeFactory` owns engine selection.
+2. **Post-merge checksum** — precedence inverted to **sidecar wins**, pinned in `docs/MODEL_FORMAT.md`.
+3. **NEW, and worse than P1.5** — `session_cache.h` parsed each `<name>.bin` as a `TensorProto`, but
+   every writer emits **raw** external-data bytes. Merged-weight load could never succeed on the
+   shipping (non-mmap) path. Rewritten to construct the tensor from the map's declaration. This
+   required the per-role `tensorDtypes`/`tensorShapes` schema addition (a headerless blob cannot
+   describe a packed `weight_quantized`/`scale`/`zero_point`), which also fixed a latent bug where
+   `tensor_specs()` reported the weight's shape for `scale`/`zero_point`.
+4. **Silent downgrade to base weights** — session construction now fails closed through JNI to a
+   `MissingArtifactException`; the swallowed `AddExternalInitializers` throw propagates.
+5. **Fail-open merge** — `save_merged_parameters` returns a status, an unknown merger type aborts
+   instead of leaving one layer frozen among trained peers, and Kotlin stops discarding the result.
+6. **`LinearLRScheduler` crash** — `stateDict`/`loadFromState` implemented with **no**
+   `training_state.json` format change. This crashed every run on the *default* schedule.
+7. **RAG config applied once per session** — a changed config now always applies; an embedding-model
+   change rebuilds the retriever.
+8. **Mode-1 adapter push shipped no weights** — now materialized, or the upload refuses.
+
+**P1.5 (use-after-unmap) was REFUTED**, not fixed: `onnxruntime_c_api.h:3640-3651` documents that
+`AddExternalInitializers` copies into the graph and user buffers may then be freed, which is exactly
+where `clearWeights()` runs.
+
+## P2 — closed
+
+#6's orphaned consumption half (C++ `MergerVariant`, `trainer/` PEFT chain, the duplicated target
+tables, and `build_adapter_mapping` — a normative symbol that existed nowhere); Kotlin fail-closed enum
+parsing; `TrainingJob` wired into the facade (it had zero production callers, so there was **no cancel
+path at all** from the public API); the **session lock**, which `IMPLEMENTATION_ORDER.md:315` ticked but
+which did not exist; engine parity (sampling, an off-by-one token count, throughput reporting, plus a
+GenAI merged-weight gate the audit did not list); #21's `VariantSelector`/worker wiring plus
+**crash-safe install** in both installers; the `ORT*` leak in the public API; and #35's Flower half
+(`build_server_app` discarded all five arguments; `run_local_training_step` had **no forward pass** and
+returned a hardcoded loss; `deserialize` never version-gated).
+
+## P3 — closed
+
+- **P3.16/17 — the Migration Map.** Executed S0–S5. The wheel now installs into a clean venv with no
+  checkout and runs the full export path; `uv build` is self-contained. `peft_models/` 2989 → 268 lines,
+  `trainer/` 3965 → 1974, `artifact/` 1383 → 77, `tools/` 441 → 120 (the remainder is deprecation
+  shims). **S6–S8 deferred by design** — `inference/builder.py` (3440 lines, unimportable under every
+  profile), `database/` → `rag/`, `evaluation/`. None affects the wheel; all are ratchet-tracked.
+- **P3.18 — Android naming.** The tree was renamed to match the master plan (root
+  `android/MobileTransformers/`, modules `:MobileTransformers` + `:MobileTransformersApp`).
+  `00_code_plans/04` carries an "As built" block for the four contracts deliberately not followed.
+- **P3.20 — two-language test gap.** Robolectric + a googletest target both landed. The C++
+  `check_compat` mirror is finally exercised against the shared fixture.
+- **P3.21 — the two phantom CI guards.** Written, and they immediately found 13 direct
+  `os.environ["HF_TOKEN"]` reads (`settings.require_hf_token()` had existed with zero callers).
+
+## What the migration net caught — worth knowing before S6–S8
+
+The characterization net is not ceremony; it caught five real defects during four moves:
+
+1. **A dropped `@dataclass`.** Slicing `trainer/utils.py` by line started at the class and left the
+   decorator behind, removing the generated `__init__`. **Every gate passed** — symbol name intact,
+   code valid. Now guarded by `legacy_decorator_golden.json`.
+2. **A dotted-path string** (`"peft_models.mars.config.MarsConfig"`) that no AST import walk can see —
+   a runtime-only failure from a wheel. Guarded by `test_no_lazy_dotted_paths_into_legacy_roots`.
+3. `F821` from a lazy import added to only some functions of a split module.
+4. A shim generated for a *newly vendored* module that had no legacy original.
+5. `mars`/`ablation` were namespace packages; adding `__init__.py` changed their shape.
+
+**The gate had a latent bug of its own**, fixed in S0: the ruff/mypy exclude patterns were unanchored,
+so `src/mobiletransformers/inference/` and `evaluation/` were invisible to **both** linters. Any code
+migrated there would have landed permanently ungated. Proven with planted probe files.
+
+## Still open
+
+- **Device acceptance.** Unchanged and still the single unblocker: `make device-package [TRAIN=1]
+  MODEL=<id>` → `make device-test`. The difference is that P1.1/P1.2/P1.3 are fixed, so those legs can
+  now actually pass.
+- **x86_64.** `jniLibs/x86_64` is missing `libonnxruntime`/`libtokenizers_{c,cpp}`. A release AAR needs
+  both ABIs; `scripts/android_build_aar.sh` now fails with that diagnosis, and additionally rejects an
+  AAR shipping an ABI directory without `libmobiletransformers.so` (the current build does exactly
+  that — an x86_64 consumer would fail at `System.loadLibrary`).
+- **The relicense decision (CC-BY-NC-4.0 → Apache-2.0)** — needs both rights holders. The POM reports
+  the *real* licence today, with a test keeping it in lockstep with `LICENSE.md`.
+- **#35's role vocabulary** — must be decided before #36 mirrors the golden; see `docs/FEDERATED.md`.
+- **Migration S6–S8**, and `inference/builder.py`'s architecture ladder (7 new registry rows).
+- **CI provisioning of the vendored native deps** — the Android assemble job still self-skips, but now
+  gates on `jniLibs/` only (protobuf headers were retired with `weight_serializer.cpp`).
+
+## Ownerless Tier-1 doc requirements (P3.19) — now assigned
+
+`docs/ANDROID_CACHE_FORMAT.md` and `docs/HUB_PACKAGE_FORMAT.md` are written. Still unowned and needing
+a plan: the **starter model zoo**, the **MobileTransformersApp improvements** section (package-cache
+screen, dev-settings screen, adapter share action), the `default/` package alias, and HEAD/`etag`
+metadata.

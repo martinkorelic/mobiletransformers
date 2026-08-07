@@ -56,7 +56,7 @@ DEST=/sdcard/Android/data/com.martinkorelic.mobiletransformers.test/files/mt_gen
 adb shell mkdir -p "$DEST"
 adb push build/genai_spike_model/. "$DEST"
 
-cd android/MobileTransformersApp
+cd android/MobileTransformers
 JAVA_HOME=/opt/android-studio/jbr ./gradlew :MobileTransformers:connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=com.martinkorelic.mobiletransformers.GenAISpikeTest
 ```

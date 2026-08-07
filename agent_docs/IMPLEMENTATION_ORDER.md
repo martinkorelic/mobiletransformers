@@ -4,6 +4,15 @@ This index orders every feature code-plan under `agent_docs/00_code_plans/` … 
 
 The high-level "what & why" lives in the six tier docs (`00_repository_restructure_plan.md`, `01_tier0_foundation_decisions.md`, `02_tier1_hf_integrated_core.md`, `03_tier2_inference_and_rag.md`, `04_tier3_reach_extensions.md`, `05_cross_cutting_release_modernization.md`). These code plans are the "how" — concrete enough for another agent to implement.
 
+> **Status as of 2026-08-07.** A six-agent audit (`agent_docs/audits/`) found several `[x]` marks
+> overstated; a remediation pass then closed most of what it found. The `Done` column and the
+> self-checks below have been corrected against the **verified** state — where a box now reads `[x]`
+> it is because the DoD holds today, not because a session claimed it. Boxes still `[ ]` are honest
+> remaining work, and each says what is missing.
+>
+> The tree **is** committed (the "nothing is committed" premise repeated in older session logs is
+> false). Gate status is recorded at the end of `HANDOFF.md`.
+
 **Tracking:** the `Done` column is the live checklist — flip `[ ]` → `[x]` only when the plan's **Definition of done** (in its `## Tests & acceptance` section) holds *and* the matching block in [Per-plan completion self-checks](#per-plan-completion-self-checks) below all answer "yes".
 
 ## Canonical decisions every plan inherits
@@ -53,7 +62,7 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | [x] | 3 | `01_code_plans/06_source_built_ort_training_pipeline.md` | Prove the train toolchain is alive (`generate_artifacts`) | 2 |
 | [x] | 4 | `00_code_plans/02_config_layering_settings_constants.md` | Three config layers + secrets; needed by export/CLI | 1 |
 | [x] | 5 | `00_code_plans/10_python_code_quality_and_module_health.md` | **Conventions, typing, lint, shared logging/exceptions + the monolith-decomposition strategy** — established before registries/merger/builders so they inherit it | 1, 2, 4 |
-| [x] | 6 | `00_code_plans/09_typed_models_enums_and_registries.md` | **Typed config + enums + PEFT/arch/merger registries** — kills hardcoded dispatch before builders are written | 2, 4, 5 | *(owned contract layer done; legacy-dispatch consumption + merger graph-collapse deferred to #7/#9 — see notes)* |
+| [x] | 6 | `00_code_plans/09_typed_models_enums_and_registries.md` | **Typed config + enums + PEFT/arch/merger registries** — kills hardcoded dispatch before builders are written | 2, 4, 5 | *(contract layer + consumption both landed 2026-08-07; `inference/builder.py`'s arch ladder is the one tracked remainder — allow-listed with an owner)* |
 | [x] | 7 | `01_code_plans/05_optimum_onnx_export_and_tasksmanager.md` | Inference-export front door (arch via registry) | 2, 4, 6 |
 | [x] | 8 | `00_code_plans/07_weight_handoff_map_and_tensor_codec.md` | Data contract every later piece reads (codec consumes registries) | 4, 6 | *(Python owner layer done: schema + codec + `check_compat`; C++/Kotlin consumers ride with #9/#23)* |
 | [ ] | 9 | `01_code_plans/01_unified_merger_and_external_data_export.md` | **Dual-engine core** + full merger unification | 6, 7, 8 | *(code-complete 2026-07-14: Python A/B/C tested, C++ D/E compile+link-verified on arm64-v8a; box stays open pending the manual on-device parity/atomic/load-smoke tests — see #9 self-check)* |
@@ -147,13 +156,13 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 > **Cross-plan:** the **enums/schema parity test** (`tests/parity/`) is delivered by #6 (it owns the enum/Pydantic source of truth) and CI-wired by #29 — it is implemented immediately after this in #6. The per-module **decomposition splits** ride with their owning plans (#6 per-arch inference builders, #9 merger name-resolution) per the plan's scope boundary; #5 owns the strategy/notes, not the splits.
 
 ### #6 — Typed models, enums & registries (`00_code_plans/09`)
-- [x] Can a new PEFT / architecture / merger be added with **only** a registry entry + enum member (zero new `if/elif`; grep for survivors)? *(true for `src/`; legacy `trainer/`,`inference/`,`artifact/` still branch — their rewrites ride with #7/#9)*
+- [x] Can a new PEFT / architecture / merger be added with **only** a registry entry + enum member (zero new `if/elif`; grep for survivors)? *(2026-08-07: the consumption half landed. `trainer/builder.py` parses `PEFTMethod` once at the boundary; `weight_merger.cpp` dispatches on a typed `MergerVariant` (`cpp/constants/merger_variant.h`, googletest-covered); the duplicated MARS/ABLATION target tables collapsed onto one registry source; `build_adapter_mapping` — the normative A3 symbol that previously existed nowhere — is the single mapping entry point. `make guard` now greps `src/`, the legacy roots AND `cpp/`. The ONE remainder is `inference/builder.py`'s 14-branch `architectures[0]` ladder, which needs 7 new registry rows and is unimportable under every declared profile: allow-listed with a named owner in `tests/unit/test_guards.py`.)*
 - [x] Is every closed string set an enum mirrored Python↔Kotlin, proven by the CI parity test?
 - [x] Does `model_dump(by_alias=True)` round-trip through the generated schema that Kotlin/C++ validate?
 - [x] Did `build_merger_model(MergerSpec)` replace the `create_*_merger_model{,_2}` duplication? *(wired by #9 2026-07-14: single builder + golden-equivalence test vs the legacy `*_2` factories; the four factories are deleted)*
 
 > Done 2026-07-13 (owned contract layer). **A2 enums** — 11 `str,Enum` classes in `config/constants.py` (`SamplingMethod`,`SchedulerType`,`ExecutionProvider`,`CoreConfigId`,`MemoryConfigId`,`SearchType`,`QuantizationType`,`PEFTMethod`,`TaskType`,`HandoffMode`,`MergerVariant`) + `ENUM_REGISTRY`; `SUPPORTED_PEFT_METHODS` now derives from `PEFTMethod`. **A1 Pydantic v2** — `config/models.py` (`SamplingConfig`,`DeviceOptions`,`Linear/CosineScheduler` discriminated union,`QuantizationOptions`,`GenerationConfig`,`TrainingConfig`,`RagConfig`), camelCase aliases, `extra="ignore"` (unknown fields tolerated / unknown enum values fail closed), `schemaVersion`+`minReaderVersion` block. **A3/A4/A5 registries** — `config/registry/{peft,architecture,merger}.py` with lazy dotted-path class binding (core-importable, no optimum/torch at load); `resolve_architecture` covers all 8 legacy training arches, `get_peft_spec` all 5 methods, `resolve_merger` all variants. **Parity** — `python -m mobiletransformers.codegen.enums` generates checked-in `schemas/*.schema.json` + golden `schemas/enums.json`; `--check` (the `make parity` gate) diffs them + the 11 hand-mirrored Kotlin `constants/*.kt` `fromWire` enums (under the pre-rename path) and fails on drift. Tests: `test_config_models`/`test_registries`/`test_enum_parity` + an `src/`-scoped dispatch grep guard. `make check` (lint+typecheck+parity+71 tests) green.
-> **Deferred to owning plans** (per the plan's own Interactions/ownership): rewiring the legacy `trainer/builder.py` / `inference/builder.py` / `artifact/onnx_builder.py` dispatch to the registries rides with the training-export migration (#7) and is gated for the inference builder by the Optimum/GenAI decision (restructure master plan says don't rewrite it yet); the single `build_merger_model` ONNX-graph collapse of the four `create_*_merger_model{,_2}` factories + the C++ `weight_merger.cpp` rewrite are wired by #9 (`01_code_plans/01`), which owns the on-disk merge contract + golden-equivalence test. Kotlin enum **mirror files** exist and pass parity, but swapping closed-set `String` fields to enums in `ORTGenerationConfig/ORTTrainingConfig/ORTRagConfig.kt` + `FileUtil.kt fromWire` wiring rides with the Android facade plans (#17/#19) and Android rename (#16). Broadening top-level `__all__` to export the config models/enums/registries is deferred until their consumers (#7/#9) exercise them and the SemVer surface is finalized (#32).
+> **Consumption half landed 2026-08-07.** The audit found this deferral had gone ownerless: #7 and #9 both closed without doing it. What landed: (a) **C++** — `merger_type == "lora"` string dispatch at five sites replaced by a typed `MergerVariant` mirrored in `cpp/constants/merger_variant.h`, with `merger_sessions_` keyed by the enum so an unknown tag in the handoff map fails at *load* time; (b) **`trainer/builder.py`** — the `train_method ==` chain and its mapping sub-ladder replaced by one boundary parse plus `build_adapter_mapping`; (c) **the duplicated target tables** — `peft_models/{mars,ablation}/utils.py` were byte-identical copies; both now re-export one `PEFT_TARGET_MODULES_BY_MODEL_TYPE`. NOTE they were deliberately NOT folded onto `ArchitectureSpec.target_modules`: the two are keyed differently (`model_type` vs `architectures[0]`) and the PEFT table is far wider, so folding would have silently dropped 13 model types; (d) **Kotlin** — `FileUtil.kt`'s silent `println`-and-default scheduler parse is gone, and every closed-set field is validated through its enum's `fromWire` at the parse boundary (field *types* stay `String` because they cross JNI as strings); `ORTRetriever` dispatches on `SearchType`. Remaining: `inference/builder.py`'s ladder (allow-listed, shrink-only ratchet) and broadening top-level `__all__` (still #32's call).
 
 ### #7 — Optimum ONNX export & TasksManager (`01_code_plans/05`)
 - [x] Does TasksManager-driven discovery + task auto-select work with no per-architecture `if/elif`?
@@ -188,6 +197,12 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 > — 11 run in core/dev, 6 skip (need the export profile) and pass under `uv run --extra export`. `make check`
 > green (82 passed, 6 skipped); `uv lock --check` + `uv build --wheel` clean.
 > **Deferred to owning plans:** real full-size model export smoke (SmolLM2-135M) is a user-run manual test;
+> **Deferral expired.** The Optimum-vs-GenAI decision was made 2026-07-15 (Gate 0.1 = ADOPT), which
+> ungated this; the audit found it had become ownerless. As of 2026-08-07 the ladder is the single
+> tracked #6 remainder, allow-listed with a named owner + a shrink-only ratchet in
+> `tests/unit/test_guards.py`, and the file itself moved out of scope for the wheel (it is not on the
+> export path). Original note follows.
+>
 > `inference/builder.py` dispatch rewrite still gated by the Optimum-vs-GenAI decision (not #7); the
 > `torch.onnx` frontend body only if a future optimum removes `export()`.
 
@@ -303,7 +318,7 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 ### #18 — Training lifecycle & checkpoint contracts (`00_code_plans/08`)
 - [x] Does `TrainingJob` expose status/events/checkpoint without hiding the native lifecycle? *(`TrainingJob` + `TrainingStatus`/`TrainingEvent` (StateFlow/SharedFlow) + `CheckpointInfo`; `TrainingEventAdapter` maps the `TrainingCallback` 1:1 — `TrainingEventAdapterTest` asserts order/transitions)*
 - [x] Is the callback→event adapter complete and the checkpoint file format preserved? *(adapter complete; `CheckpointInfo` is a read-only Gson projection of `training_state.json` — `CheckpointInfoTest` asserts the on-disk JSON is unchanged after read)*
-- [x] Are the session lock + cooperative cancellation defined for reuse by the scheduler (#34)? *(`ORTTrainerNative.@Volatile cancelRequested` checked at the step/epoch loop tops (no format change); `TrainingJobManager` owns one job per repo + a `TrainingJobSpec` WorkManager seam — no WorkManager dep added)*
+- [x] Are the session lock + cooperative cancellation defined for reuse by the scheduler (#34)? *(cooperative cancel: `ORTTrainerNative.@Volatile cancelRequested` checked at the step/epoch loop tops, no format change. **The session lock did not exist when this was first ticked** — the audit found zero mutual exclusion anywhere in the library. Added 2026-08-07: `LLMRepository.sessionLock` (a `Mutex`) guards all four native session create/teardown paths, held INSIDE the launched coroutine (wrapping the `Job`-returning function would release it before any handle was touched) and deliberately not across a full training run, so a long job never blocks `release`. `llmState` is now `@Volatile`.)*
 
 **Code-complete 2026-07-15.** 5 JVM tests. `TrainingResult` (the #17 type) enriched with `checkpoint`/`summary`. Box open pending the device resume/summary/train→merge→generate manual legs.
 
@@ -341,7 +356,7 @@ app still compiles.
 - [x] Does the **pull → materialize → load** workflow pass? *(pull→install→sha256 automated over the fixture; the on-device load leg is Manual — deferred)*
 
 ### #22 — Adapter push-back (`02_code_plans/06`)
-**Done 2026-07-14 (Python-first, no device).** `adapter/{export,convert,model_card}.py` + `cli push-adapter`. Gate is pure metadata; safetensors materialization is `torch`/`peft` env-gated.
+**Done 2026-07-14 (Python-first, no device); CORRECTED 2026-08-07.** `adapter/{export,convert,model_card}.py` + `cli push-adapter`. Gate is pure metadata; safetensors materialization is `torch`/`peft` env-gated. **The audit found this was not actually done:** `cli/push_adapter.py` never called `materialize_peft_weights`, so a Mode-1 push published `adapter_config.json` with **no weights** — a repo `PeftModel.from_pretrained` cannot load — and the path skipped in CI so nothing caught it. Fixed: the materialization is called, and outside the `train` profile the upload now REFUSES rather than publishing an unusable adapter (`--dry-run` stays core-runnable and reports what is missing). `_read_checkpoint_factors` also normalizes ORT errors to `ExportError` so a corrupt checkpoint cannot escape the fail-closed handler.
 - [x] Does export produce a PEFT-compatible layout when clean, else a documented native fallback? *(`to_peft_layout` → Mode-1 `adapter_config.json` for clean LoRA; MARS / factor-less LoRA → Mode-2 native subtree + `mobiletransformers_adapter.json`; `--peft-only` errors)*
 - [x] Is Android upload gated / disabled by default with a privacy warning? *(card carries the bold privacy warning, asserted before upload; on-device `AdapterUploader.kt` is the deferred, gated device leg — default path is device→desktop→`push-adapter`)*
 
@@ -378,7 +393,7 @@ magic for `SamplingMethod.fromWire(...).nativeOrdinal` (fail-closed on unknown, 
 - [x] Does `InMemoryVectorStore` let RAG logic be unit-tested on the JVM with no ObjectBox/device? *(pure-Kotlin cosine store in the test source set; insert/search/count/topK/minScore tested)*
 - [x] Is the `1 - score` distance→similarity conversion covered by an explicit test? *(`minScoreFiltersOnSimilarity` + `searchOrdersByCosineSimilarity` assert hand-computed similarities; identical→1.0, orthogonal→0.0)*
 - [x] Are unsupported embedding dimensions rejected fail-closed, and backends pluggable via the registry (F4)? *(`DimensionRegistry.requireSupported` throws on dim 300; `register(301)` then accepted; `VectorStoreRegistry.create` throws on unknown key)*
-- Deferred (device/later): the ObjectBox parity smoke (Android, supported dims — manual); `SearchType` String→enum swap in `ORTRagConfig` rides with the facade plans (#17/#19); `docs/RAG.md` is #31.
+- Deferred (device/later): the ObjectBox parity smoke (Android, supported dims — manual). ~~`SearchType` String→enum swap rides with #17/#19~~ — **that deferral expired** when both landed 2026-07-15 and the audit found it ownerless; done 2026-08-07 (`FileUtil` validates `searchType` through `SearchType.fromWire` at the parse boundary and `ORTRetriever.query` dispatches on the enum; the field stays `String` because it crosses JNI as one). ~~`docs/RAG.md` is #31~~ — written, and de-drifted 2026-08-07 (it had claimed #26/#27 were unimplemented long after they landed).
 
 ### #26 — RAG ingestion & chunking (`03_code_plans/04`)
 - [ ] Does `ingestData()` chunk + embed + store `.txt`/`.md`/`.jsonl` with progress, replacing the TODO?

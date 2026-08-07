@@ -10,12 +10,12 @@ from __future__ import annotations
 import numpy as np
 import onnx
 import pytest
-from inference.export_inference_package import FROZEN_BASE_BLOB, export_inference_package
 from onnx import TensorProto, helper, numpy_helper
 
 from mobiletransformers.artifacts.handoff_map import HandoffMap
 from mobiletransformers.config.constants import HandoffMode, PEFTMethod
 from mobiletransformers.exceptions import ExportError
+from mobiletransformers.export.inference_package import FROZEN_BASE_BLOB, export_inference_package
 
 TRAINABLE_WEIGHT = "model.layers.0.attn.q_proj.MatMul.weight"
 FROZEN_WEIGHT = "model.embed_tokens.weight"

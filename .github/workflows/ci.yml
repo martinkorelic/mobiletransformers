@@ -1,14 +1,18 @@
 # Staged CI (owned by 05_code_plans/02, #29). Cheapest-first so failures surface fast:
 #
-#   fast          -> lint + typecheck + parity gate (F2) + core unit tests   (every PR, minutes)
-#   export-smoke  -> export profile installed; export/package/manifest wiring (every PR, < ~10 min)
-#   android-*     -> Gradle assembleDebug for both modules                   (every PR, self-skips*)
+#   fast          -> lint + typecheck + parity + guards (F2) + core unit tests (every PR, minutes)
+#   kotlin-test   -> :MobileTransformers JVM unit tests                        (every PR, no NDK)
+#   cpp-test      -> host googletest over the ORT-free C++ headers              (every PR, no NDK)
+#   export-smoke  -> export profile installed; export/package/manifest wiring  (every PR, < ~10 min)
+#   android-*     -> Gradle assembleDebug for both modules                     (every PR, self-skips*)
 #
-# * The Android job needs the git-ignored vendored native deps (jniLibs/, aarLibs/, cpp/includes/
-#   google protobuf headers) — same out-of-band provisioning story as the ORT-training wheel. On a
-#   bare hosted runner those are absent, so the job SELF-SKIPS with a warning rather than failing
-#   spuriously (mirrors .github/workflows/ort-training-smoke.yml). How the native deps reach CI —
-#   rebuild vs. cached artifact vs. private storage — is decided alongside #30 (AAR) / this plan.
+# The Kotlin JVM suite needs only the Kotlin compiler + Android SDK stubs — NOT the vendored native
+# libraries — so it runs on every PR. It was previously running only on the author's laptop.
+#
+# * The Android ASSEMBLE job needs the git-ignored vendored native deps. On a bare hosted runner those
+#   are absent, so the job SELF-SKIPS with a warning rather than failing spuriously (mirrors
+#   .github/workflows/ort-training-smoke.yml). How the native deps reach CI — rebuild vs. cached
+#   artifact vs. private storage — is decided alongside #30 (AAR) / this plan.
 #
 # No PR job downloads a large model (assert via logs): fast/export-smoke use only tiny fixtures; the
 # generate_artifacts + 1-token desktop leg + device train->merge->generate->RAG run in device.yml
@@ -19,6 +23,7 @@ name: ci
 on:
   push:
     branches: [main, restructure]
+    tags: ['v*']
   pull_request: {}
 
 jobs:
@@ -38,8 +43,53 @@ jobs:
         run: make typecheck
       - name: Parity gate (F2 — enums/schemas vs. Kotlin/C++ mirrors)
         run: make parity
+      - name: Guards (#4 secrets, #6 registry dispatch)
+        run: make guard
       - name: Unit tests
         run: make test
+
+  kotlin-test:
+    name: kotlin-test (SDK JVM unit tests)
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/MobileTransformers/**/*.gradle.kts', 'android/MobileTransformers/gradle/libs.versions.toml') }}
+      # JVM-only: no NDK, no vendored native libs. `testDebugUnitTest` compiles Kotlin and runs the
+      # facade/hub/packages/rag/runtime/training suites.
+      - name: SDK JVM unit tests
+        working-directory: android/MobileTransformers
+        run: ./gradlew :MobileTransformers:testDebugUnitTest
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-test-report
+          path: android/MobileTransformers/MobileTransformers/build/reports/tests/testDebugUnitTest
+
+  cpp-test:
+    name: cpp-test (host googletest, ORT-free headers)
+    needs: fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # Host toolchain only — the shipping library needs the NDK + ONNX Runtime, but handoff_io.h,
+      # constants/merger_variant.h and mem_probe.h are ORT-free and carry the fail-closed logic.
+      - name: C++ host unit tests
+        run: make test-cpp
 
   export-smoke:
     name: export-smoke (export/package/manifest wiring)
@@ -73,15 +123,32 @@ jobs:
           java-version: '17'
       - name: Check for the vendored native deps
         id: nativedeps
-        working-directory: android/MobileTransformersApp
+        working-directory: android/MobileTransformers
         run: |
-          if [ -d MobileTransformers/src/main/aarLibs ] && [ -d MobileTransformers/src/main/jniLibs ]; then
+          # jniLibs/ is the only vendored input the native build still needs. aarLibs/ was dropped as a
+          # Gradle dependency (build.gradle.kts documents the .so-from-jniLibs decision) and the
+          # protobuf headers under cpp/includes/ went with weight_serializer.cpp in #23 — the flat
+          # per-tensor .bin files are raw external data, so nothing on device parses ONNX protobuf.
+          if [ -d MobileTransformers/src/main/jniLibs ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Vendored native deps (aarLibs/, jniLibs/) absent; skipping Android assemble (see #29/#30 for CI provisioning)."
+            echo "::warning::Vendored native libs (src/main/jniLibs) absent; skipping Android assemble (see #29/#30 for CI provisioning)."
           fi
       - name: Assemble SDK + sample app (debug)
         if: steps.nativedeps.outputs.present == 'true'
-        working-directory: android/MobileTransformersApp
-        run: ./gradlew :MobileTransformers:assembleDebug :app:assembleDebug
+        working-directory: android/MobileTransformers
+        run: ./gradlew :MobileTransformers:assembleDebug :MobileTransformersApp:assembleDebug
+
+      # On a tag, also produce the release AAR. scripts/android_build_aar.sh verifies that every ABI
+      # directory the AAR ships actually contains libmobiletransformers.so — an AAR with an ABI dir
+      # but no project library fails at System.loadLibrary on the consumer's device.
+      - name: Build the release AAR (tags only)
+        if: steps.nativedeps.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
+        run: scripts/android_build_aar.sh
+      - name: Upload the release AAR (tags only)
+        if: steps.nativedeps.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobiletransformers-android-aar
+          path: android/MobileTransformers/MobileTransformers/build/outputs/aar/*-release.aar

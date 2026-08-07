@@ -16,10 +16,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from mobiletransformers.adapter.convert import to_peft_layout
+from mobiletransformers.adapter.convert import materialize_peft_weights, to_peft_layout
 from mobiletransformers.adapter.export import AdapterPackage, export_adapter_from_cache
 from mobiletransformers.adapter.model_card import assert_required_sections, render_adapter_card
-from mobiletransformers.exceptions import MobileTransformersError
+from mobiletransformers.exceptions import ExportError, MobileTransformersError
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -69,7 +69,19 @@ def run(args: argparse.Namespace, *, uploader: Callable[..., Any] | None = None)
         (out / "adapter_config.json").write_text(
             json.dumps(layout.adapter_config, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        # adapter_model.safetensors materialization is env-gated (train profile) — see convert.py.
+        # A Mode-1 repo without adapter_model.safetensors is unusable — `PeftModel.from_pretrained`
+        # fails on it — so this must NOT be skipped silently (it was, which shipped weightless pushes).
+        # Materializing needs the `train` extra (torch + safetensors) and onnxruntime-training for the
+        # default factor reader, so `materialize_peft_weights` raises ExportError outside that profile.
+        # A --dry-run stays runnable in the core env and reports what is missing instead of failing.
+        try:
+            materialize_peft_weights(pkg, layout, str(out))
+        except ExportError as exc:
+            if not args.dry_run:
+                raise MobileTransformersError(
+                    f"cannot publish a Mode-1 (PEFT) adapter without adapter_model.safetensors: {exc}"
+                ) from exc
+            print(f"[dry-run] adapter_model.safetensors NOT materialized: {exc}")
     else:
         _build_native_subtree(pkg, out)
 

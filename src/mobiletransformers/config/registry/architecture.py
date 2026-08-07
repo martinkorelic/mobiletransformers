@@ -31,7 +31,10 @@ def import_from_path(dotted: str) -> Any:
 class ArchitectureSpec:
     architecture: str  # config.architectures[0], e.g. "LlamaForCausalLM"
     onnx_config_class: str  # dotted path to the Optimum OnnxConfig (training export)
-    target_modules: tuple[str, ...]  # replaces the duplicated MARS/ABLATION target maps
+    # Export-path target modules, keyed (like this whole registry) by config.architectures[0].
+    # NOT the same table as PEFT_TARGET_MODULES_BY_MODEL_TYPE in registry/peft.py, which is keyed by
+    # config.model_type and covers the far wider set of PEFT-wrappable models (incl. encoders/seq2seq).
+    target_modules: tuple[str, ...]
     inference_model_class: str | None = None  # dotted path to the genai inference builder; None = n/a
     attention_module_name: str = "self_attn"
     task: TaskType = TaskType.TEXT_GENERATION
