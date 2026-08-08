@@ -62,6 +62,25 @@ class RuntimeSelectionTest {
         )
     }
 
+    /**
+     * The fallback must be conditional on who chose the engine.
+     *
+     * It was unconditional, and that hid a real failure for an entire release cycle: genai_config.json
+     * carried a key GenAI 0.14 rejects, so GenAI never loaded, so `DualEngineParityTest` compared Native
+     * with Native and passed. Gate 0.1 #1 and #4 were both recorded as proven off single-engine
+     * measurements. A silent substitution makes a green test meaningless.
+     */
+    @Test
+    fun explicitGenaiRequestMayNotSilentlyBecomeNative() {
+        assertEquals(false, ModelRuntimeFactory.mayFallBackToNative(InferenceEngine.GENAI))
+    }
+
+    @Test
+    fun autoSelectionMayFallBackToTheNativeFloor() {
+        assertEquals(true, ModelRuntimeFactory.mayFallBackToNative(null))
+        assertEquals(true, ModelRuntimeFactory.mayFallBackToNative(InferenceEngine.NATIVE))
+    }
+
     @Test
     fun epRegistryResolvesOrderedProvidersPerEngine() {
         GenAiSupport.probe = { true }

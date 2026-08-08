@@ -54,7 +54,13 @@ ort-training-local = [
   # universal `uv lock` succeeds. This group is only ever synced under Python 3.12 (see manifest).
   "onnxruntime-training; python_version == '3.12'",
   "optimum-onnx>=0.1.0",
-  "peft>=0.13",
+  # Pinned to the manifest's paired_stack (peft 0.13.2), like torch/transformers below. Floating this
+  # at >=0.13 resolved to peft 0.19, which (a) renamed `PEFT_TYPE_TO_MODEL_MAPPING` and (b) requires
+  # `torch.distributed.tensor` (torch>=2.8) while this group pins torch==2.7.1 — so `get_peft_model`
+  # died with `AttributeError: module 'torch.distributed' has no attribute 'tensor'`. The whole point
+  # of manifest.json's paired_stack is that this profile reproduces the stack the ORT wheel was built
+  # against; three of its five entries were pinned and this one was not.
+  "peft==0.13.2",
   "onnxscript>=0.3",
   "torch==2.7.1",
   "transformers==4.46.2",
@@ -104,10 +110,9 @@ src = ["src", "tests"]
 # ANCHORED to the repository root. A bare directory name here matches ANY path component, so
 # "inference"/"evaluation" also excluded src/mobiletransformers/{inference,evaluation}/ — code landing
 # there during the migration would have been silently ungated by both ruff and mypy.
-extend-exclude = [
-  "/research/", "/trainer/", "/artifact/", "/inference/", "/tools/", "/peft_models/", "/database/",
-  "/evaluation/", "/config.py", "tests/fixtures/tiny_trainable.onnx",
-]
+# S9: the seven legacy roots are DELETED, so only `research/` and the root `config.py` shim remain
+# outside the gate. Every line of migrated code is now linted and type-checked.
+extend-exclude = ["/research/", "/config.py", "tests/fixtures/tiny_trainable.onnx"]
 
 [tool.ruff.lint.per-file-ignores]
 # MIGRATION RATCHET — lint debt carried in by the Migration Map. Entries may only SHRINK; delete a
@@ -130,6 +135,29 @@ extend-exclude = [
 "src/mobiletransformers/training/preprocessing.py" = ["E501", "F841"]       # S4
 "src/mobiletransformers/export/embedding_export.py" = ["B904"]              # S4
 "src/mobiletransformers/export/training_export.py" = ["B006", "B007", "E402", "E501", "F841"]  # S4
+# S7 — database/ -> rag/. F403/F405 are `from objectbox.model import *`, which the ObjectBox entity
+# DSL requires (Entity/Id/String/Float32Vector/HnswIndex all arrive through it); enumerating them is a
+# behaviour change, not a move. The rest is pre-existing style debt carried across unchanged.
+"src/mobiletransformers/rag/builder.py" = ["B904", "B905", "E402", "E501", "F401", "F403", "F405", "F841"]
+"src/mobiletransformers/rag/query.py" = ["E402", "E501", "E722", "F403", "F405", "W293"]
+"src/mobiletransformers/rag/vector_entity.py" = ["E501", "F403", "F405"]
+"src/mobiletransformers/rag/json2entity.py" = ["E501"]
+# S8 — evaluation/ -> evaluation/ (reusable evaluators only; the hardcoded-path experiment scripts
+# went to research/evaluation/). Pre-existing style debt carried across unchanged.
+"src/mobiletransformers/evaluation/eval_adapter_models.py" = ["B007", "B905", "E402", "E722"]
+"src/mobiletransformers/evaluation/mobile_evaluator.py" = ["E501"]
+"src/mobiletransformers/evaluation/mobile/base_mobile_eval.py" = ["E501"]
+"src/mobiletransformers/evaluation/mobile/recommendation_eval.py" = ["B905", "E501", "W293"]
+"src/mobiletransformers/evaluation/openehr/openehr_eval.py" = ["E501"]
+"src/mobiletransformers/evaluation/openehr/openehr_eval_plots.py" = ["E501", "F841"]
+# S6b — inference/validator.py -> artifacts/validation.py
+"src/mobiletransformers/artifacts/validation.py" = ["B006", "E402", "E501"]
+"src/mobiletransformers/training/validators.py" = ["B904", "E501", "E711"]
+"src/mobiletransformers/training/merge_validators.py" = ["B904", "E501"]
+# S6 — inference/builder.py, the 3,441-line graph builder. Style debt carried across unchanged.
+# F821 is GONE: the latent NameError in `make_mlp_unpacked_lora` (it wrapped `q_proj`/`k_proj`, unbound
+# in that scope, instead of the `gate_proj`/`up_proj` it builds and otherwise never uses) is fixed.
+"src/mobiletransformers/inference/builder.py" = ["B904", "B905", "E402", "E501", "E721", "E722"]
 "src/mobiletransformers/artifacts/builder.py" = ["B006", "E402", "E501", "F841"]  # S5
 
 [tool.ruff.lint]
@@ -144,7 +172,7 @@ plugins = ["pydantic.mypy"]  # teaches mypy about pydantic model defaults/aliase
 files = ["src/mobiletransformers"]
 # Anchored with ^ for the same reason as ruff's extend-exclude above: an unanchored alternation also
 # matched src/mobiletransformers/{inference,evaluation}/.
-exclude = "^(research|trainer|artifact|inference|tools|peft_models|database|evaluation)/"
+exclude = "^research/"  # S9: the other six roots no longer exist
 
 [[tool.mypy.overrides]]
 # New package modules are held to strict typing (new code pays the typing tax; legacy is ratcheted).
@@ -170,17 +198,26 @@ module = [
   "mobiletransformers.export.training_export",
   # S5
   "mobiletransformers.artifacts.builder",
+  # S7 — database/ -> rag/. Untyped by origin (ObjectBox entity DSL + argparse scripts); annotating it
+  # is a separate change from moving it.
+  "mobiletransformers.rag.builder",
+  "mobiletransformers.rag.query",
+  "mobiletransformers.rag.vector_entity",
+  "mobiletransformers.rag.json2entity",
+  # S8 / S6b — untyped by origin (evaluation harnesses + the validator CLI).
+  "mobiletransformers.evaluation.*",
+  "mobiletransformers.artifacts.validation",
+  "mobiletransformers.training.validators",
+  "mobiletransformers.training.merge_validators",
+  # S6
+  "mobiletransformers.inference.builder",
 ]
 ignore_errors = true
 
 [[tool.mypy.overrides]]
-# The legacy roots are outside the gate (see `exclude`), but `src` lazy-imports a few of them (e.g. the
-# #15 training stage wires trainer/artifact/inference builders). `follow_imports = skip` stops mypy from
-# descending into their (ratcheted, un-gated) source when a checked module imports them.
-module = [
-  "artifact.*", "trainer.*", "inference.*", "tools.*",
-  "peft_models.*", "research.*", "database.*", "evaluation.*",
-]
+# S9: only `research/` is left outside the gate. `src/` no longer imports it at all (the two helpers it
+# used were moved into the package), so this is belt-and-braces for anything research-adjacent.
+module = ["research.*"]
 follow_imports = "skip"
 ignore_errors = true
 

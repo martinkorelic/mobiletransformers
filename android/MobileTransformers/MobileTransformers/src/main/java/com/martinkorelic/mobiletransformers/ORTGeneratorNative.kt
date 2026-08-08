@@ -11,6 +11,11 @@ import java.io.File
 
 class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokenizerNative, var _generationConfig : ORTGenerationConfig) : ModelRuntime {
 
+    init {
+        NativeLibrary.ensureLoaded()
+    }
+
+
     private var LOG_TAG = "ORTGeneratorNative"
 
     private var inferenceModel : Long = 0
@@ -276,7 +281,15 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
             // If using multi-turn conversation, we need to add assistant message back
             conversationState?.let {
                 it.addAssistantMessage(decodedText.toString())
-                pastAttentionMaskLength = attentionMask.size - 2
+                // The native KV cache holds every token that has been *run through* the model. The loop
+                // appends a mask slot for each newly sampled token, and the last sampled token has not
+                // been fed forward, so the cache length is exactly `attentionMask.size - 1`.
+                //
+                // This was `- 2`, so the next turn built a mask one entry short of `past + new` and ORT
+                // aborted the process inside the first attention Add:
+                //   "Attempting to broadcast an axis by a dimension other than 1. 51 by 52".
+                // Only reachable on a *second* generate in one session, which no host test can reach.
+                pastAttentionMaskLength = attentionMask.size - 1
             }
 
             callback?.onCompletion(

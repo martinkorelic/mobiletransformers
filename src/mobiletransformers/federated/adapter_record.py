@@ -61,13 +61,27 @@ def codec_tensor_specs(handoff: HandoffMap) -> list[TensorSpec]:
     return specs
 
 
+#: The only aggregation v1 produces or accepts (#35, decided 2026-08-08).
+#:
+#: The dataclass used to advertise `"weighted_average" | "average" | "server_only"` in a comment, but
+#: no caller ever set the other two — they were vocabulary with no implementation behind them. An
+#: unreachable enum value in a **wire format** is worse than absent: a peer may legitimately emit it,
+#: and this side would have accepted it and then aggregated as if it were a weighted average.
+#: Rejected on read instead. Adding a value back means implementing it AND regenerating the golden.
+SUPPORTED_AGGREGATIONS = frozenset({"weighted_average"})
+
+#: The tensor roles the record carries — `TrainableTensorCodec`'s vocabulary (#8), which #35 ratified
+#: as normative over the tier doc's never-implemented `{adapter, trainable_weight, head}`.
+SUPPORTED_ROLES = frozenset({"weight", "weight_quantized", "scale", "zero_point"})
+
+
 @dataclass
 class FederatedTensor:
     name: str
     dtype: str
     shape: tuple[int, ...]
-    role: str
-    aggregation: str  # "weighted_average" | "average" | "server_only"
+    role: str  # one of SUPPORTED_ROLES
+    aggregation: str  # SUPPORTED_AGGREGATIONS — single-valued in v1
 
 
 @dataclass
@@ -216,6 +230,17 @@ class FederatedAdapterRecord:
                     f"{expected} bytes, header declares {length}"
                 )
             arr = np.frombuffer(chunk, dtype=_np_dtype(t["dtype"])).reshape(tuple(t["shape"]))
+            if t["aggregation"] not in SUPPORTED_AGGREGATIONS:
+                raise HandoffError(
+                    f"tensor {t['name']!r}: unsupported aggregation {t['aggregation']!r}; v1 supports "
+                    f"only {sorted(SUPPORTED_AGGREGATIONS)}. Accepting it would silently aggregate the "
+                    "tensor as a weighted average, which is not what the peer asked for."
+                )
+            if t["role"] not in SUPPORTED_ROLES:
+                raise HandoffError(
+                    f"tensor {t['name']!r}: unknown role {t['role']!r}; expected one of "
+                    f"{sorted(SUPPORTED_ROLES)} (#35 codec vocabulary)."
+                )
             tensors.append(
                 FederatedTensor(t["name"], t["dtype"], tuple(t["shape"]), t["role"], t["aggregation"])
             )

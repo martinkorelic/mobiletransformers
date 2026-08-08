@@ -320,6 +320,30 @@ class HandoffMap:
                 seen_inference[inf_name] = where
 
 
+#: Wrapper prefixes the training stack puts in front of the model's own module path. `OnnxTrainerWrapper`
+#: contributes ``backbone.``; peft's ``get_peft_model`` contributes ``base_model.model.`` — so a LoRA'd
+#: SmolLM2 layer arrives as ``base_model.model.model.layers.0.self_attn.q_proj``. The inference graph
+#: knows nothing of either, so they must come off before the two sides can be compared.
+_TRAINING_WRAPPER_PREFIXES = ("backbone.", "base_model.model.", "base_model.")
+
+
+def _strip_wrapper_prefixes(name: str) -> str:
+    """Reduce a training-side parameter path to the model's own module path.
+
+    Applied repeatedly because the wrappers nest (``backbone.base_model.model.…``). Order matters:
+    ``base_model.model.`` is tried before ``base_model.`` so the longer wrapper wins.
+    """
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _TRAINING_WRAPPER_PREFIXES:
+            if name.startswith(prefix):
+                name = name[len(prefix) :]
+                changed = True
+                break
+    return name
+
+
 class TrainableTensorCodec:
     """Pure (no I/O) builder of :class:`HandoffEntry` objects from the three name sources."""
 
@@ -332,14 +356,38 @@ class TrainableTensorCodec:
         to ``MatMul``. Rules are *data* from #6's architecture registry, not literals baked here. Used
         only to seed a lookup against observed names — the observed name wins, and a mismatch raises.
         """
-        name = base_layer_name
-        if name.startswith("backbone."):
-            name = name[len("backbone.") :]
-        attn = getattr(arch_spec, "attention_module_name", "self_attn")
-        if attn and attn != "attn":
-            name = name.replace(f".{attn}.", ".attn.")
+        return TrainableTensorCodec.candidate_inference_names(base_layer_name, arch_spec)[0]
+
+    @staticmethod
+    def candidate_inference_names(base_layer_name: str, arch_spec: Any) -> tuple[str, ...]:
+        """Every spelling an adapted layer's inference MatMul seed may legitimately take.
+
+        Two inference exporters are in play and they name the attention module differently:
+
+        * the legacy ``inference/builder.py`` graphs use ``attn`` — which is what the
+          ``weight_merger.cpp:904`` rewrite (and :meth:`canonical_inference_name`) was written against;
+        * the Optimum export that #7 made the front door preserves HF-canonical ``self_attn``.
+
+        Seeding the lookup with only the rewritten spelling meant **no** trainable tensor in an
+        Optimum-produced package could be matched, so `export_inference_package` failed with
+        "inference/training naming drifted" and no handoff map could be built for the very packages the
+        project now ships. The seed is only a lookup key — the *observed* initializer name is what is
+        recorded and what the device reads back out of `inferenceInitializerNames` — so accepting both
+        spellings is safe and keeps the C++ mirror valid for legacy packages.
+
+        Ordered: the rewritten (legacy) spelling first, so :meth:`canonical_inference_name` and the C++
+        mirror keep their existing meaning.
+        """
+        name = _strip_wrapper_prefixes(base_layer_name)
         name = name.replace(".base_layer", ".MatMul")
-        return name
+
+        attn = getattr(arch_spec, "attention_module_name", "self_attn")
+        candidates = []
+        if attn and attn != "attn":
+            candidates.append(name.replace(f".{attn}.", ".attn."))
+        candidates.append(name)
+        # Preserve order, drop duplicates (an architecture whose module already *is* `attn`).
+        return tuple(dict.fromkeys(candidates))
 
     @classmethod
     def from_peft_mapping(
@@ -371,12 +419,12 @@ class TrainableTensorCodec:
                 if base_layer_name.endswith(".base_layer")
                 else base_layer_name + ".base_layer"
             )
-            seed = cls.canonical_inference_name(training_base, arch_spec)
-            group = by_seed.get(seed)
+            seeds = cls.candidate_inference_names(training_base, arch_spec)
+            group = next((g for g in (by_seed.get(s) for s in seeds) if g), None)
             if not group:
                 raise HandoffError(
                     f"no observed inference initializer for {base_layer_name!r} "
-                    f"(canonical seed {seed!r}); inference/training naming drifted"
+                    f"(tried seeds {list(seeds)}); inference/training naming drifted"
                 )
 
             inference_names = {obs.role: obs.name for obs in group}

@@ -28,7 +28,14 @@ android {
             }
         }
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // v1 ships arm64-v8a only. x86_64 is NOT buildable here: jniLibs/x86_64 has the GenAI .so
+            // but not `libonnxruntime.so`, `libtokenizers_c.a` or `libtokenizers_cpp.a`, which
+            // CMakeLists.txt links against — so `libmobiletransformers.so` has never existed for that
+            // ABI. Listing it produced an AAR with an x86_64 directory whose consumer would fail at
+            // System.loadLibrary (which scripts/android_build_aar.sh already refuses to publish), and
+            // broke every unqualified `assembleDebug`. Restoring x86_64 means building ORT-training and
+            // tokenizers-cpp for it first; see docs/ARCHITECTURE.md "ABI support".
+            abiFilters += listOf("arm64-v8a")
         }
     }
 

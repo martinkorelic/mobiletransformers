@@ -15,7 +15,16 @@ import yaml
 from onnx import TensorProto, helper, numpy_helper
 from optimum.exporters.onnx import export
 from peft import LoraConfig, PeftModel, PeftType, get_peft_model
-from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
+
+# peft renamed its PeftType -> tuner-class registry in 0.15 (`PEFT_TYPE_TO_MODEL_MAPPING` ->
+# `PEFT_TYPE_TO_TUNER_MAPPING`). The `ort-training-local` group floats `peft>=0.13` while
+# `third_party/onnxruntime/manifest.json` records the tested pairing as 0.13.2, so a fresh resolve picks
+# up a much newer peft and this module stopped importing at all — which fails the whole training stage
+# before it does any work. Accept both spellings rather than pinning the profile to a 2024 peft.
+try:  # peft < 0.15
+    from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
+except ImportError:  # peft >= 0.15
+    from peft.peft_model import PEFT_TYPE_TO_TUNER_MAPPING as PEFT_TYPE_TO_MODEL_MAPPING
 from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
 
 # OnnxConfigWithLoss was REMOVED in optimum 2.1 (the optimum-onnx split; verified by
@@ -281,13 +290,11 @@ def optimum_hf_export(
 
     if task_type == "text-generation":
         model = AutoModelForCausalLM.from_pretrained(
-            model_id, trust_remote_code=True, token=get_settings().require_hf_token()
+            model_id, trust_remote_code=True, token=get_settings().hf_token
         )
     else:
-        model = AutoModel.from_pretrained(
-            model_id, trust_remote_code=True, token=get_settings().require_hf_token()
-        )
-    config = AutoConfig.from_pretrained(model_id, token=get_settings().require_hf_token())
+        model = AutoModel.from_pretrained(model_id, trust_remote_code=True, token=get_settings().hf_token)
+    config = AutoConfig.from_pretrained(model_id, token=get_settings().hf_token)
 
     # Registry-driven dispatch (no architectures[0] ladder): the architecture registry maps the HF
     # architecture -> its Optimum OnnxConfig class, and choose_task routes task selection. Unknown
@@ -434,7 +441,15 @@ def optimum_hf_export(
             onnx_model,
             onnx_path.absolute().as_posix(),
             f"{model_output}/quant_model.onnx",
-            # exclude_weights=lora_target,
+            # Keep the PEFT adapters OUT of quantization. This argument was commented out, so with
+            # `--quant int4` the quantizer packed the LoRA A/B weights along with the frozen base: no
+            # float trainable initializer survived, `requires_grad` resolved to only `*_quantized`
+            # companions, and `generate_artifacts` died — first on "Cannot compute the partial
+            # derivative for '…weight_quantized'", then, once those were correctly excluded, on an
+            # empty trainable set (`IndexError` in optim.py). A quantized base with float adapters is
+            # the project's premise (the base/trainable external split #8/#9 are built around); the
+            # line above computes `lora_target` for exactly this and then discarded it.
+            exclude_weights=lora_target,
             weight_type=weight_type,
             exclude_extra_layers=exclude_extra_layers,
             exclude_specific=exclude_specific,

@@ -129,7 +129,12 @@ internal class RepositoryBackedModelSession(
                 override fun onError(error: Throwable) = callback?.onError(error) ?: Unit
             }
 
-        val ortConfig = config.toOrt().copy(datasetOptions = dataset.toOrt())
+        val ortConfig = config.toOrt(repo.trainingConfig).copy(
+            datasetOptions = dataset.toOrt(),
+            // The caller supplies the data, so the caller names its preprocessor; fall back to
+            // whatever the package declared.
+            taskName = dataset.task ?: repo.trainingConfig.taskName,
+        )
         training.performTraining(ortConfig, adapter)
         if (config.mergeAtEnd) mergedWeightsLoaded = true
 
@@ -214,7 +219,7 @@ internal class RepositoryBackedModelSession(
 
                 override fun onError(error: Throwable) = callback?.onError(error) ?: Unit
             }
-        rag.initialize(config.toOrt(), adapter)
+        rag.initialize(config.toOrt(repo.ragConfig), adapter)
         rag.query(query, ragCallback = adapter)
         return result?.toPublic() ?: RetrievalResult()
     }
@@ -223,7 +228,7 @@ internal class RepositoryBackedModelSession(
         path: String,
         config: RagConfig,
         progress: IngestionProgress?,
-    ): IngestResult = IngestResult(chunkCount = rag.ingest(path, config.toOrt(), progress))
+    ): IngestResult = IngestResult(chunkCount = rag.ingest(path, config.toOrt(repo.ragConfig), progress))
 
     override suspend fun generateWithRag(
         query: String,

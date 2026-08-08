@@ -10,6 +10,7 @@
 #include "train.h"
 #include "utils.h"
 #include "sampling.h"
+#include "mem_probe.h"
 #include <android/log.h>
 
 #define LOG_TAG "MobileTransformers"
@@ -20,6 +21,25 @@ Java_com_martinkorelic_mobiletransformers_app_MainActivity_stringFromJNI(
         jobject /* this */) {
     std::string hello = "Hello from C++";
     return env->NewStringUTF(hello.c_str());
+}
+
+// #12 (Gate 0.2): expose the native RSS sampler so an instrumented test can build the four-point
+// base/merged x copy/mmap table. Debug.getPss() would measure the JVM's view; the weights are mapped
+// by native code, so VmRSS from /proc/self/status is the number the gate is specified against.
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_martinkorelic_mobiletransformers_runtime_MemoryProbe_nativeCurrentRssKb(
+        JNIEnv* /* env */,
+        jobject /* this */) {
+    return static_cast<jlong>(memprobe::read_rss_kb());
+}
+
+// Whether the zero-copy weight load is currently switched on (env var or `debug.mtf.mmap_weights`).
+// The RSS harness asserts it actually flipped rather than trusting setprop to have taken effect.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_martinkorelic_mobiletransformers_runtime_MemoryProbe_nativeMmapWeightsEnabled(
+        JNIEnv* /* env */,
+        jobject /* this */) {
+    return memprobe::mmap_weights_enabled() ? JNI_TRUE : JNI_FALSE;
 }
 
 void ReleaseTrainingSession(jlong session, jboolean saveCheckpoint) {
@@ -324,18 +344,37 @@ Java_com_martinkorelic_mobiletransformers_ORTGeneratorNative_performInferenceSte
     jlong* attention_mask_elements = env->GetLongArrayElements(attention_mask, nullptr);
     jlong* position_ids_elements = env->GetLongArrayElements(position_ids, nullptr);
 
-    // Forward pass
-    auto logits = inference::generateWithKVCache(session_cache,
-                                   input_ids_elements,
-                                   attention_mask_elements,
-                                   position_ids_elements,
-                                   batch_size,
-                                   sequence_length,
-                                   past_sequence_length);
+    // A C++ exception must never cross the JNI boundary: an Ort::Exception escaping here calls
+    // std::terminate and aborts the whole process, so a recoverable shape/IO error took the app (and,
+    // in CI, the entire instrumentation run) down instead of surfacing as a catchable failure. Kotlin's
+    // `catch (e: Throwable)` around generate() cannot see a C++ throw — it has to be converted here.
+    try {
+        // Forward pass
+        auto logits = inference::generateWithKVCache(session_cache,
+                                       input_ids_elements,
+                                       attention_mask_elements,
+                                       position_ids_elements,
+                                       batch_size,
+                                       sequence_length,
+                                       past_sequence_length);
 
-    int best_index = sampling::sampleNextToken(logits, past_sequence_length, vocab_size, session_cache->sampling_config, session_cache->random_generator);
+        int best_index = sampling::sampleNextToken(logits, past_sequence_length, vocab_size, session_cache->sampling_config, session_cache->random_generator);
 
-    return best_index;
+        env->ReleaseLongArrayElements(input_ids, input_ids_elements, JNI_ABORT);
+        env->ReleaseLongArrayElements(attention_mask, attention_mask_elements, JNI_ABORT);
+        env->ReleaseLongArrayElements(position_ids, position_ids_elements, JNI_ABORT);
+        return best_index;
+    } catch (const std::exception& e) {
+        env->ReleaseLongArrayElements(input_ids, input_ids_elements, JNI_ABORT);
+        env->ReleaseLongArrayElements(attention_mask, attention_mask_elements, JNI_ABORT);
+        env->ReleaseLongArrayElements(position_ids, position_ids_elements, JNI_ABORT);
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "performInferenceStep failed: %s", e.what());
+        jclass runtime_exception = env->FindClass("java/lang/RuntimeException");
+        if (runtime_exception != nullptr) {
+            env->ThrowNew(runtime_exception, (std::string("inference step failed: ") + e.what()).c_str());
+        }
+        return -1;
+    }
 }
 
 extern "C"

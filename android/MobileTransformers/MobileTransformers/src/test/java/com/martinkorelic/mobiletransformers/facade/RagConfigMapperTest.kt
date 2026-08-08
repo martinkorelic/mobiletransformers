@@ -1,6 +1,7 @@
 package com.martinkorelic.mobiletransformers.facade
 
 import com.martinkorelic.mobiletransformers.NotImplementedFeatureException
+import com.martinkorelic.mobiletransformers.ORTRagConfig
 import com.martinkorelic.mobiletransformers.config.RagConfig
 import com.martinkorelic.mobiletransformers.constants.IndexingMode
 import com.martinkorelic.mobiletransformers.constants.SearchType
@@ -43,6 +44,39 @@ class RagConfigMapperTest {
         assertEquals("semantic", ort.searchType)
         assertEquals(0.0, ort.minScore, 0.0)
         assertEquals("precompute", ort.indexingMode)
+    }
+
+    /**
+     * The encoder the package shipped survives a default-constructed public config. Before this, a
+     * `RagConfig()` overwrote `repoName`/`onnxName`/`embeddingDimension` with library defaults, so a
+     * real package's retriever looked under `<cacheDir>/model/embedding/` for a 256-wide store.
+     */
+    @Test
+    fun packageEncoderIdentitySurvivesDefaultConfig() {
+        val fromPackage = ORTRagConfig(
+            repoName = "HuggingFaceTB__SmolLM2-135M-Instruct",
+            onnxName = "embedding_model",
+            embeddingDimension = 384,
+        )
+        val ort = RagConfig(topK = 3).toOrt(fromPackage)
+        assertEquals("HuggingFaceTB__SmolLM2-135M-Instruct", ort.repoName)
+        assertEquals("embedding_model", ort.onnxName)
+        assertEquals(384, ort.embeddingDimension)
+        // Query shaping still comes from the caller.
+        assertEquals(3, ort.topK)
+    }
+
+    @Test
+    fun explicitEncoderIdentityOverridesThePackage() {
+        val fromPackage = ORTRagConfig(repoName = "pkg", onnxName = "a", embeddingDimension = 384)
+        val ort = RagConfig(
+            embeddingRepoId = "other",
+            embeddingModelFile = "b",
+            embeddingDimension = 768,
+        ).toOrt(fromPackage)
+        assertEquals("other", ort.repoName)
+        assertEquals("b", ort.onnxName)
+        assertEquals(768, ort.embeddingDimension)
     }
 
     @Test

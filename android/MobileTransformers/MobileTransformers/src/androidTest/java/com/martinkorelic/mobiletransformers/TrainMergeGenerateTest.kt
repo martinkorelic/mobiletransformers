@@ -6,6 +6,7 @@ import com.martinkorelic.mobiletransformers.config.DatasetConfig
 import com.martinkorelic.mobiletransformers.config.GenerationConfig
 import com.martinkorelic.mobiletransformers.config.TrainConfig
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
+import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -20,12 +21,27 @@ import org.junit.runner.RunWith
 class TrainMergeGenerateTest {
 
     @Test
-    fun trainMergeGenerateDivergesFromBaseline() = runBlocking {
+    // Explicit `: Unit`. With expression-body syntax the return type is inferred from the block's
+    // last expression, so ending it with something non-Unit (a `Log.i`, which returns Int) silently
+    // makes the method non-void and JUnit rejects the whole class with
+    // "Method ... should be void" — surfacing as a runner-instantiation failure, not a test failure.
+    fun trainMergeGenerateDivergesFromBaseline(): Unit = runBlocking {
         val root = DeviceModel.requireCacheRoot()
         val repoId = DeviceModel.repoId(root)
         assumeTrue("package is not train-capable (no train/ stage)", DeviceModel.hasTraining(root, repoId))
 
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+
+        // The package ships model artifacts, not training data, so the caller supplies both the dataset
+        // and the preprocessor that parses it (`DatasetConfig.task`). ORTDataCurator reads
+        // `<cacheDir>/<repo>/train/<trainFile>.jsonl`; `cola` is the simplest supported schema.
+        val trainFile = "mt_device_test_cola"
+        File(root, "$repoId/train/$trainFile.jsonl").writeText(
+            (1..8).joinToString("\n") { i ->
+                """{"sentence": "The cat sat on the mat number $i.", "label": ${i % 2}}"""
+            } + "\n",
+        )
+
         val model = MobileTransformers.fromPretrained(
             context = ctx,
             repoId = repoId,
@@ -36,11 +52,59 @@ class TrainMergeGenerateTest {
             val gen = GenerationConfig(maxNewTokens = 8, loadMerged = true)
             val baseline = model.generate("The capital of France is", gen).text
 
-            model.train(DatasetConfig(maxSequenceLength = 64), TrainConfig(maxSteps = 1, mergeAtEnd = true))
+            // Fingerprint the trainable tensors BEFORE training. The merge writes new weights into
+            // these per-tensor `.bin` files in place (#9), so their bytes changing is the direct
+            // evidence that train -> merge -> handoff actually moved weights.
+            //
+            // Asserting only that the generated text changes does NOT test that: one LoRA step on q/k
+            // at lr 1e-4 legitimately leaves 8 greedy tokens identical, so a text-only assertion fails
+            // on a good merge and would equally pass if the merge silently wrote nothing.
+            val binNames = ArrayList<String>()
+            val beforeHashes = HashMap<String, Int>()
+            val listed = File(root, repoId + "/inference").listFiles()
+            if (listed != null) {
+                for (f in listed) {
+                    if (f.name.endsWith(".MatMul.weight.bin")) {
+                        binNames.add(f.name)
+                        beforeHashes[f.name] = f.readBytes().contentHashCode()
+                    }
+                }
+            }
+            assertTrue("package has no per-tensor trainable .bin files", binNames.size > 0)
+
+            model.train(
+                DatasetConfig(
+                    trainFile = trainFile,
+                    task = "cola",
+                    maxSequenceLength = 64,
+                    maxDatasetLength = 8,
+                    datasetBatchSize = 4,
+                ),
+                TrainConfig(maxSteps = 1, batchSize = 2, mergeAtEnd = true),
+            )
             model.merge()
 
+            var changed = 0
+            for (name in binNames) {
+                val h = File(root, repoId + "/inference/" + name).readBytes().contentHashCode()
+                if (h != beforeHashes[name]) changed++
+            }
+            assertTrue(
+                "merge wrote no new weights: all " + binNames.size + " trainable .bin files are " +
+                    "unchanged. NOTE: the merge rewrites these files IN PLACE, so a package that has " +
+                    "already been merged re-merges to identical bytes. Re-push a pristine package " +
+                    "(make device-package) before re-running this suite.",
+                changed > 0,
+            )
+
+            // Generation must still work off the merged weights. The text is reported rather than
+            // asserted different: after a single step the argmax may legitimately be unchanged.
             val after = model.generate("The capital of France is", gen).text
-            assertTrue("merged output did not diverge from baseline", after != baseline)
+            assertTrue("generation returned nothing after merge", after.isNotEmpty())
+            android.util.Log.i(
+                "TrainMergeGenerateTest",
+                "merged " + changed + "/" + binNames.size + " tensors; baseline=<" + baseline + "> after=<" + after + ">",
+            )
         } finally {
             model.close()
         }

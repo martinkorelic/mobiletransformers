@@ -1,6 +1,8 @@
 package com.martinkorelic.mobiletransformers.runtime
 
 import android.util.Log
+import com.martinkorelic.mobiletransformers.EngineUnavailableException
+import com.martinkorelic.mobiletransformers.NativeLibrary
 import com.martinkorelic.mobiletransformers.ORTGenerationConfig
 import com.martinkorelic.mobiletransformers.ORTGeneratorGenAI
 import com.martinkorelic.mobiletransformers.ORTGeneratorNative
@@ -78,7 +80,10 @@ object EngineRegistry {
 object GenAiSupport {
     /** Overridable for tests; production points at the native probe. */
     @Volatile
-    var probe: () -> Boolean = { nativeGenAiAvailable() }
+    var probe: () -> Boolean = {
+        NativeLibrary.ensureLoaded()
+        nativeGenAiAvailable()
+    }
 
     fun available(): Boolean = runCatching { probe() }.getOrDefault(false)
 
@@ -86,9 +91,10 @@ object GenAiSupport {
 }
 
 /**
- * Selects an engine and constructs a [ModelRuntime] with **transparent fallback to Native** — a GenAI
- * load failure NEVER reaches the caller (logged, then Native). The pure [selectEngine] decision is
- * JVM-testable; [create] performs the device construction.
+ * Selects an engine and constructs a [ModelRuntime]. GenAI that was **auto-selected** falls back to
+ * Native transparently (#11's guaranteed floor); GenAI that the caller **explicitly asked for** fails
+ * loudly instead. The pure [selectEngine] decision is JVM-testable; [create] performs the device
+ * construction.
  */
 object ModelRuntimeFactory {
     /**
@@ -110,10 +116,28 @@ object ModelRuntimeFactory {
     }
 
     /**
-     * Construct + load a [ModelRuntime] over one `inference/` package with **transparent fallback to
-     * Native**: a GenAI selection that fails to load is logged and falls through to Native — the caller
-     * never sees a GenAI error. [supportedEngines] comes from the manifest variant (#13); when unknown,
-     * pass both and let [GenAiSupport]/`config.engine` decide.
+     * Pure rule: may a GenAI that is unavailable or failed to load be silently replaced by Native?
+     *
+     * Only when the caller expressed no preference. `requested == null` means "pick for me", and Native
+     * is #11's guaranteed floor. Naming an engine and receiving a different one is a wrong answer, not a
+     * graceful degradation — see [create].
+     */
+    fun mayFallBackToNative(requested: InferenceEngine?): Boolean = requested != InferenceEngine.GENAI
+
+    /**
+     * Construct + load a [ModelRuntime] over one `inference/` package. [supportedEngines] comes from the
+     * manifest variant (#13); when unknown, pass both and let [GenAiSupport]/`config.engine` decide.
+     *
+     * **Fallback is conditional on who chose the engine.** When GenAI was auto-selected (the caller
+     * expressed no preference) a load failure falls through to Native, which is #11's guaranteed floor.
+     * When the caller *named* GenAI it is raised as [EngineUnavailableException].
+     *
+     * The unconditional version of this was a real defect, not a hypothetical one: genai_config.json
+     * carried a `config_entries` key that GenAI 0.14 rejects, so GenAI never loaded on any package the
+     * training stage touched — and nothing said so. `DualEngineParityTest` compared Native with Native
+     * and passed, and both `MemoryRssTest` rows recorded Native, so Gate 0.1 #1 and #4 were both read as
+     * proven off measurements of a single engine. A degradation nobody can observe is worse than a
+     * failure; asking for an engine and silently getting another one is not a floor, it is a lie.
      */
     suspend fun create(
         cacheDir: String,
@@ -124,12 +148,29 @@ object ModelRuntimeFactory {
         val engine = selectEngine(
             config.engine, supportedEngines, InferenceEngine.NATIVE, GenAiSupport.available(),
         )
+        val explicitlyRequested = !mayFallBackToNative(config.engine)
         if (engine == InferenceEngine.GENAI) {
             try {
                 return ORTGeneratorGenAI(cacheDir, tokenizer, config).also { it.load(cacheDir, config) }
             } catch (e: Throwable) {
+                if (explicitlyRequested) {
+                    throw EngineUnavailableException(
+                        InferenceEngine.GENAI,
+                        "explicitly requested but failed to load from '$cacheDir': ${e.message}. " +
+                            "Not falling back to Native — that would silently answer a different " +
+                            "question than the one asked. Pass engine=null to allow the fallback.",
+                    )
+                }
                 Log.w("ModelRuntimeFactory", "GenAI engine unavailable, falling back to Native: ${e.message}")
             }
+        } else if (explicitlyRequested) {
+            // Selection itself rejected GenAI (unsupported by the variant, or unavailable on this
+            // device). Same rule: the caller named it, so say so rather than quietly substituting.
+            throw EngineUnavailableException(
+                InferenceEngine.GENAI,
+                "explicitly requested but not selectable: supportedEngines=$supportedEngines, " +
+                    "genaiAvailable=${GenAiSupport.available()}. Pass engine=null to allow the fallback.",
+            )
         }
         return ORTGeneratorNative(cacheDir, tokenizer, config).also { it.load(cacheDir, config) }
     }

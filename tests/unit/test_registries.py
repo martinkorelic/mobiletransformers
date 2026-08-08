@@ -38,11 +38,81 @@ LEGACY_TRAINING_ARCHES = [
 ]
 
 
+#: Every architecture `inference/builder.py`'s 14-branch ladder dispatched — the #6 remainder.
+#: `ChatGLMForConditionalGeneration` and `ChatGLMModel` were one `or`-ed branch and need two rows,
+#: because the registry is keyed by `architectures[0]`.
+LEGACY_INFERENCE_ARCHES = [
+    "MistralForCausalLM",
+    "PhiForCausalLM",
+    "PhiMoEForCausalLM",
+    "Phi3SmallForCausalLM",
+    "Phi3VForCausalLM",
+    "NemotronForCausalLM",
+    "ChatGLMForConditionalGeneration",
+    "ChatGLMModel",
+]
+
+
 @pytest.mark.parametrize("arch", LEGACY_TRAINING_ARCHES)
 def test_resolve_architecture_covers_legacy_branches(arch):
     spec = resolve_architecture(SimpleNamespace(architectures=[arch]))
     assert spec.architecture == arch
     assert spec.onnx_config_class  # a dotted path is present
+
+
+@pytest.mark.parametrize("arch", LEGACY_INFERENCE_ARCHES)
+def test_resolve_architecture_covers_the_inference_ladder(arch):
+    """The ladder's remaining branches are rows now, so adding an architecture is data, not an `elif`."""
+    spec = resolve_architecture(SimpleNamespace(architectures=[arch]))
+    assert spec.architecture == arch
+    # Either a direct inference class or a variant table — every ladder branch built *something*.
+    assert spec.inference_model_class or spec.variant_values
+
+
+def test_inference_only_architectures_fail_closed_on_training_export():
+    """PhiMoE/Phi3Small/Phi3V/ChatGLM have no Optimum OnnxConfig — say so rather than import-error later.
+
+    Checked against optimum-onnx 0.1.0's `model_configs`: those four classes do not exist. Binding a
+    plausible-looking name would have failed at export time with an AttributeError instead.
+    """
+    for arch in ("PhiMoEForCausalLM", "Phi3SmallForCausalLM", "Phi3VForCausalLM", "ChatGLMModel"):
+        spec = resolve_architecture(SimpleNamespace(architectures=[arch]))
+        assert spec.onnx_config_class is None
+        with pytest.raises(UnsupportedModelError, match="inference-only"):
+            spec.load_onnx_config_class()
+
+
+def test_ladder_side_effects_are_data_not_lost():
+    """Three branches mutated the request before constructing. A row naming only a class loses that."""
+    moe = resolve_architecture(SimpleNamespace(architectures=["PhiMoEForCausalLM"]))
+    assert moe.option_overrides == {"execution_provider": "cuda", "precision": "int4"}
+    assert moe.warnings  # the operator-facing reason, no longer a bare print()
+
+    phi3v = resolve_architecture(SimpleNamespace(architectures=["Phi3VForCausalLM"]))
+    assert phi3v.extra_option_overrides == {"exclude_embeds": True}
+
+    for arch in ("ChatGLMForConditionalGeneration", "ChatGLMModel"):
+        chatglm = resolve_architecture(SimpleNamespace(architectures=[arch]))
+        assert chatglm.config_overrides == {"hidden_act": "swiglu"}
+
+
+def test_variant_keyed_architectures_resolve_per_variant():
+    """Phi3Small splits 8K/128K on max_position_embeddings, exactly as the ladder's two branches did."""
+    spec = resolve_architecture(SimpleNamespace(architectures=["Phi3SmallForCausalLM"]))
+    assert spec.variant_key == "max_position_embeddings"
+    assert set(spec.variant_values) == {8192, 131072}
+    with pytest.raises(UnsupportedModelError, match="no inference variant"):
+        spec.load_inference_model_class(4096)
+
+
+def test_gemma_generations_bind_their_own_onnx_configs():
+    """Gemma2/Gemma3 are distinct architectures; the generic GemmaOnnxConfig describes neither."""
+    for arch, expected in (
+        ("Gemma2ForCausalLM", "Gemma2OnnxConfig"),
+        ("Gemma3ForCausalLM", "Gemma3OnnxConfig"),
+    ):
+        spec = resolve_architecture(SimpleNamespace(architectures=[arch]))
+        assert spec.onnx_config_class.endswith(expected)
 
 
 def test_resolve_architecture_unknown_fails_closed():
@@ -141,15 +211,26 @@ def test_build_adapter_mapping_dispatches_per_method():
 
 def test_peft_target_modules_table_has_one_source():
     """#6: the MARS and ablation tables were byte-identical copies under two names."""
-    from peft_models.ablation.utils import TRANSFORMERS_MODELS_TO_ABLATION_TARGET_MODULES_MAPPING
-    from peft_models.mars.utils import TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING
+    from mobiletransformers.peft.ablation.utils import (
+        TRANSFORMERS_MODELS_TO_ABLATION_TARGET_MODULES_MAPPING,
+    )
+    from mobiletransformers.peft.mars.utils import TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING
 
     assert TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING is PEFT_TARGET_MODULES_BY_MODEL_TYPE
     assert TRANSFORMERS_MODELS_TO_ABLATION_TARGET_MODULES_MAPPING is PEFT_TARGET_MODULES_BY_MODEL_TYPE
 
 
 def test_peft_target_table_is_wider_than_the_architecture_registry():
-    """Guards the reason these two tables are NOT merged: different key spaces, different coverage."""
+    """Guards the reason these two tables are NOT merged: different key spaces, different coverage.
+
+    This asserted `len(peft) > len(registry)`, which was only ever a proxy for "wider coverage" and
+    stopped being true the moment the registry legitimately absorbed the inference ladder's 7 rows.
+    Size is not the property worth protecting; disjoint key spaces and encoder/seq2seq reach are.
+    """
+    # Different key spaces: model_type vs architectures[0]. Merging them would silently mis-key both.
     assert "t5" in PEFT_TARGET_MODULES_BY_MODEL_TYPE  # model_type keys...
     assert "LlamaForCausalLM" not in PEFT_TARGET_MODULES_BY_MODEL_TYPE  # ...not architecture keys
-    assert len(PEFT_TARGET_MODULES_BY_MODEL_TYPE) > len(ARCHITECTURE_REGISTRY)
+    assert not (set(PEFT_TARGET_MODULES_BY_MODEL_TYPE) & set(ARCHITECTURE_REGISTRY))
+
+    # Different coverage: PEFT wraps encoders and seq2seq models the export registry does not build.
+    assert {"t5", "bart"} <= set(PEFT_TARGET_MODULES_BY_MODEL_TYPE)

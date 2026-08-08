@@ -41,7 +41,17 @@ fun SamplingConfig.toOrt(): SamplingOptions =
         seed = seed,
     )
 
-fun TrainConfig.toOrt(): ORTTrainingConfig {
+/**
+ * Overlay this public config onto what the installed package declares.
+ *
+ * [base] is the package's parsed `train/training_config.json` (`LLMRepository.trainingConfig`). Model
+ * identity (`repoName`, `onnxName`) and the dataset task (`taskName`) come from the package; the
+ * training hyper-parameters come from the caller. Building a fresh `ORTTrainingConfig` here — the
+ * previous behaviour — reset all three to their library defaults, so on-device training looked for its
+ * data under `<cacheDir>/model/train/` and hit `IllegalArgumentException: Unsupported task: none`
+ * (`DataUtil.kt:71`) before doing any work. Same fix as `GenerationConfig`/`RagConfig`.
+ */
+fun TrainConfig.toOrt(base: ORTTrainingConfig = ORTTrainingConfig()): ORTTrainingConfig {
     val schedulerConfig =
         when (scheduler) {
             SchedulerType.LINEAR -> SchedulerConfig.Linear(learningRate = learningRate)
@@ -53,6 +63,9 @@ fun TrainConfig.toOrt(): ORTTrainingConfig {
                 )
         }
     return ORTTrainingConfig(
+        repoName = base.repoName,
+        onnxName = base.onnxName,
+        taskName = base.taskName,
         batchSize = batchSize,
         numTrainEpochs = epochs,
         maxSteps = maxSteps,
@@ -97,15 +110,24 @@ fun GenerationConfig.toOrt(
         deviceOptions = device.toOrt(),
     )
 
-fun RagConfig.toOrt(): ORTRagConfig {
+/**
+ * Overlay this public config onto what the installed package declares.
+ *
+ * [base] is the package's parsed `embedding/rag_config.json` (`LLMRepository.ragConfig`). Encoder
+ * identity — repo dir, graph filename, vector width — comes from the package unless the caller
+ * explicitly overrode it; query shaping always comes from the caller. Replacing [base] wholesale (the
+ * previous behaviour) meant a default-constructed `RagConfig` pointed the retriever at
+ * `<cacheDir>/model/embedding/` with a 256-wide store, so retrieval on a real package could not work.
+ */
+fun RagConfig.toOrt(base: ORTRagConfig = ORTRagConfig()): ORTRagConfig {
     // #27 F7: dynamic indexing is a fail-closed stub in v1.
     if (indexingMode == IndexingMode.DYNAMIC) {
         throw NotImplementedFeatureException("indexingMode=dynamic (v1 supports 'precompute' only)")
     }
     return ORTRagConfig(
-        repoName = embeddingRepoId,
-        onnxName = embeddingModelFile,
-        embeddingDimension = embeddingDimension,
+        repoName = embeddingRepoId ?: base.repoName,
+        onnxName = embeddingModelFile ?: base.onnxName,
+        embeddingDimension = embeddingDimension ?: base.embeddingDimension,
         topK = topK,
         searchType = searchType.wire,
         minScore = minScore,

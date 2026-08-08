@@ -11,6 +11,7 @@ from mobiletransformers.artifacts.handoff_map import (
     HANDOFF_MAP_READER_VERSION,
     HandoffEntry,
     HandoffMap,
+    TrainableTensorCodec,
 )
 from mobiletransformers.artifacts.versioning import SchemaVersionError, check_compat
 from mobiletransformers.config.constants import HandoffMode
@@ -193,3 +194,43 @@ def test_save_load_round_trip(tmp_path: Path) -> None:
     loaded = HandoffMap.load(path)
     assert len(loaded.entries) == 2
     assert loaded.handoff_mode == HandoffMode.EXTERNAL_INITIALIZER
+
+
+class _ArchSpec:
+    """Minimal stand-in for the #6 architecture-registry row (only the rewrite field is read)."""
+
+    def __init__(self, attention_module_name: str = "self_attn") -> None:
+        self.attention_module_name = attention_module_name
+
+
+def test_candidate_seeds_cover_both_attention_spellings():
+    """Two inference exporters name the attention module differently; the seed must accept both.
+
+    The legacy `inference/builder.py` graphs (and the `weight_merger.cpp:904` mirror) use `attn`;
+    the Optimum export that #7 made the front door keeps HF-canonical `self_attn`. Seeding only the
+    rewritten spelling meant no trainable tensor in an Optimum-produced package could ever be matched,
+    so `export_inference_package` failed with "inference/training naming drifted" and no handoff map
+    could be built for the packages the project actually ships.
+    """
+    seeds = TrainableTensorCodec.candidate_inference_names(
+        "backbone.model.layers.0.self_attn.q_proj.base_layer", _ArchSpec()
+    )
+    assert "model.layers.0.attn.q_proj.MatMul" in seeds
+    assert "model.layers.0.self_attn.q_proj.MatMul" in seeds
+
+
+def test_canonical_name_still_returns_the_cpp_mirror_spelling():
+    """`canonical_inference_name` is mirrored in C++, so its result must not change."""
+    assert (
+        TrainableTensorCodec.canonical_inference_name(
+            "backbone.model.layers.0.self_attn.q_proj.base_layer", _ArchSpec()
+        )
+        == "model.layers.0.attn.q_proj.MatMul"
+    )
+
+
+def test_candidate_seeds_are_deduped_when_the_module_is_already_attn():
+    seeds = TrainableTensorCodec.candidate_inference_names(
+        "model.layers.0.attn.q_proj.base_layer", _ArchSpec(attention_module_name="attn")
+    )
+    assert seeds == ("model.layers.0.attn.q_proj.MatMul",)

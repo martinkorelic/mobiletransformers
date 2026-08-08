@@ -6,6 +6,10 @@
 ## Gate
 
 - [ ] CI green: `fast` → `export-smoke` → `android-assemble` (`.github/workflows/ci.yml`).
+      **Note (2026-08-08): the workflows are `workflow_dispatch`-only** — their automatic triggers
+      were removed because they are not in use and the native-dependency provisioning question is
+      unresolved. Run them manually for a release, or restore the `on:` blocks (recorded in a
+      comment at the top of each file) before treating a green badge as a gate.
 - [ ] Parity gate green (`make parity`): enums/schemas match the Kotlin/C++ mirrors.
 - [ ] Lint + typecheck clean (`make lint`, `make typecheck`).
 - [ ] AAR builds + publishes to mavenLocal and an external consumer app builds against it (#30).

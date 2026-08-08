@@ -7,6 +7,20 @@ v1.0.0 onward.
 ## [Unreleased]
 
 ### Added
+- **Repository restructure complete.** All Python now lives in `src/mobiletransformers/`; the seven
+  legacy roots (`trainer/`, `artifact/`, `inference/`, `tools/`, `peft_models/`, `database/`,
+  `evaluation/`) are gone, along with their deprecation shims. The built wheel is self-contained,
+  verified by installing it into a clean venv and importing from outside the checkout.
+- Architecture registry covers every supported model (16 rows): adding one is a data row, not an
+  `elif`. Branch side effects (forced execution provider/precision, `exclude_embeds`, `hidden_act`)
+  are fields on the row.
+- `export/quantizer_compat.py`: resolves ONNX Runtime's weight-only MatMul quantizer across the
+  `MatMul4BitsQuantizer` → `MatMulNBitsQuantizer` rename, so the inference builder works on either.
+- Export-time merge-contract check: every `trainingBaseLayerName` in `weight_handoff_map.json` must
+  name a real checkpoint parameter, or the export fails.
+- Device acceptance suite (13 instrumented tests) covering load→generate, conversation reset,
+  dual-engine parity (first token **and** ordered callback sequence), RAG, ObjectBox ranking, a
+  four-point RSS table per engine, and train→merge→generate.
 - One-command export CLI + Hub package format (manifest-first cache bridge), with `--config` (YAML
   supplying any unset flag, CLI > YAML > default) and `--validate`.
 - Hub pull/install + adapter push-back (Python), background download via WorkManager (Android).
@@ -26,6 +40,22 @@ v1.0.0 onward.
   `COMPATIBILITY_MATRIX.md`.
 
 ### Fixed
+- GenAI never loaded on any package the training stage produced: `genai_config.json` carried a
+  `session_options.config_entries` key that onnxruntime-genai 0.14 rejects outright, taking the whole
+  config with it. The runtime then fell back to Native **silently**, so the dual-engine parity test
+  compared Native with Native and passed. Unsupported keys are now stripped at export, and an
+  explicitly requested engine that cannot load raises instead of substituting another.
+- A generation session that failed to construct was logged and forgotten, leaving `generate` to return
+  nothing with no error. The cause is now retained and re-raised.
+- One shared C++ layer-name normalizer (`cpp/layer_name.h`) replaces nine open-coded prefix rewrites
+  that had produced five device-only merge defects.
+- `make_mlp_unpacked_lora` referenced unbound `q_proj`/`k_proj` instead of the `gate_proj`/`up_proj` it
+  builds — a latent `NameError` on any unpacked-MLP LoRA export.
+- Gemma2/Gemma3 were bound to the generic `GemmaOnnxConfig`; they now bind their own.
+- `emit_merger_models` was missing from its module's `__all__`, so the declared public surface
+  disagreed with the real one.
+- Re-exporting into an existing directory silently corrupted the package: `onnx` *appends* external
+  data, so a second export doubled every trainable tensor and the device rejected the sizes.
 - GenAI was unreachable end to end: the config mapper never set the engine field the runtime factory
   reads, and the repository dispatched on a string that dropped every GenAI config — leaving `generate`
   suspended forever.
@@ -44,6 +74,21 @@ v1.0.0 onward.
 - Package installation is crash-safe (rename-aside → rename-in → delete-old); the previous
   delete-then-rename could destroy an installed model, including local training state.
 - Credentials are read through `config.settings` instead of ad-hoc `os.environ[...]` reads.
+
+### Known issues
+- **On-device training starts from weights that are not the pretrained ones.** The optimizer works —
+  loss falls monotonically — but the initial loss is ~14.3 against a uniform-prediction floor of
+  `ln(49152) = 10.80`, while the *same* package generates coherent text through the inference path.
+  The train stage ships a 2.6 MB graph plus a 176 MB checkpoint (~44M parameters) for a ~135M-parameter
+  model, so most weights are in neither artifact. `TrainConvergenceTest
+  .trainingStartsFromPretrainedWeightsNotRandomOnes` fails on purpose until this is fixed; fine-tuning
+  cannot improve on the base model until it is.
+- **Gate 0.2 (memory-mapped weights) is not met**: mmap covers only the trainable split (~8% of weight
+  bytes) and measured a 6.3% peak-RSS reduction against a 15% target. It is default-off and does not
+  block v1.
+- **arm64-v8a only.** No x86_64 build of ONNX Runtime/tokenizers exists here, so the library does not
+  run on an x86_64 emulator.
+- The project is CC-BY-NC-4.0, which is incompatible with distributing the AAR for commercial use.
 
 ### Non-goals
 - **GPU/NPU training.** Inference may use an accelerated execution provider; training is CPU-only.

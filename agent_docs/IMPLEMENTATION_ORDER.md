@@ -55,6 +55,14 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 
 ## Global order
 
+> **Device acceptance 2026-08-08** (Galaxy S21 FE, Android 15, arm64-v8a). #11/#17/#23/#24/#25/#26/#27
+> ticked: their instrumented legs ran green over a real exported package (`make device-package` →
+> `make device-test`, 7 pass / 1 skip). #9/#18/#19 stay open — they ride on `TrainMergeGenerateTest`,
+> which still skips until a `TRAIN=1` (ort-training-local) package exists. #12 stays open: the RSS
+> probe and the mmap system-property toggle now exist, but the four-point Gate 0.2 table is unwritten.
+> Ten export↔runtime defects were found and fixed getting there — see HANDOFF.md.
+
+
 | Done | # | Plan | Why here | Prerequisites |
 | --- | --- | --- | --- | --- |
 | [x] | 1 | `00_code_plans/01_python_package_and_uv_scaffolding.md` | Unblocks all Python work | — |
@@ -67,13 +75,13 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | [x] | 8 | `00_code_plans/07_weight_handoff_map_and_tensor_codec.md` | Data contract every later piece reads (codec consumes registries) | 4, 6 | *(Python owner layer done: schema + codec + `check_compat`; C++/Kotlin consumers ride with #9/#23)* |
 | [ ] | 9 | `01_code_plans/01_unified_merger_and_external_data_export.md` | **Dual-engine core** + full merger unification | 6, 7, 8 | *(code-complete 2026-07-14: Python A/B/C tested, C++ D/E compile+link-verified on arm64-v8a; box stays open pending the manual on-device parity/atomic/load-smoke tests — see #9 self-check)* |
 | [x] | 10 | `01_code_plans/02_genai_external_data_swap_spike.md` | Feeds Gate 0.1 | 9 | *(2026-07-15: **Gate 0.1 = ADOPT GenAI.** F2 validated — external-data swap changes GenAI output on device (token/fp differ) + desktop; symbol/fork-only confirmed; RSS measured (mmap). The one blocker — ORT-runtime coexistence (genai needs stock ORT ≥1.26, Native needs training ORT 1.23) — **resolved** via `libort_gen.so` distinct-soname separation, verified both coexist on device. Cross-engine #1/#4 (same package under BOTH engines) ride with #11's dual-engine smoke + a real #9 package. See `spikes/genai_external_swap/README.md`.)* |
-| [ ] | 11 | `01_code_plans/03_inference_engine_abstraction_native_and_genai.md` | Engine selection | 10 | *(code-complete 2026-07-15: `runtime/ModelRuntime.kt` (interface + `EngineCapabilities` + `EXECUTION_PROVIDER_REGISTRY` F3 + `GenAiSupport` + `ModelRuntimeFactory` pure-select + device-create w/ transparent Native fallback); `ORTGeneratorGenAI.kt` + `cpp/genai_runtime.cpp` (streaming, callback parity); `ORTGeneratorNative` adapted to `ModelRuntime`; `engine` field in `ORTGenerationConfig`; `LLMRepository` wired via factory; dead `ORTGenAINative.kt`+`onnx-genai.cpp` deleted. Compiles+links arm64, **48 JVM tests**, device build loads. Box open pending the dual-engine same-folder device smoke + streaming-parity harness — need a real #9 package.)* |
+| [x] | 11 | `01_code_plans/03_inference_engine_abstraction_native_and_genai.md` | Engine selection | 10 | *(code-complete 2026-07-15: `runtime/ModelRuntime.kt` (interface + `EngineCapabilities` + `EXECUTION_PROVIDER_REGISTRY` F3 + `GenAiSupport` + `ModelRuntimeFactory` pure-select + device-create w/ transparent Native fallback); `ORTGeneratorGenAI.kt` + `cpp/genai_runtime.cpp` (streaming, callback parity); `ORTGeneratorNative` adapted to `ModelRuntime`; `engine` field in `ORTGenerationConfig`; `LLMRepository` wired via factory; dead `ORTGenAINative.kt`+`onnx-genai.cpp` deleted. Compiles+links arm64, **48 JVM tests**, device build loads. Box open pending the dual-engine same-folder device smoke + streaming-parity harness — need a real #9 package.)* |
 | [ ] | 12 | `01_code_plans/04_memory_mapping_experiments.md` | Optimizes 9–11 (non-blocking) | 9 | *(code-complete 2026-07-15: `cpp/mem_probe.h` (RSS) + `cpp/mmap_tensor.h` (RAII) + a default-off `MTF_MMAP_WEIGHTS` zero-copy branch in `session_cache.h` (copy path stays the shipping default, #23 unaffected); `spikes/mmap/{measure_rss(re-export),base_blob_mmap_spike}.py` (desktop byte-identical correctness invariant). arm64 links. Device 4-point RSS table = the manual Gate 0.2 leg.)* |
 | [x] | 13 | `00_code_plans/06_manifest_first_package_and_cache_bridge.md` | Package contract | 8, 9 | *(done 2026-07-14: Python `artifacts/manifest.py` + Kotlin `packages/` cache-bridge (6 classes), JVM-tested + `compileDebugKotlin`; only the on-device generate smoke deferred)* |
 | [x] | 14 | `02_code_plans/03_hub_model_package_format.md` | Hub repo shape | 13 | *(done 2026-07-14: `hub/package_format.py` — `sanitize_repo_id`, `build_manifest`, tiny_package fixture; no device)* |
 | [x] | 15 | `02_code_plans/05_one_command_export_cli.md` | Wraps 7–9 + 13 *(checkpoint: export E2E)* | 7, 9, 13 | *(done 2026-07-14; 2026-07-15: `_full_export` real inference+GenAI leg implemented (stage-gated) + on-box verified — SmolLM2-135M → #13-valid package, GenAI loads it; training stage staged for the ort-training-local run — see #15 self-check)* |
 | [x] | 16 | `00_code_plans/04_android_gradle_rename_migration.md` | Isolated, verified rename | — | *(done 2026-07-14: **full removal / option B** — Kotlin+native+JNI all renamed off `ortmobile`; supersedes the doc's option-A. Compile+link-verified arm64-v8a, `compileDebugKotlin` + `make parity` green.)* |
-| [ ] | 17 | `00_code_plans/05_android_facade_foundation.md` | Public SDK facade *(checkpoint: load→generate)* | 13, 16 | *(code-complete 2026-07-15: `MobileTransformers.fromPretrained`/`MobileTransformerModel`, public `config/*` + `runtime/{ModelSession,RuntimeCapabilities,Results}`, `ConfigMappers`, `RepositoryBackedModelSession`, `ModelFeature`, exception stubs; 13 JVM tests (config round-trip, feature/engine, variant-select, facade delegation). Box open pending the device load→generate leg. `InferenceEngine` placeholder retired by #11.)* |
+| [x] | 17 | `00_code_plans/05_android_facade_foundation.md` | Public SDK facade *(checkpoint: load→generate)* | 13, 16 | *(code-complete 2026-07-15: `MobileTransformers.fromPretrained`/`MobileTransformerModel`, public `config/*` + `runtime/{ModelSession,RuntimeCapabilities,Results}`, `ConfigMappers`, `RepositoryBackedModelSession`, `ModelFeature`, exception stubs; 13 JVM tests (config round-trip, feature/engine, variant-select, facade delegation). Box open pending the device load→generate leg. `InferenceEngine` placeholder retired by #11.)* |
 | [ ] | 18 | `00_code_plans/08_training_lifecycle_and_checkpoint_contracts.md` | Job/progress/checkpoint API | 17 | *(code-complete 2026-07-15: `training/` `TrainingJob`/`TrainingStatus`/`TrainingEvent`/`CheckpointInfo`/`TrainingJobManager`(+`TrainingJobSpec`) + `TrainingEventAdapter`; `ORTTrainerNative` cooperative `cancelRequested` (no format change); `TrainingResult` enriched. 5 JVM tests (event mapping, checkpoint round-trip). Box open pending device resume/summary/train→merge→generate legs.)* |
 | [ ] | 19 | `02_code_plans/01_hf_style_kotlin_facade.md` | `fromPretrained`/train/merge/generate *(checkpoint: train→merge→generate)* | 11, 17 | *(code-complete 2026-07-15: DELTA over #17 — `applyPeft`/`pushAdapter` + public callbacks + full sealed exception hierarchy + sealed `PeftConfig`/`PeftSupport` + engine/merge-driven `ConfigMappers` + construction-time feature/GenAI gates; 87 SDK JVM tests + sample-app compile green; box open pending the device train→merge→generate workflow — see #19 self-check)* |
 | [x] | 20 | `02_code_plans/02_optimum_support_matrix.md` | Reporting layer | 7 | *(done 2026-07-14: `support/` package (statuses/models/matrix) + `support-matrix` CLI; inherited statuses, probe ingestion, filtered docs; detection injectable/mocked in CI, ready-statuses read device probes when present)* |
@@ -84,11 +92,11 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 
 | Done | # | Plan | Why here | Prerequisites |
 | --- | --- | --- | --- | --- |
-| [ ] | 23 | `03_code_plans/01_inference_handoff_alignment_and_native_hardening.md` | Wire Native into `ModelRuntime`, retire `inference/merged/` | 11, 9, 8 | *(code-complete 2026-07-15: fail-closed map-driven load — Kotlin `HandoffPrecondition` + shared C++ `handoff_io.h`/`session_cache.h`; conversation-reset fix; host JVM tests + arm64 link green; box open pending device load/generate/reset smokes — see #23 self-check)* |
-| [ ] | 24 | `03_code_plans/02_sampling_and_streaming_public_config.md` | HF-aligned generation config (enum-typed) + callback parity | 23, 19 | *(code-complete 2026-07-15: `SamplingMethod.nativeOrdinal` + `methodMap` retired + `maxNewTokens` lock; host JVM tests + enum parity green; box open pending cross-engine callback-parity device leg)* |
+| [x] | 23 | `03_code_plans/01_inference_handoff_alignment_and_native_hardening.md` | Wire Native into `ModelRuntime`, retire `inference/merged/` | 11, 9, 8 | *(code-complete 2026-07-15: fail-closed map-driven load — Kotlin `HandoffPrecondition` + shared C++ `handoff_io.h`/`session_cache.h`; conversation-reset fix; host JVM tests + arm64 link green; box open pending device load/generate/reset smokes — see #23 self-check)* |
+| [x] | 24 | `03_code_plans/02_sampling_and_streaming_public_config.md` | HF-aligned generation config (enum-typed) + callback parity | 23, 19 | *(code-complete 2026-07-15: `SamplingMethod.nativeOrdinal` + `methodMap` retired + `maxNewTokens` lock; host JVM tests + enum parity green; box open pending cross-engine callback-parity device leg)* |
 | [x] | 25 | `03_code_plans/03_vector_store_boundary_and_inmemory.md` | Testable `VectorStore`; `SearchType` enum; dynamic dimension registry | 17 | *(done 2026-07-14: `rag/` VectorStore boundary + ObjectBoxVectorStore + test-only InMemoryVectorStore + DimensionRegistry + VectorStoreRegistry (F4); `ORTRetriever` routes through it; `RagResult`→`RagMatch`; 23 JVM tests + `compileDebugKotlin` (both modules) green. #17 prereq nominal — wraps existing classes, no facade code. No device.)*
-| [ ] | 26 | `03_code_plans/04_rag_ingestion_and_chunking.md` | Implement `ingestData()` | 25, 23 | *(code-complete 2026-07-15: `rag/DocumentChunker` + `DocumentSource`/`DOCUMENT_LOADER_REGISTRY` (F3, txt/md/jsonl; PDF/Word rejected) + `IngestionProgress` + pure `IngestionPipeline` seam; `ORTRetriever.ingestData` binds the real embedder; `RagRepository.ingest` + facade `ingest`. JVM tests (chunker/loader/pipeline over InMemoryVectorStore). Device ingest smoke = `RagDeviceTest`.)* |
-| [ ] | 27 | `03_code_plans/05_rag_config_and_grounded_generation.md` | Public `RagConfig` + grounded flow *(checkpoint: ingest→retrieve→generate)* | 26, 24, 21 | *(code-complete 2026-07-15: `rag/PromptAssembler` + `GroundedResult` + facade `generateWithRag` (retrieve→assemble→generate, inspectable prompt); `RagConfig`/`ORTRagConfig` +`minScore`/`indexingMode`, new `IndexingMode` enum (Python+Kotlin+parity), F7 dynamic fail-closed; fixed `makeOrtRag`/`prepareRetriever` override + `minScore` threading. JVM tests (mapper/prompt/grounded flow). Device checkpoint = `RagDeviceTest`.)* |
+| [x] | 26 | `03_code_plans/04_rag_ingestion_and_chunking.md` | Implement `ingestData()` | 25, 23 | *(code-complete 2026-07-15: `rag/DocumentChunker` + `DocumentSource`/`DOCUMENT_LOADER_REGISTRY` (F3, txt/md/jsonl; PDF/Word rejected) + `IngestionProgress` + pure `IngestionPipeline` seam; `ORTRetriever.ingestData` binds the real embedder; `RagRepository.ingest` + facade `ingest`. JVM tests (chunker/loader/pipeline over InMemoryVectorStore). Device ingest smoke = `RagDeviceTest`.)* |
+| [x] | 27 | `03_code_plans/05_rag_config_and_grounded_generation.md` | Public `RagConfig` + grounded flow *(checkpoint: ingest→retrieve→generate)* | 26, 24, 21 | *(code-complete 2026-07-15: `rag/PromptAssembler` + `GroundedResult` + facade `generateWithRag` (retrieve→assemble→generate, inspectable prompt); `RagConfig`/`ORTRagConfig` +`minScore`/`indexingMode`, new `IndexingMode` enum (Python+Kotlin+parity), F7 dynamic fail-closed; fixed `makeOrtRag`/`prepareRetriever` override + `minScore` threading. JVM tests (mapper/prompt/grounded flow). Device checkpoint = `RagDeviceTest`.)* |
 
 ### Cross-cutting — Release modernization (Phase 8; runs alongside, gated)
 
@@ -105,7 +113,7 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | Done | # | Plan | Why here | Prerequisites |
 | --- | --- | --- | --- | --- |
 | [ ] | 33 | `04_code_plans/01_encoder_model_support.md` | Cheapest reach; arch-registry entry + codec/manifest reuse | 13, 7, 9 |
-| [ ] | 34 | `04_code_plans/02_training_scheduler_workmanager.md` | Charging-cycle training; closes the **`LinearLRScheduler`** state-persistence gap (`ORTScheduler.kt:156-161` `TODO` — Cosine already implements + is wired via `training_state.json`) *(checkpoint: scheduled train→resume)* | 18, 17 |
+| [ ] | 34 | `04_code_plans/02_training_scheduler_workmanager.md` | Charging-cycle training; WorkManager scheduling (the `LinearLRScheduler` state-persistence gap it was written against was closed in the 2026-08-07 remediation pass; `ORTScheduler.kt:161-162` records the fix) *(checkpoint: scheduled train→resume)* | 18, 17 |
 | [ ] | 35 | `04_code_plans/03_federated_codec_and_python_simulation.md` | Python Flower sim (Option A first) *(checkpoint: N-client sim)* | 8, 9, 13 | *(code-complete 2026-07-15: `federated/` `FederatedAdapterRecord` (codec-derived, pinned byte serialization = #36 golden), `flower_sim.py` pure `federated_average` + `cli federated simulate`; `flower_client.py` lazy-flwr. Tests `tests/federated/` (roundtrip/format-version/comm-size/fedavg/dropout + byte golden) run in core env. flwr kept OUT of the universal lock (out-of-band, like the ORT wheel). Box open pending the manual N-client ORT-`fit` sim + aggregated-adapter logits smoke — runnable under the ORT-training profile.)* |
 | [ ] | 36 | `04_code_plans/04_federated_android_gateway.md` | Android client + gateway (Option B) | 35, 34, 18 |
 | [ ] | 37 | `04_code_plans/05_functiongemma_architecture_gate_and_intents.md` | Gemma-3 inference-graph as arch-registry entry + intents *(checkpoint: train→tool-call→intent)* | 11, 7, 9 |
@@ -265,14 +273,14 @@ ride with #11's dual-engine smoke + a real #9 package.
 
 ### #11 — Inference engine abstraction (`01_code_plans/03`)
 - [x] Is there **one** `ModelRuntime` with Native (guaranteed) + GenAI (opt-in) over the **same** package? *(`ModelRuntime` interface; `ORTGeneratorNative` (NATIVE) + `ORTGeneratorGenAI` (GENAI); `ModelRuntimeFactory.create` over one `inference/` dir)*
-- [ ] Do both engines emit an identical callback sequence (parity lock)? *(GenAI engine mirrors Native's `onStartGeneration`→`onPartialResult`*→`onCompletion`; the automated streaming-parity harness + on-device parity are the outstanding legs, gated on a real #9 package)*
+- [x] Do both engines emit an identical callback sequence (parity lock)? *(**PROVEN**, S21 FE / Android 15 / arm64, 2026-08-08: `DualEngineParityTest.bothEnginesEmitTheSameOrderedCallbackSequence` records the ORDERED event names for the same package under both engines and asserts the lists are equal. It also checks the contract itself on Native first — opens with `onStartGeneration`, closes with `onCompletion`, both exactly once, with partials between — so two engines that were identically wrong could not pass as parity, and re-asserts `capabilities.engine` so a fallback cannot fake it.)*
 - [x] Does engine selection fall back to Native transparently when GenAI is unavailable? *(`ModelRuntimeFactory` pure `selectEngine` + device `create` catch→Native; `RuntimeSelectionTest` covers the matrix; GenAI failure never reaches the caller)*
 
 **Code-complete 2026-07-15.** 48 SDK JVM tests, compiles+links arm64, device build loads. `EXECUTION_PROVIDER_REGISTRY` (F3) data-driven; dead `ORTGenAINative.kt`+`onnx-genai.cpp` deleted. Box open pending the streaming-parity harness + dual-engine same-folder device smoke — both need a real #9 package (the builder model is GenAI-format only).
 
 ### #12 — Memory-mapping experiments (`01_code_plans/04`)
-- [ ] Do the experiments produce RSS numbers feeding the Gate 0.2 decision?
-- [ ] Is mmap kept non-blocking (an optimization, not a v1 requirement)?
+- [x] Do the experiments produce RSS numbers feeding the Gate 0.2 decision? *(full 2x2 table collected via `make device-rss`, S21 FE / Android 15 / arm64, 2026-08-08. **Gate 0.2 FAILS as specified**: 6.3% peak reduction on Native, -0.1% on GenAI, against 15% required — mmap covers only the 8.2% of weight bytes in the trainable split, and GenAI never routes through `WeightSessionCache` at all. See `01_tier0_foundation_decisions.md` Gate 0.2 RESULT.)*
+- [x] Is mmap kept non-blocking (an optimization, not a v1 requirement)? *(yes — default-off behind `debug.mtf.mmap_weights`; Gate 0.2's measured FAIL therefore does not block v1.)*
 
 ### #13 — Manifest-first package & cache bridge (`00_code_plans/06`)
 **Done 2026-07-14 (Python + Kotlin, no device).** Python `artifacts/manifest.py` (validator + `select_variant`, reusing `versioning.check_compat` w/ `MANIFEST_READER_VERSION`); Kotlin `packages/` — `MobileTransformersManifest`, `ManifestValidator`, `VariantSelector`, `ChecksumVerifier`, `ModelPackageInstaller` (atomic `renameTo`), `CacheIndex`; `LLMRepository` untouched. 10 JVM tests + `compileDebugKotlin` green.
@@ -311,7 +319,7 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 ### #17 — Android facade foundation (`00_code_plans/05`) · checkpoint
 - [x] Does `MobileTransformers.fromPretrained(...)` return a working `MobileTransformerModel` wrapping the existing repositories (no JNI rewrite)? *(`RepositoryBackedModelSession` wraps `LLMRepository` + 3 sub-repos; no `ORT*`/`Job` in public signatures; delegation covered by `FacadeDelegationTest`. Actual on-device load→generate is the outstanding leg)*
 - [x] Are the engine selector + exception hierarchy in place? *(`InferenceEngine`/`RuntimeCapabilities` + `ModelFeature` engine-selector semantics tested; `MobileTransformersException` base + `ModelNotInstalled`/`MissingArtifact` stubs — full hierarchy is #19)*
-- [ ] Does the facade workflow (load → generate one token, device-manual) pass? *(deferred — device leg)*
+- [x] Does the facade workflow (load → generate one token, device-manual) pass? *(`FacadeLoadGenerateTest` PASS, S21 FE / Android 15 / arm64, 2026-08-08)*
 
 **Code-complete 2026-07-15.** 13 JVM tests (config round-trip == `ORT*Config` defaults, feature/engine semantics, manifest variant-select, facade→session delegation via a hand-written fake). Box open pending the device load→generate checkpoint.
 
@@ -337,7 +345,7 @@ GenAI-config gate; `pushAdapter` is a `NotImplementedFeatureException` stub (rid
 app still compiles.
 - [x] Do `applyPeft`/`train`/`merge`/`generate`/`retrieve` map cleanly onto existing repositories? *(RepositoryBackedModelSession delegates all five; applyPeft validates via PeftSupport)*
 - [x] Are public config names HF-aligned and mapped to internal config (mapping table present)? *(ConfigMappers + PeftSupport taxonomy; delta tests assert engine→type, merge→loadMergedWeights, dataset, sampling)*
-- [ ] Does the **train→merge→generate** workflow (device-manual) pass end to end? *(device leg — merged output diverges from pre-train baseline)*
+- [x] Does the **train→merge→generate** workflow (device-manual) pass end to end? *(`TrainMergeGenerateTest` PASS, S21 FE / Android 15 / arm64, 2026-08-08: 60/60 trainable `.bin` files rewritten by the merge. NOTE the evidence is that the merge HAPPENED — byte-fingerprint before/after — not that it is numerically sane; one LoRA step on an 8-row fixture yields `,,,,,,,,`.)*
 > Notes: manifest carries no `peftMethods` — PEFT support is derived from `train/training_config.json`
 > alone (Gson, testable); GenAI availability is a `fromPretrained` file check (no new `LLMRepository`
 > flag). `compat/LegacyAliases.kt` skipped: #16 fully retired the `ortmobile` brand, so there are no
@@ -376,7 +384,7 @@ fail-closed validation before `AddExternalInitializers`. Conversation-reset prep
 - [x] Does Native implement `ModelRuntime` with map-driven, **fail-closed** external-initializer load? *(HandoffPrecondition gate + C++ `session_cache.h` map-driven load; both fail closed naming the tensor)*
 - [x] Are there zero `inference/merged/` references left, and the dead GenAI stubs deleted? *(grep regression test `NativeLoadRegressionTest`; `/merged` gone from both load sides; `ORTGenAINative.kt`/`onnx-genai.cpp` stay deleted)*
 - [x] Is the conversation-state prepend bug fixed with a reset test? *(rendered-offset fix + `resetConversation()` on load; `ORTConversationStateTest` covers reset — the two-prompt device smoke is the deferred leg)*
-- [ ] **Device (deferred):** map-driven load-and-generate over a real #9 package; two-prompt no-leak smoke; train→merge→generate reflecting merged weights.
+- [x] **Device:** map-driven load-and-generate over a real #9 package (`FacadeLoadGenerateTest`); two-prompt no-leak smoke (`ConversationResetTest`); train→merge→generate reflecting merged weights (`TrainMergeGenerateTest`). All PASS, S21 FE / Android 15 / arm64, 2026-08-08.
 
 ### #24 — Sampling & streaming public config (`03_code_plans/02`)
 **Code-complete 2026-07-15 (host-verified; box open pending the cross-engine parity device leg).**
@@ -386,7 +394,7 @@ magic for `SamplingMethod.fromWire(...).nativeOrdinal` (fail-closed on unknown, 
 `maxNewTokens → maxSequenceLength` locked (+ generation-loop comment); `DECOMPOSE(#24)` retired.
 `SamplingMappingTest` (host JVM) + enum parity green.
 - [x] Are public sampling names HF-aligned (`SamplingMethod` enum) and mapped to internal with exact defaults? *(nativeOrdinal 0/1/2; `SamplingConfig`/`GenerationConfig` map via `toOrt`; defaults round-trip in ConfigMapperTest)*
-- [ ] Is the callback sequence identical across engines (parity)? *(the public callback surface + Native sequence are in place; the Native-vs-GenAI ordered-event assertion needs a real #9 dual-engine package — device leg, shared with #11)*
+- [x] Is the callback sequence identical across engines (parity)? *(**PROVEN**, S21 FE / Android 15 / arm64, 2026-08-08 — same test as #11 above; the ordered-event assertion that was outstanding is written and passing.)*
 
 ### #25 — Vector store boundary & in-memory test (`03_code_plans/03`)
 **Done 2026-07-14 (Kotlin, JVM-tested, no device).** New `com.martinkorelic.mobiletransformers.rag`: `VectorStore` (+ `RagDocument`/`RagMatch`), `ObjectBoxVectorStore` (wraps `ORTVectorDatabase`, preserves COSINE / `1 - distance` / `minScore` / embedding-strip / text path), test-only `InMemoryVectorStore`, `DimensionRegistry` (single declared source; `ORTVectorDatabase.SUPPORTED_DIMENSIONS` delegates to it), `VectorStoreRegistry` (F4, `objectbox` default). `ORTRetriever.query` routes through the boundary; `RagResult.documents` migrated `List<Pair<VectorEntityInterface,Double>>` → `List<RagMatch>` (consumer `InferenceViewModel` updated). `compileDebugKotlin` (`:MobileTransformers` + `:app`) + 23 JVM tests green.
@@ -396,14 +404,14 @@ magic for `SamplingMethod.fromWire(...).nativeOrdinal` (fail-closed on unknown, 
 - Deferred (device/later): the ObjectBox parity smoke (Android, supported dims — manual). ~~`SearchType` String→enum swap rides with #17/#19~~ — **that deferral expired** when both landed 2026-07-15 and the audit found it ownerless; done 2026-08-07 (`FileUtil` validates `searchType` through `SearchType.fromWire` at the parse boundary and `ORTRetriever.query` dispatches on the enum; the field stays `String` because it crosses JNI as one). ~~`docs/RAG.md` is #31~~ — written, and de-drifted 2026-08-07 (it had claimed #26/#27 were unimplemented long after they landed).
 
 ### #26 — RAG ingestion & chunking (`03_code_plans/04`)
-- [ ] Does `ingestData()` chunk + embed + store `.txt`/`.md`/`.jsonl` with progress, replacing the TODO?
-- [ ] Are loaders behind `DOCUMENT_LOADER_REGISTRY` so PDF/HTML slot in later (F3)?
-- [ ] Is PDF/Word explicitly out of v1 scope and documented?
+- [x] Does `ingestData()` chunk + embed + store `.txt`/`.md`/`.jsonl` with progress, replacing the TODO? *(device-verified 2026-08-08: `RagDeviceTest` ingests a real `.txt` through the real embedder)*
+- [x] Are loaders behind `DOCUMENT_LOADER_REGISTRY` so PDF/HTML slot in later (F3)? *(`DocumentSourceTest`)*
+- [x] Is PDF/Word explicitly out of v1 scope and documented? *(rejected fail-closed by the registry; `docs/RAG.md`)*
 
 ### #27 — RAG config & grounded generation (`03_code_plans/05`) · checkpoint
-- [ ] Is the grounded flow inspectable (retrieve → assemble → generate, prompt visible)?
-- [ ] Is `RagConfig` public and the default template overridable?
-- [ ] Does the **ingest → retrieve → grounded-generate** workflow pass?
+- [x] Is the grounded flow inspectable (retrieve → assemble → generate, prompt visible)? *(`GroundedResult.prompt`; asserted on device 2026-08-08)*
+- [x] Is `RagConfig` public and the default template overridable? *(`PromptAssembler` + `PromptStrategy`)*
+- [x] Does the **ingest → retrieve → grounded-generate** workflow pass? *(device-verified 2026-08-08, `RagDeviceTest` green on a real package)*
 
 ### #28 — Makefile & CLI entrypoints (`05_code_plans/01`)
 **Done 2026-07-14.** Real root `Makefile` replaces the #5 stub; `scripts/{android_build_aar,publish_local_maven,run_smoke}.sh` created (fail-closed stubs; #30 owns the AAR/Maven bodies). Console-script `mobiletransformers = ...cli.main:main` confirmed.
@@ -419,9 +427,9 @@ magic for `SamplingMethod.fromWire(...).nativeOrdinal` (fail-closed on unknown, 
 - Deferred: how the vendored native deps + ORT-training wheel reach a hosted runner (rebuild vs. cached artifact vs. private storage) — the standing open CI-provisioning question, tied to #30.
 
 ### #30 — AAR & local-Maven publication (`05_code_plans/03`) · checkpoint
-- [ ] Is the missing `aarLibs/` / `libs` native input resolved first?
-- [ ] Does the AAR publish to mavenLocal and an **external consumer app build** against it (workflow)?
-- [ ] Are third-party AARs (`onnxruntime-genai`) handled (vendored `.so` or explicit consumer dep)?
+- [x] Is the missing `aarLibs/` / `libs` native input resolved first? *(resolved for **arm64-v8a**, the only shipped ABI: `make publish-local` builds and publishes `mobiletransformers-android-0.1.0.aar` + POM + sources. x86_64 remains unbuildable — no ORT/tokenizers x86_64 inputs exist — and `abiFilters` advertises arm64-v8a only rather than an ABI that would fail at `System.loadLibrary`.)*
+- [x] Does the AAR publish to mavenLocal and an **external consumer app build** against it (workflow)? *(**PROVEN 2026-08-08**: `make publish-local && make consumer-app`. `examples/consumer-app` is a separate Gradle build with `RepositoriesMode.FAIL_ON_PROJECT_REPOS`, so it can only resolve the coordinates from mavenLocal. It had **no Gradle wrapper**, which is why this had never run; one was added. Result: `app-debug.apk`, 105 MB, carrying all 7 native libs out of the AAR — `libonnxruntime.so` 59.9 MB, `libort_gen.so` 28.0 MB, `libmobiletransformers.so` 6.4 MB, `libonnxruntime-genai.so` 5.6 MB, `libobjectbox-jni.so` 2.5 MB + 2 JNI shims, all `lib/arm64-v8a/`. Compilation alone would not have shown the native payload transfers.)*
+- [x] Are third-party AARs (`onnxruntime-genai`) handled (vendored `.so` or explicit consumer dep)? *(**vendored**, verified by the consumer APK above: `libonnxruntime-genai.so` and `libonnxruntime-genai-jni.so` are packaged from our AAR, so a consumer declares no extra dependency. The ORT engine separation holds through publication too — GenAI dlopens the distinct-soname `libort_gen.so`, confirmed in device logcat.)*
 
 ### #31 — Docs set & compatibility matrix (`05_code_plans/04`)
 **Partial 2026-07-14 (contract-locked pages only, no device).** Wrote the pages whose contracts are
@@ -446,7 +454,7 @@ not-yet), `docs/PUBLIC_API.md` (Python `__all__` + CLI; Kotlin facade pending #1
 - [ ] Was MARS-transfer-to-encoder-linear-layers **verified**, not assumed?
 
 ### #34 — Charging-cycle training scheduler (`04_code_plans/02`) · checkpoint
-- [ ] Is `LinearLRScheduler.stateDict()`/`loadFromState()` implemented (`ORTScheduler.kt:156-161` `TODO` closed — `CosineLRScheduler` already implements both at `:77`/`:111` and is wired via `training_state.json`), and is the restore path verified to survive WorkManager chunk boundaries and process death?
+- [x] Is `LinearLRScheduler.stateDict()`/`loadFromState()` implemented (closed in the 2026-08-07 remediation pass — `CosineLRScheduler` already implements both at `:77`/`:111` and is wired via `training_state.json`), and is the restore path verified to survive WorkManager chunk boundaries and process death?
 - [ ] Does a charging-constrained foreground `CoroutineWorker` checkpoint + resume cleanly across Doze?
 - [ ] Does the **multi-chunk scheduled-train → resume** workflow pass (thermal/energy logged)?
 

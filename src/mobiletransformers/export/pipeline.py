@@ -411,6 +411,10 @@ def _build_inference_stage(
     # Tokenizer stage (copied — the GenAI dir also needs tokenizer.json beside model.onnx/genai_config).
     _populate_tokenizer_stage(plan, result, inf, tok, token=token, log=log)
 
+    # The Native engine reads its KV-cache geometry from the graph's own metadata, so this is required,
+    # not best-effort — see _stamp_runtime_metadata.
+    _stamp_runtime_metadata(plan, inf / "model.onnx", result, token=token)
+
     # Best-effort GenAI config so both engines read one dir; dropped from features if it can't be emitted.
     if "genai" in plan.supported_engines:
         try:
@@ -476,9 +480,29 @@ def _populate_tokenizer_stage(
     from mobiletransformers.export.tokenizer_export import export_tokenizer_config
 
     try:
-        export_tokenizer_config(plan.model_id, output_dir=str(tok), hf_token=token)
-    except Exception as exc:  # noqa: BLE001 - a model-specific tokenizer quirk should not kill the export
-        log.warning("mobiletransformers_tokenizer_config.json not emitted: %s", exc)
+        # export_tokenizer_config appends its own `tokenizer/` under output_dir, so it takes the stage's
+        # PARENT. Passing `tok` nested it one level deeper (`tokenizer/tokenizer/…`), which duplicated
+        # every tokenizer file into the package and — because this is the only file carrying
+        # `model.vocab_size` — left `ORTTokenizerNative.vocabSize` at 0 on device, aborting generation in
+        # `greedySampling`'s `vocab_size > 0` assert.
+        export_tokenizer_config(plan.model_id, output_dir=str(tok.parent), hf_token=token)
+    except Exception as exc:
+        from mobiletransformers.exceptions import ExportError
+
+        raise ExportError(
+            f"mobiletransformers_tokenizer_config.json could not be emitted for {plan.model_id!r}: {exc}"
+        ) from exc
+
+    # Required, not best-effort: the Native tokenizer reads vocab_size / special-token ids only from
+    # this file. Its absence is not a degraded package — generation aborts on device in
+    # `greedySampling`'s `vocab_size > 0` assert, long after the export reported success.
+    emitted = tok / "mobiletransformers_tokenizer_config.json"
+    if not emitted.is_file():
+        from mobiletransformers.exceptions import ExportError
+
+        raise ExportError(
+            f"expected {emitted} after tokenizer export; the Native engine cannot load a package without it."
+        )
 
 
 def _emit_chat_template(plan: ExportPlan, tok: Path, *, token: str | None, log: Any) -> None:
@@ -497,6 +521,73 @@ def _emit_chat_template(plan: ExportPlan, tok: Path, *, token: str | None, log: 
     (tok / "chat_template.jinja").write_text(template, encoding="utf-8")
 
 
+#: ONNX custom-metadata keys the Android Native engine reads to size its KV cache
+#: (`session_cache.h::loadModelMetadata`). Names are the contract; do not rename one side only.
+RUNTIME_METADATA_KEYS = ("head_dim", "num_kv_heads", "num_layers")
+
+
+def _model_dims(plan: ExportPlan, result: Any, *, token: str | None) -> dict[str, int]:
+    """Decoder geometry from the HF config, with the same fallbacks both consumers need.
+
+    Single source for `genai_config.json` and the graph metadata, so the two can never disagree about
+    how many layers or KV heads the exported model has.
+    """
+    from transformers import AutoConfig
+
+    cfg = AutoConfig.from_pretrained(
+        plan.model_id, token=token, trust_remote_code=getattr(result, "trust_remote_code", False)
+    )
+
+    def _attr(*names: str, default: Any = None) -> Any:
+        for n in names:
+            if getattr(cfg, n, None) is not None:
+                return getattr(cfg, n)
+        return default
+
+    hidden = _attr("hidden_size", default=0)
+    heads = _attr("num_attention_heads", default=0)
+    return {
+        "hidden_size": hidden,
+        "num_attention_heads": heads,
+        "num_kv_heads": _attr("num_key_value_heads", "num_attention_heads", default=heads),
+        "head_dim": _attr("head_dim", default=(hidden // heads if heads else 0)),
+        "context_length": _attr("max_position_embeddings", "n_positions", default=2048),
+        "num_layers": _attr("num_hidden_layers", "n_layer", default=result.kv_layers),
+        "vocab_size": _attr("vocab_size", default=0),
+        "bos_token_id": _attr("bos_token_id", default=1),
+        "eos_token_id": _attr("eos_token_id", default=2),
+        "pad_token_id": _attr("pad_token_id", "eos_token_id", default=0),
+        "model_type": _attr("model_type", default=result.model_type or ""),
+    }
+
+
+def _stamp_runtime_metadata(plan: ExportPlan, model_path: Path, result: Any, *, token: str | None) -> None:
+    """Write the KV-cache geometry into the graph's `metadata_props`.
+
+    The Android Native engine sizes its KV cache purely from these three keys
+    (`session_cache.h::loadModelMetadata` -> `initializeKVCache`). The legacy `inference/builder.py`
+    graphs carried them; an Optimum-exported graph does not. Without them `num_layers` stays 0, no past
+    key/value tensors are created, and `generateWithKVCache` then hands ORT 3 input values while
+    declaring the graph's full input count — an out-of-bounds read that **segfaults on device**. Nothing
+    host-side could see it: the manifest validates, both engines load, and only a real generate crashes.
+
+    Cheap: the model is loaded with `load_external_data=False`, so only the graph proto is rewritten and
+    the `model.onnx_data` blob beside it is untouched.
+    """
+    import onnx
+
+    dims = _model_dims(plan, result, token=token)
+    model = onnx.load(str(model_path), load_external_data=False)
+    existing = {p.key for p in model.metadata_props}
+    for key in RUNTIME_METADATA_KEYS:
+        if key in existing:
+            continue
+        entry = model.metadata_props.add()
+        entry.key = key
+        entry.value = str(dims[key])
+    onnx.save(model, str(model_path))
+
+
 def _emit_genai_config(plan: ExportPlan, inference_dir: Path, result: Any, *, token: str | None) -> None:
     """Emit ``genai_config.json`` into ``inference_dir`` describing the exported ``model.onnx`` so the
     GenAI engine loads the SAME graph the Native engine does.
@@ -509,31 +600,22 @@ def _emit_genai_config(plan: ExportPlan, inference_dir: Path, result: Any, *, to
     """
     import json
 
-    from transformers import AutoConfig
-
-    cfg = AutoConfig.from_pretrained(plan.model_id, token=token, trust_remote_code=result.trust_remote_code)
-
-    def _attr(*names: str, default: Any = None) -> Any:
-        for n in names:
-            if getattr(cfg, n, None) is not None:
-                return getattr(cfg, n)
-        return default
-
-    hidden = _attr("hidden_size", default=0)
-    heads = _attr("num_attention_heads", default=0)
-    kv_heads = _attr("num_key_value_heads", "num_attention_heads", default=heads)
-    head_size = _attr("head_dim", default=(hidden // heads if heads else 0))
-    context = _attr("max_position_embeddings", "n_positions", default=2048)
-    layers = _attr("num_hidden_layers", "n_layer", default=result.kv_layers)
+    dims = _model_dims(plan, result, token=token)
+    hidden = dims["hidden_size"]
+    heads = dims["num_attention_heads"]
+    kv_heads = dims["num_kv_heads"]
+    head_size = dims["head_dim"]
+    context = dims["context_length"]
+    layers = dims["num_layers"]
 
     genai = {
         "model": {
-            "bos_token_id": _attr("bos_token_id", default=1),
-            "eos_token_id": _attr("eos_token_id", default=2),
-            "pad_token_id": _attr("pad_token_id", "eos_token_id", default=0),
+            "bos_token_id": dims["bos_token_id"],
+            "eos_token_id": dims["eos_token_id"],
+            "pad_token_id": dims["pad_token_id"],
             "context_length": context,
-            "type": _attr("model_type", default=result.model_type or ""),
-            "vocab_size": _attr("vocab_size", default=0),
+            "type": dims["model_type"],
+            "vocab_size": dims["vocab_size"],
             "decoder": {
                 "session_options": {"provider_options": []},
                 "filename": "model.onnx",
@@ -659,6 +741,23 @@ def _build_training_stage(
         quant_out=quantized,
     )
 
+    # 3b) Prove the two halves of the merge contract agree BEFORE the package ships.
+    #
+    # The handoff map records a `trainingBaseLayerName` per entry; the device merger turns each into a
+    # checkpoint lookup. Nothing verified those lookups could succeed, so three separate name-shape
+    # defects each survived export, push and install, and only surfaced as a merge that wrote nothing.
+    # This is the cheap host-side check that would have caught all three (see checkpoint_names.py).
+    from mobiletransformers.artifacts.checkpoint_names import verify_handoff_names_resolve
+
+    checkpoint_path = train_stage / "checkpoint"
+    if checkpoint_path.exists():
+        verify_handoff_names_resolve(inference_dir / "weight_handoff_map.json", checkpoint_path)
+    else:
+        log.warning(
+            "no checkpoint at %s — skipping the handoff-name check; the merge contract is UNVERIFIED",
+            checkpoint_path,
+        )
+
     # #15 DoD: name the trainable tensors in the package itself. The count alone (in the manifest)
     # says how many; this says WHICH, so an adapter push or a federated round can be checked against
     # the package without re-deriving the PEFT mapping.
@@ -685,13 +784,148 @@ def _build_training_stage(
     )
 
 
+#: Default RAG encoder for ``--include-rag`` without ``--embedding-model``. 384-dim (in
+#: ``DimensionRegistry.SUPPORTED_DIMENSIONS``) and small enough to ship beside the decoder.
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+#: Dimensions the on-device vector store can index. Mirrors the Kotlin `DimensionRegistry`
+#: (`rag/VectorStoreRegistry.kt`) — a package whose encoder emits anything else cannot be indexed,
+#: so the export fails closed rather than shipping an unusable `embedding/` subtree.
+SUPPORTED_EMBEDDING_DIMENSIONS = (64, 128, 256, 384, 512, 768, 1024, 1536)
+
+#: On-device embedding graph filename. `ORTRetriever.createEmbeddingModel` resolves
+#: `<embedding>/<ORTRagConfig.onnxName>`, appending `.onnx` when absent — so the config records the
+#: stem and this is the file it resolves to.
+EMBEDDING_MODEL_STEM = "embedding_model"
+
+#: Tokenizer files `ORTTokenizerNative` reads from `embedding/tokenizer/`.
+_EMBEDDING_TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json")
+
+
+def _pooled_embedding_dimension(pooling_config: dict[str, Any]) -> int:
+    """The dimension the pooled graph actually emits.
+
+    sentence-transformers concatenates every enabled pooling mode, so the output width is the word
+    embedding dimension times the number of active modes — not the word dimension itself.
+    """
+    word_dim = pooling_config.get("word_embedding_dimension")
+    if not isinstance(word_dim, int) or word_dim <= 0:
+        raise ConfigValidationError(
+            f"pooling config declares no usable word_embedding_dimension: {pooling_config!r}"
+        )
+    modes = (
+        "pooling_mode_cls_token",
+        "pooling_mode_mean_tokens",
+        "pooling_mode_max_tokens",
+        "pooling_mode_mean_sqrt_len_tokens",
+    )
+    active = sum(1 for m in modes if pooling_config.get(m, False))
+    return word_dim * active if active else word_dim
+
+
 def _build_embedding_stage(
     plan: ExportPlan, dest: Path, *, token: str | None, embedding_model: str | None
 ) -> StageOutput:
-    """Embedding stage seam (RAG). Body rides with #26/#27; selected-but-unwired fails closed."""
-    from mobiletransformers.exceptions import ExportError
+    """Real embedding/RAG stage (``export`` profile): the encoder subtree ``ORTRetriever`` loads.
 
-    raise ExportError("embedding stage is staged for the RAG phase (#26/#27)")
+    Exports the sentence-transformer encoder through the same optimum front door the inference stage
+    uses (task ``feature-extraction``), grafts the model's declared sentence-transformers pooling onto
+    the graph — the device does no pooling, so an unpooled encoder would hand the vector store a
+    ``[batch, seq, dim]`` tensor it cannot index — and lays the subtree out exactly as
+    ``ORTRetriever.createEmbeddingModel`` reads it::
+
+        embedding/
+          embedding_model.onnx      # pooled: [batch, seq] -> [batch, dim]
+          rag_config.json           # repoName / onnxName / embeddingDimension + retrieval defaults
+          tokenizer/                # tokenizer.json + config + special tokens map
+
+    Fails closed when the pooled dimension is not one the Kotlin ``DimensionRegistry`` can index: a
+    package whose vectors cannot enter the store is worse than one with no RAG subtree at all, because
+    the failure would only surface on device at first ingest.
+    """
+    import shutil
+
+    from mobiletransformers.exceptions import ExportError
+    from mobiletransformers.export.embedding_export import (
+        add_pooling_to_onnx_model,
+        load_pooling_config_from_hub,
+    )
+    from mobiletransformers.export.inference_export import export_inference
+    from mobiletransformers.hub.package_format import sanitize_repo_id
+    from mobiletransformers.utils.logging import get_logger
+
+    log = get_logger(__name__)
+    emb_id = embedding_model or DEFAULT_EMBEDDING_MODEL
+    dest = Path(dest)
+    raw = dest / "raw"
+    emb = dest / "embedding"
+    tok = emb / "tokenizer"
+    emb.mkdir(parents=True, exist_ok=True)
+    tok.mkdir(parents=True, exist_ok=True)
+
+    log.info("embedding stage: exporting encoder %s (feature-extraction)", emb_id)
+    result = export_inference(emb_id, raw, task="feature-extraction", token=token)
+
+    # Pooling is model-declared (modules.json / 1_Pooling/config.json), never guessed.
+    pooling_config = load_pooling_config_from_hub(emb_id)
+    if not pooling_config:
+        raise ExportError(
+            f"{emb_id!r} declares no sentence-transformers pooling config; the on-device retriever "
+            "cannot pool token embeddings itself. Pass --embedding-model with a sentence-transformers "
+            "encoder."
+        )
+    dimension = _pooled_embedding_dimension(pooling_config)
+    if dimension not in SUPPORTED_EMBEDDING_DIMENSIONS:
+        raise ExportError(
+            f"{emb_id!r} pools to {dimension} dimensions, which the on-device vector store cannot "
+            f"index (supported: {list(SUPPORTED_EMBEDDING_DIMENSIONS)})."
+        )
+
+    import onnx
+
+    # Self-contained: load external data back in and save one file, so `embedding/` is a single graph
+    # the ORT embedding session opens by name (no sidecar blob to keep in step).
+    graph = onnx.load(str(result.onnx_model), load_external_data=True)
+    add_pooling_to_onnx_model(graph, emb_id, str(emb / f"{EMBEDDING_MODEL_STEM}.onnx"))
+
+    for name in _EMBEDDING_TOKENIZER_FILES:
+        src = raw / name
+        if src.is_file():
+            shutil.copy2(src, tok / name)
+    missing = [n for n in ("tokenizer.json",) if not (tok / n).is_file()]
+    if missing:
+        raise ExportError(
+            f"encoder export produced no {missing} for {emb_id!r} (needed by the device tokenizer)"
+        )
+
+    # repoName must match the on-device package directory (the sanitized BASE model id) — the retriever
+    # resolves `<cacheDir>/<repoName>/embedding/`, not the encoder's own id.
+    _write_json(
+        emb / "rag_config.json",
+        {
+            "repoName": sanitize_repo_id(plan.model_id),
+            "onnxName": EMBEDDING_MODEL_STEM,
+            "embeddingDimension": dimension,
+            "embeddingModelId": emb_id,
+            "topK": 10,
+            "searchType": "semantic",
+            "minScore": 0.0,
+            "indexingMode": "precompute",
+            "maxTextLength": 1024,
+            "chunkSize": 512,
+            "chunkOverlap": 50,
+        },
+    )
+
+    report = {
+        "embeddingModel": emb_id,
+        "embeddingDimension": dimension,
+        "embeddingOptimumOnnxVersion": result.optimum_onnx_version,
+    }
+    return StageOutput(
+        stage_dirs={"embedding": emb},
+        report={k: v for k, v in report.items() if v is not None},
+    )
 
 
 def _full_export(

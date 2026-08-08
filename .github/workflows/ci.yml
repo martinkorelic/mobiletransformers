@@ -20,11 +20,23 @@
 
 name: ci
 
+# DISABLED (2026-08-08): automatic triggers removed — these workflows are not in use yet, and the
+# native-dependency provisioning question they depend on is unresolved, so every run either self-skips
+# or fails for reasons unrelated to the change under test. A red badge nobody acts on is worse than no
+# badge: it trains everyone to ignore CI.
+#
+# They remain fully intact and MANUALLY runnable (Actions -> select workflow -> "Run workflow").
+# To re-enable, restore the original `on:` block recorded directly below.
+#
+# ORIGINAL:
+#   on:
+#     push:
+#       branches: [main, restructure]
+#       tags: ['v*']
+#     pull_request: {}
+
 on:
-  push:
-    branches: [main, restructure]
-    tags: ['v*']
-  pull_request: {}
+  workflow_dispatch: {}
 
 jobs:
   fast:

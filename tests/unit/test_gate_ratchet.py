@@ -81,13 +81,20 @@ def test_mypy_ratchet_overrides_name_existing_modules() -> None:
 
 
 def test_dispatch_allowlist_is_tracked_not_forgotten() -> None:
-    """Cross-check: the #6 allow-list must name real files and carry a stated owner."""
+    """Cross-check: the #6 allow-list must name real files and carry a stated owner *while it has debt*.
+
+    The owner requirement is conditional on the allow-list being non-empty. It is empty now — #6 closed
+    when `inference/builder.py`'s 14-branch ladder became registry rows — and demanding an owner for
+    debt that no longer exists would force a fake entry to keep the gate green.
+    """
     from tests.unit.test_guards import DISPATCH_ALLOWLIST
 
-    guards = (REPO_ROOT / "tests" / "unit" / "test_guards.py").read_text(encoding="utf-8")
-    assert "Owner:" in guards, "DISPATCH_ALLOWLIST must record who owns the remaining debt"
     for path in DISPATCH_ALLOWLIST:
         assert (REPO_ROOT / path).is_file(), f"DISPATCH_ALLOWLIST names a missing file: {path}"
+
+    if DISPATCH_ALLOWLIST:
+        guards = (REPO_ROOT / "tests" / "unit" / "test_guards.py").read_text(encoding="utf-8")
+        assert "Owner:" in guards, "DISPATCH_ALLOWLIST must record who owns the remaining debt"
 
 
 def test_legacy_import_allowlist_is_tracked() -> None:

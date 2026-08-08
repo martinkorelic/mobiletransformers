@@ -3,6 +3,7 @@ package com.martinkorelic.mobiletransformers.repository
 import android.content.Context
 import android.util.Log
 import com.martinkorelic.mobiletransformers.InferenceProgress
+import com.martinkorelic.mobiletransformers.MobileTransformersException
 import com.martinkorelic.mobiletransformers.ORTGenAITokenizer
 import com.martinkorelic.mobiletransformers.ORTGenerationConfig
 import com.martinkorelic.mobiletransformers.ORTRagArguments
@@ -152,6 +153,21 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
     // Inference capabilities (#11): the selected engine (Native floor or GenAI) behind ModelRuntime.
     var modelRuntime : ModelRuntime? = null
 
+    /**
+     * Why the last [prepareGeneration] failed, so the failure survives to the caller.
+     *
+     * `prepareGeneration` runs inside a `launch` and cannot throw at its caller, so it used to catch,
+     * log, and then set `llmState = ReadyGenerate` with [modelRuntime] still null. `runGenerationStream`
+     * would log "Model has not been initialized" and return — a generate() that produces nothing and
+     * reports no error. The real reason (a rejected genai_config, a missing artifact) only existed in
+     * logcat.
+     *
+     * Retained here and re-raised when work is actually requested, so the cause reaches the caller.
+     */
+    @Volatile
+    var lastGenerationSessionFailure : Throwable? = null
+        private set
+
     // Retriever capabilities
     var ortRetriever : ORTRetriever? = null
 
@@ -198,6 +214,21 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         }
     }
 
+    /**
+     * The inference graph filename actually present in [inferenceDir].
+     *
+     * `model.onnx` is what the exporter's normalization step always writes (and what the manifest
+     * records), so it is preferred; a single other `.onnx` is accepted for hand-assembled packages.
+     * Falls back to `model.onnx` so the failure, if any, names a real file rather than `.onnx`.
+     */
+    private fun resolveInferenceGraphName(inferenceDir: String): String {
+        val dir = File(inferenceDir)
+        val canonical = File(dir, "model.onnx")
+        if (canonical.isFile) return canonical.name
+        val candidates = dir.listFiles { f: File -> f.isFile && f.name.endsWith(".onnx") }.orEmpty()
+        return candidates.singleOrNull()?.name ?: "model.onnx"
+    }
+
     private fun updatePaths() {
         tokenizerConfigPath = "$cacheDir/$_modelName/tokenizer"
         trainingConfigPath = "$cacheDir/$_modelName/train/training_config.json"
@@ -206,7 +237,9 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
 
         // Check if training config exists before parsing
         if (File(trainingConfigPath).exists()) {
-            trainingConfig = parseTrainingArguments(trainingConfigPath)
+            // Installed directory name is authoritative, as for the generation/RAG configs: the
+            // trainer resolves its dataset under `<cacheDir>/<repoName>/train/`.
+            trainingConfig = parseTrainingArguments(trainingConfigPath).copy(repoName = _modelName)
             Log.d(LOG_TAG, "Training config loaded from: $trainingConfigPath")
             isTrainingAvailable = true
         } else {
@@ -216,7 +249,14 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
 
         // Check if generation config exists before parsing
         if (File(generationConfigPath).exists()) {
-            generationConfig = parseGenerationArguments(generationConfigPath)
+            // The installed package is authoritative for model *identity*. `generation_config.json` is
+            // the model's own HF generation config and carries no `repoName`/`onnxName`, so the parser
+            // fell back to "model" and ".onnx" — the session then tried to open
+            // `<cacheDir>/model/inference/.onnx`, which cannot exist. Pin both to what is on disk.
+            generationConfig = parseGenerationArguments(generationConfigPath).copy(
+                repoName = _modelName,
+                onnxName = resolveInferenceGraphName("$cacheDir/$_modelName/inference"),
+            )
             Log.d(LOG_TAG, "Generation config loaded from: $generationConfigPath")
             isGenerationAvailable = true
         } else {
@@ -226,7 +266,10 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
 
         // Check if embedding config exists before parsing
         if (File(embeddingConfigPath).exists()) {
-            ragConfig = parseRagArguments(embeddingConfigPath)
+            // The installed directory name is authoritative for `repoName` — the retriever resolves
+            // `<cacheDir>/<repoName>/embedding/`, so a config carrying a differently-sanitized id
+            // (exporter vs installer) would send it to a path that does not exist.
+            ragConfig = parseRagArguments(embeddingConfigPath).copy(repoName = _modelName)
             Log.d(LOG_TAG, "RAG config loaded from: $embeddingConfigPath")
             isRagAvailable = true
         } else {
@@ -385,9 +428,13 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
                         // `when` here. The old `when (type) { "native" -> …; else -> Log.e }` dropped
                         // every GenAI config on the floor, leaving the runtime null and generate() hanging.
                         modelRuntime = makeModelRuntime(finalGenConfig)
+                        lastGenerationSessionFailure = null
                     }
                 } catch (e: Exception) {
-                    Log.e(LOG_TAG, "Generation session failed to create: ${e.message}")
+                    // Keep the cause: this coroutine cannot throw at prepareGeneration's caller, and
+                    // a log line is not an error report. runGenerationStream re-raises it.
+                    lastGenerationSessionFailure = e
+                    Log.e(LOG_TAG, "Generation session failed to create: ${e.message}", e)
                 } finally {
                     llmState = LLMState.ReadyGenerate
                 }
@@ -397,8 +444,17 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
 
     suspend fun runGenerationStream(prompt: String, generationArgs: ORTGenerationConfig? = null) {
         if (modelRuntime == null) {
-            Log.e(LOG_TAG, "Model has not been initialized and cached yet.")
-            return
+            // Surface why. Returning quietly here is what let a rejected genai_config.json read as
+            // "generation produced nothing" instead of "the engine you asked for never loaded".
+            lastGenerationSessionFailure?.let { cause ->
+                throw MobileTransformersException(
+                    "Generation session was never created: ${cause.message}",
+                    cause,
+                )
+            }
+            throw MobileTransformersException(
+                "Model has not been initialized: call prepareGeneration() before runGenerationStream().",
+            )
         }
 
         val finalGenConfig = generationConfig.overrideConfig(generationArgs)

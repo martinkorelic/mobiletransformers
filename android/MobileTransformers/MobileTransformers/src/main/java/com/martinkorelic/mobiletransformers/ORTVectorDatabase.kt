@@ -126,15 +126,44 @@ class ORTVectorDatabase private constructor(context: Context, cacheDir : String,
         }
 
         return try {
+            // Named arguments deliberately: the entities declare (id, name, document, content, …) while
+            // this function's parameters read (name, content, document, …), and the positional calls that
+            // used to be here passed `content` into `document` and vice versa for every dimension. Stored
+            // documents came back with their text in `id` and their id in `text`, and `queryByContent`
+            // (which indexes `content`) was searching over ids instead of document bodies.
             val id = when (ortRagConfig.embeddingDimension) {
-                64 -> vectorBox64!!.put(VectorEntity64(0, name, content, document, embedding, metadata))
-                128 -> vectorBox128!!.put(VectorEntity128(0, name, content, document, embedding, metadata))
-                256 -> vectorBox256!!.put(VectorEntity256(0, name, content, document, embedding, metadata))
-                384 -> vectorBox384!!.put(VectorEntity384(0, name, content, document, embedding, metadata))
-                512 -> vectorBox512!!.put(VectorEntity512(0, name, content, document, embedding, metadata))
-                768 -> vectorBox768!!.put(VectorEntity768(0, name, content, document, embedding, metadata))
-                1024 -> vectorBox1024!!.put(VectorEntity1024(0, name, content, document, embedding, metadata))
-                1536 -> vectorBox1536!!.put(VectorEntity1536(0, name, content, document, embedding, metadata))
+                64 -> vectorBox64!!.put(VectorEntity64(
+                    id = 0, name = name, document = document,
+                    content = content, embedding = embedding, metadata = metadata,
+                ))
+                128 -> vectorBox128!!.put(VectorEntity128(
+                    id = 0, name = name, document = document,
+                    content = content, embedding = embedding, metadata = metadata,
+                ))
+                256 -> vectorBox256!!.put(VectorEntity256(
+                    id = 0, name = name, document = document,
+                    content = content, embedding = embedding, metadata = metadata,
+                ))
+                384 -> vectorBox384!!.put(VectorEntity384(
+                    id = 0, name = name, document = document,
+                    content = content, embedding = embedding, metadata = metadata,
+                ))
+                512 -> vectorBox512!!.put(VectorEntity512(
+                    id = 0, name = name, document = document,
+                    content = content, embedding = embedding, metadata = metadata,
+                ))
+                768 -> vectorBox768!!.put(VectorEntity768(
+                    id = 0, name = name, document = document,
+                    content = content, embedding = embedding, metadata = metadata,
+                ))
+                1024 -> vectorBox1024!!.put(VectorEntity1024(
+                    id = 0, name = name, document = document,
+                    content = content, embedding = embedding, metadata = metadata,
+                ))
+                1536 -> vectorBox1536!!.put(VectorEntity1536(
+                    id = 0, name = name, document = document,
+                    content = content, embedding = embedding, metadata = metadata,
+                ))
                 else -> throw IllegalStateException("Unsupported dimensions: $ortRagConfig.embeddingDimension")
             }
 

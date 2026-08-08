@@ -26,19 +26,19 @@ from transformers import (
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from peft.tuners.vblora import VBLoRAConfig
 from peft.tuners.loha import LoHaConfig
-from evaluation.eval_adapter_models import CustomPeftModel
-from peft_models.ablation.config import AblationConfig
-from peft_models.ablation.model import AblationModel
-from peft_models.mars.config import MarsConfig
-from peft_models.mars.model import MarsModel
+from mobiletransformers.evaluation.eval_adapter_models import CustomPeftModel
+from mobiletransformers.peft.ablation.config import AblationConfig
+from mobiletransformers.peft.ablation.model import AblationModel
+from mobiletransformers.peft.mars.config import MarsConfig
+from mobiletransformers.peft.mars.model import MarsModel
 from datasets import Dataset
 from research.trainer_callbacks import PEFTUsageCallback
-from tools.utils import preload_dataset
+from mobiletransformers.training.data import preload_dataset
 
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
 from config import TASK_EPOCHS, BATCH_SIZE, PER_DEVICE_BATCH_SIZE, GRADIENT_ACCUMULATION, EXPERIMENT_RANKS
-from peft_models.lora_xs.initialization_utils import find_and_initialize
+from mobiletransformers.peft.lora_xs.initialization_utils import find_and_initialize
 
 def add_peft_type(name, value):
     """Dynamically add a new value to the PeftType enum."""
@@ -52,7 +52,7 @@ add_peft_type("ABLATION", "ABLATION")
 PEFT_TYPE_TO_MODEL_MAPPING[PeftType("MARS")] = MarsModel
 PEFT_TYPE_TO_MODEL_MAPPING[PeftType("ABLATION")] = AblationModel
 
-from trainer.utils import (
+from mobiletransformers.training.preprocessing import (
     process_sample_hellaswag_deepeval,
     process_sample_boolq_deepeval,
     process_sample_arc_deepeval,
@@ -72,40 +72,13 @@ class SLModel(Enum):
     QWEN = "Qwen/Qwen2.5-1.5B",
     GEMMA = "google/gemma-2-2b"
  
-class PEFTBenchmarkDataset(Enum):
-    """Enum for supported datasets with their configurations."""
-
-    ### Easy tasks
-    BOOLQ = "boolq"
-    ARC_E = "arc_e"
-    LOGIQA = "logiqa"
-    WINOGRANDE = "winogrande"
-
-    ### Complex tasks
-    HELLASWAG = "hellaswag"
-    ARC_C = "arc_c"
-
-    ### Mobile tasks
-    MINI_PERSONALQA = "mini_personalqa"
-    MINI_RECOMMENDATION = "mini_recommendation"
-
-DATASET_MAPPING = {
-
-    ### Easy tasks
-    PEFTBenchmarkDataset.BOOLQ.value : ("google/boolq", "boolq_train_deepeval"),
-    PEFTBenchmarkDataset.WINOGRANDE.value: ("allenai/winogrande", "winogrande_train_deepeval", "winogrande_l"),
-    PEFTBenchmarkDataset.ARC_E.value: ("allenai/ai2_arc", "arc_train_deepeval", "ARC-Easy"),
-    PEFTBenchmarkDataset.LOGIQA.value: ("data/logiqa_train", "logiqa_train_deepeval"),
-
-    ### Complex tasks
-    PEFTBenchmarkDataset.HELLASWAG.value : ("Rowan/hellaswag", "hellaswag_train_deepeval"),
-    PEFTBenchmarkDataset.ARC_C.value : ("allenai/ai2_arc", "arc_train_deepeval", "ARC-Challenge"),
-
-    ### Mobile tasks
-    PEFTBenchmarkDataset.MINI_PERSONALQA.value : ("data/MiniPersonalQA_train", "mini_personalqa"),
-    PEFTBenchmarkDataset.MINI_RECOMMENDATION.value : ("data/MiniRecommendation_train", "mini_recommendation"),
-
-}
+# Moved to mobiletransformers.training.benchmark_datasets (S6b): training/validators.py is a
+# PACKAGED module and cannot import research/ from an installed wheel. Re-exported here so this
+# script and its readers keep working unchanged.
+from mobiletransformers.training.benchmark_datasets import (  # noqa: E402,F401
+    DATASET_MAPPING,
+    PEFTBenchmarkDataset,
+)
 
 class PEFTMethod(Enum):
     """Enum for supported PEFT methods."""

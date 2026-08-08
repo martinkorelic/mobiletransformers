@@ -10,7 +10,7 @@ package com.martinkorelic.mobiletransformers
  */
 object GenAISpike {
     init {
-        System.loadLibrary("mobiletransformers")
+        NativeLibrary.ensureLoaded()
     }
 
     external fun runOneToken(dir: String, prompt: String): String

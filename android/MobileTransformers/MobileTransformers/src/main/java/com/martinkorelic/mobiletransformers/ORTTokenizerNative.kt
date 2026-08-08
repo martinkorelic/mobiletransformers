@@ -13,6 +13,11 @@ import java.io.File
  */
 class ORTTokenizerNative (private val tokenizerDir : String) {
 
+    init {
+        NativeLibrary.ensureLoaded()
+    }
+
+
     val LOG_TAG = "ORTTokenizerNative"
 
     var vocabSize: Int = 0

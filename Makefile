@@ -7,7 +7,7 @@
 
 .PHONY: help setup setup-export setup-train setup-genai \
         lint format typecheck parity guard test test-smoke test-train test-jvm test-cpp test-integration check consumer-app \
-        export-model package-model android-build device-package device-test build-aar publish-local docs clean-generated
+        export-model package-model android-build device-package device-test device-rss build-aar publish-local docs clean-generated
 
 # Overridable export knobs (used by `export-model`).
 MODEL   ?=
@@ -15,7 +15,15 @@ OUTPUT  ?= build/package
 PEFT    ?= lora
 QUANT   ?= int4
 CONFIG  ?=
-GRADLE  := cd android/MobileTransformers && ./gradlew
+# device-package knobs (the script re-applies its own defaults for empty values).
+VARIANT ?= cpu-int4
+TRAIN   ?= 0
+RAG     ?= 1
+# Gradle 8.7 / AGP 8.5.1 need JDK 17. The system `java` is often 11, so fall back to Android Studio's
+# bundled JBR the same way scripts/{android_build_aar,publish_local_maven}.sh do. An explicit JAVA_HOME
+# in the environment always wins.
+JAVA_HOME ?= /opt/android-studio/jbr
+GRADLE  := cd android/MobileTransformers && JAVA_HOME=$(JAVA_HOME) ./gradlew
 CPP_DIR := android/MobileTransformers/MobileTransformers/src/main/cpp
 
 help:  ## List every target with its description.
@@ -86,11 +94,14 @@ package-model:  ## Validate + assemble an existing build dir into a Hub package 
 android-build:  ## gradle assembleDebug (SDK + sample app).
 	$(GRADLE) :MobileTransformers:assembleDebug :MobileTransformersApp:assembleDebug
 
-device-package:  ## MODEL=<hf-id> [VARIANT= TRAIN=1] -> export + adb push a real package for device tests (#1-29 W6).
-	MODEL=$(MODEL) scripts/device_package.sh
+device-package:  ## MODEL=<hf-id> [VARIANT= TRAIN=1 RAG=1] -> export + adb push a real package for device tests (#1-29 W6).
+	MODEL=$(MODEL) VARIANT=$(VARIANT) TRAIN=$(TRAIN) RAG=$(RAG) scripts/device_package.sh
 
 device-test:  ## Run the instrumented device suites over the pushed package (skips w/o a device/package).
 	$(GRADLE) :MobileTransformers:connectedDebugAndroidTest
+
+device-rss:  ## Collect the four-point RSS table (copy vs mmap, both engines) and evaluate Gate 0.1 #4 / Gate 0.2.
+	scripts/device_rss.sh
 
 consumer-app:  ## Build examples/consumer-app against the mavenLocal artifact (#30 proof).
 	cd examples/consumer-app && ./gradlew assembleDebug

@@ -42,7 +42,8 @@ enable_testing()
 add_executable(host_tests
         test_handoff_io.cpp
         test_merger_variant.cpp
-        test_mem_probe.cpp)
+        test_mem_probe.cpp
+        test_layer_name.cpp)
 
 target_include_directories(host_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/shims   # <android/log.h> stand-in

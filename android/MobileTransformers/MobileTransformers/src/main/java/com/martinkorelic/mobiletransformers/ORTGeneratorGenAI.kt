@@ -28,6 +28,23 @@ class ORTGeneratorGenAI(
     private var handle: Long = 0
     private var modelLoadTimeMs: Long = 0L
 
+    /**
+     * Same chat-template rendering the Native engine applies (#24 parity).
+     *
+     * Without this the two engines were fed *different token sequences* for one `generate(prompt)`
+     * call: Native rendered the prompt through the model's chat template while GenAI passed the raw
+     * string to `OgaGenerator`. On the same package the first greedy token then differed ("Hello" vs
+     * ","), which reads as a weights/graph divergence but is purely prompt construction — and it is
+     * exactly what Gate 0.1 #1 asserts.
+     */
+    private val conversationState: ORTConversationState? = tokenizer.chatTemplate?.let {
+        ORTConversationState(
+            ORTChatTemplateHandler(it),
+            tokenizer.getSpecialTokensWithContent(),
+            _generationConfig.systemPrompt,
+        )
+    }
+
     override val capabilities: EngineCapabilities =
         EngineCapabilities(
             engine = InferenceEngine.GENAI,
@@ -70,7 +87,9 @@ class ORTGeneratorGenAI(
         val decodedText = StringBuilder()
         try {
             check(handle != 0L) { "GenAI session not loaded" }
-            if (!nativeStart(handle, promptText, generationArgs.maxSequenceLength)) {
+            generationArgs.systemPrompt?.let { conversationState?.setSystemPrompt(it) }
+            val renderedPrompt = conversationState?.addUserMessage(promptText) ?: promptText
+            if (!nativeStart(handle, renderedPrompt, generationArgs.maxSequenceLength)) {
                 throw IllegalStateException("GenAI failed to start generation")
             }
 
@@ -107,6 +126,10 @@ class ORTGeneratorGenAI(
                 decoded++
                 if (isEos) break
             }
+
+            // Multi-turn parity with Native: the reply has to go back into the transcript, or a second
+            // generate() would re-render the conversation without it.
+            conversationState?.addAssistantMessage(decodedText.toString())
 
             callback?.onCompletion(
                 InferenceProgress(
@@ -148,7 +171,7 @@ class ORTGeneratorGenAI(
 
     companion object {
         init {
-            System.loadLibrary("mobiletransformers")
+            NativeLibrary.ensureLoaded()
         }
     }
 }

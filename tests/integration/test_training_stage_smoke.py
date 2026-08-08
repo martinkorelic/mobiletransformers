@@ -2,7 +2,7 @@
 
 Skips unless ``onnxruntime.training`` imports, so it only runs in the ``ort-training-local`` profile
 (Python 3.12). This is the automated-under-profile leg of `export/pipeline.py::_build_training_stage`
-step 2 — it drives `artifact/onnx_builder.py::gen_artifacts` over the committed tiny fixture and asserts
+step 2 — it drives `artifacts.builder::gen_artifacts` over the committed tiny fixture and asserts
 the four training artifacts + the extended training_config (with the peft_mapping the trainable-split
 step consumes). Step 1 (`optimum_hf_export`, a real HF model) and step 3 (`export_inference_package`,
 already core-tested) are the manual `make device-package` / #9-package legs.
@@ -26,7 +26,7 @@ FIXTURE_DIR = Path(__file__).parent.parent / "fixtures"
 
 
 def test_gen_artifacts_produces_training_artifacts_and_extended_config(tmp_path):
-    from artifact.onnx_builder import gen_artifacts  # type: ignore[import-not-found]
+    from mobiletransformers.artifacts.builder import gen_artifacts
 
     # gen_artifacts reads <train_dir>/quant_model.onnx + training_config.json (the shape #15 step 1 writes).
     train_dir = tmp_path / "train_export"

@@ -32,11 +32,33 @@ FederatedAdapterRecord
   round
   tensors:                   # ORDER + names + dtype + shape come from TrainableTensorCodec (#8)
     - name, shape, dtype
-      role: adapter | trainable_weight | head
-      aggregation: average | weighted_average | server_only
+      role: weight | weight_quantized | scale | zero_point
+      aggregation: weighted_average
       bytes | fileRef
   metrics: { numExamples, numTokens, trainLoss, peakMemoryMb, durationMs }
 ```
+
+**#35 role vocabulary — DECIDED (2026-08-08): the codec's vocabulary is normative.**
+
+`role` is `{weight, weight_quantized, scale, zero_point}` — the roles `TrainableTensorCodec` (#8)
+already emits and `weight_handoff_map.json` already records. The earlier `{adapter, trainable_weight,
+head}` set in this doc was aspirational and **never implemented**; nothing produced or consumed it.
+
+Adopting the codec's set rather than the doc's means **the golden fixture is unchanged**
+(`federated_record.golden.bin` still matches byte for byte) and #36's JNI gateway mirrors one vocabulary
+instead of translating between two. The alternative — making the code match the doc — would have
+required regenerating the golden to encode a distinction no code makes.
+
+**Correction to this plan's comm-size claim.** v1 exchanges **merged-weight-shaped** tensors
+(`aggregation_role="merged_base_plus_adapter"`), not rank-r adapter deltas, so per-round traffic is the
+size of the adapted weights, not of the adapters. Any bandwidth estimate written against "adapters only"
+is wrong by roughly `d_in x d_out / (r x (d_in + d_out))`. This is a real constraint on #36's design, not
+a documentation nit — and it reads against the tier doc's "do not aggregate merged base weights", which
+v1 does. Reconciling the two is a v2 decision, deliberately left open here rather than silently resolved.
+
+**`aggregation` is single-valued in v1.** Only `weighted_average` is ever produced or accepted;
+`average` and `server_only` were declared in the dataclass comment and unreachable from any caller.
+They are now rejected on read rather than left as dead vocabulary — see `adapter_record.py`.
 
 **Byte serialization (pinned here; #36's JNI `ByteArray` uses exactly this).** One record = a 4-byte little-endian `uint32` header length, then the UTF-8 JSON header (the record above with `tensors[].bytes` omitted — each tensor entry instead carries `byteOffset`/`byteLength` into the payload), then the concatenated raw tensor payloads in **codec order**, each little-endian, contiguous C-order, dtype/shape exactly as declared in the header. No compression, no alignment padding in v1. This is what the cross-language golden fixture freezes; `fileRef` is only for the on-disk simulation variant (header field pointing at a sibling file instead of an inline payload span).
 

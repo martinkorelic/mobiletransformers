@@ -10,6 +10,9 @@
 
 name: ort-training-smoke
 
+# NOT scheduled by design (unchanged 2026-08-08): manual-only, because it needs the source-built
+# ORT-training wheel, which hosted runners do not have. Left as-is while ci.yml/device.yml had
+# their automatic triggers removed — this one never had any.
 on:
   workflow_dispatch: {}
 

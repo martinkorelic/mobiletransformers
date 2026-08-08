@@ -64,10 +64,10 @@ struct WeightSessionCache {
     bool init(const std::string& inference_dir) {
         try {
             LOG_RSS("weight-load:start");
-            // #12 (Gate 0.2, default-off): MTF_MMAP_WEIGHTS=1 loads each fp per-tensor .bin zero-copy via
-            // mmap instead of the buffered copy. Opt-in only — the shipping default is the
-            // #23 copy path, so this never perturbs the hardened load unless the env var is set.
-            const bool use_mmap = std::getenv("MTF_MMAP_WEIGHTS") != nullptr;
+            // #12 (Gate 0.2, default-off): load each fp per-tensor .bin zero-copy via mmap instead of the
+            // buffered copy. Opt-in only — the shipping default is the #23 copy path, so this never
+            // perturbs the hardened load unless it is switched on.
+            const bool use_mmap = memprobe::mmap_weights_enabled();
 
             const std::string map_path = inference_dir + "/weight_handoff_map.json";
             std::unordered_map<std::string, HandoffEntry> handoff;
@@ -562,46 +562,44 @@ struct InferenceSessionCache {
 
     // Function to initialize the KV cache with provided batch size and sequence length
     void initializeKVCache(int batch_size) {
-        auto ortApi = OrtGetApiBase()->GetApi(ORT_API_VERSION);
         past_key_values.clear();  // Clear any existing key-values
-        auto memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
+        // The geometry comes from the graph's own metadata (loadModelMetadata). If it is missing, every
+        // layer count is 0, we create no past tensors, and generateWithKVCache then declares the graph's
+        // full input count while binding only 3 values — an out-of-bounds read inside ORT. Fail here,
+        // where the cause is nameable, instead of there.
+        if (num_layers <= 0 || num_kv_heads <= 0 || head_dim <= 0) {
+            throw std::runtime_error(
+                    "model metadata is missing the KV-cache geometry (num_layers=" +
+                    std::to_string(num_layers) + ", num_kv_heads=" + std::to_string(num_kv_heads) +
+                    ", head_dim=" + std::to_string(head_dim) +
+                    "). The exporter must stamp these into the ONNX metadata_props.");
+        }
+
+        Ort::AllocatorWithDefaultOptions allocator;
         // Pre-allocate the vector to avoid reallocations
         past_key_values.reserve(num_layers * 2); // *2 because we store both key and value
 
         // Initialize KV cache based on model configuration
         for (int i = 0; i < num_layers; ++i) {
-            size_t element_count = batch_size * num_kv_heads * 1 * head_dim;
-
-            // Create tensors for key and value, initialized to size 0
-            // Each layer has 2 tensors (key, value) of shape (batch_size, num_heads, 0, head_size)
+            // Each layer has 2 tensors (key, value) of shape (batch_size, num_kv_heads, 0, head_dim) —
+            // zero-length past on the first pass, which is what a `*-with-past` graph expects.
+            //
+            // These are allocator-owned. They used to be created with CreateTensorWithDataAsOrtValue
+            // over a `std::vector<float>` local to this loop iteration: that API borrows the caller's
+            // buffer without copying, so every tensor in past_key_values pointed at freed memory the
+            // moment the iteration ended.
             std::vector<int64_t> kv_shape = {batch_size, num_kv_heads, 0, head_dim};
 
-            // Create zero-initialized data for key tensor
-            std::vector<float> key_data(element_count, 0.0f);
+            auto kv_key = std::make_unique<Ort::Value>(Ort::Value::CreateTensor<float>(
+                    allocator, kv_shape.data(), kv_shape.size()));
+            validateTensor(kv_key.get(), "key");
+            past_key_values.push_back(std::move(kv_key));
 
-            OrtValue* new_k;
-            ortApi->CreateTensorWithDataAsOrtValue(
-                    memory_info,
-                    key_data.data(), key_data.size() * sizeof(float), kv_shape.data(), kv_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &new_k);
-
-            std::unique_ptr<Ort::Value> kv_key = std::make_unique<Ort::Value>(new_k);
-
-            // Create empty tensor for key
-            past_key_values.push_back(std::move(kv_key)); // Empty for first pass
-
-            // Create zero-initialized data for key tensor
-            std::vector<float> value_data(element_count, 0.0f);
-            OrtValue* new_v;
-            ortApi->CreateTensorWithDataAsOrtValue(
-                    memory_info,
-                    value_data.data(), value_data.size() * sizeof(float), kv_shape.data(), kv_shape.size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &new_v);
-            std::unique_ptr<Ort::Value> kv_value = std::make_unique<Ort::Value>(new_v);
-
-            validateTensor(kv_value.get(), "key");
-
-            // Create empty tensor for value
-            past_key_values.push_back(std::move(kv_value)); // Empty for first pass
-            const auto& present_kv = past_key_values[i];
+            auto kv_value = std::make_unique<Ort::Value>(Ort::Value::CreateTensor<float>(
+                    allocator, kv_shape.data(), kv_shape.size()));
+            validateTensor(kv_value.get(), "value");
+            past_key_values.push_back(std::move(kv_value));
         }
         __android_log_print(ANDROID_LOG_DEBUG, "InferenceSessionCache", "Generated %zu KV caches.", past_key_values.size());
     }

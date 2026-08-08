@@ -29,11 +29,15 @@ class GenAISpikeTest {
 
     private fun candidateDirs(): List<File> {
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        // External files dir FIRST, and only writable candidates: this test mutates the package in
+        // place (it backs a weight up to `.spikebak`, perturbs it, then restores). `/data/local/tmp` is
+        // SELinux `shell_data_file` — a stale copy there was being picked ahead of the writable dir and
+        // the test died with `EACCES` on the backup, not on anything it was trying to prove.
         return listOf(
+            File(ctx.getExternalFilesDir("mt_genai_spike"), "inference"),
             File(ctx.filesDir, "mt_genai_spike/inference"),
             File("/data/local/tmp/mt_genai_spike/inference"),
-            File(ctx.getExternalFilesDir("mt_genai_spike"), "inference"),
-        )
+        ).filter { it.parentFile?.canWrite() ?: false }
     }
 
     @Test

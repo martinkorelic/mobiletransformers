@@ -8,8 +8,12 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <fstream>
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 #include "logging.h"
 
 namespace memprobe {
@@ -47,6 +51,27 @@ inline int64_t parse_vmrss_kb(const std::string& status_text) {
         ++pos;
     }
     return any ? value : -1;
+}
+
+// #12 (Gate 0.2) toggle for the zero-copy weight load. Default OFF — the shipping path is #23's copy.
+//
+// An instrumented test cannot set an environment variable in the app process it is measuring, so the
+// four-point RSS table (base/merged x copy/mmap) was unreachable while this was env-only. The switch is
+// therefore also a system property:
+//
+//     adb shell setprop debug.mtf.mmap_weights 1
+//
+// The env var stays as the desktop/spike override and still wins, so existing spike scripts are
+// unaffected. Reads the property on every call: the test flips it between session constructions.
+inline bool mmap_weights_enabled() {
+    if (std::getenv("MTF_MMAP_WEIGHTS") != nullptr) return true;
+#ifdef __ANDROID__
+    char value[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("debug.mtf.mmap_weights", value) > 0) {
+        return value[0] == '1' || value[0] == 't' || value[0] == 'T' || value[0] == 'y' || value[0] == 'Y';
+    }
+#endif
+    return false;
 }
 
 }  // namespace memprobe

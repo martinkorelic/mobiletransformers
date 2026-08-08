@@ -40,7 +40,7 @@ This revision is more concrete than the first draft: ONNX Runtime Training is tr
 - Public GenAI C docs show `OgaCreateModel` loading a model from a configuration directory, while the checked-in local header adds `OgaCreateModelWithInitializers`. Source: https://onnxruntime.ai/docs/genai/api/c.html
 - GenAI config is driven by a `genai_config.json` model directory that names the decoder model, inputs, outputs, provider/session options, KV-cache naming, and search defaults. Source: https://onnxruntime.ai/docs/genai/reference/config.html
 - GenAI search config notes that `max_length` determines KV-cache memory allocation, so mobile packages must tune this deliberately rather than inheriting large desktop defaults. Source: https://onnxruntime.ai/docs/genai/reference/config.html
-- GenAI config supports `session_options.config_entries`, so ORT session config keys can be tested through `genai_config.json`; however, the docs do not claim that GenAI can memory-map runtime-supplied trained weights by config alone. Source: https://onnxruntime.ai/docs/genai/reference/config.html
+- ~~GenAI config supports `session_options.config_entries`, so ORT session config keys can be tested through `genai_config.json`~~ — **FALSE for genai 0.14.1, see the correction section; the docs say this and the runtime rejects it.** The second half stands: nothing claims GenAI can memory-map runtime-supplied trained weights by config alone. Source: https://onnxruntime.ai/docs/genai/reference/config.html
 - GenAI's public config and runtime APIs expose model creation from a config directory, `OgaConfig` creation/overlays, provider selection, runtime settings handles, and Python `Config` provider helpers, but they do not expose a public raw `Ort::SessionOptions` object or public `AddExternalInitializers` equivalent. Sources: https://onnxruntime.ai/docs/genai/api/c.html, https://onnxruntime.ai/docs/genai/api/python.html
 - GenAI's Python `GeneratorParams.set_model_input` and local C `OgaGeneratorParamsSetModelInput` are the public/available hooks for "extra model inputs" that GenAI does not manage itself. This matches the current `inference/generator_genai.py` prototype. Sources: https://onnxruntime.ai/docs/genai/api/python.html, https://onnxruntime.ai/docs/genai/api/c.html
 - GenAI's current C++ docs expose `OgaNamedTensors::Create`, `Get`, `Set`, `Delete`, `Count`, and `GetNames`, plus `SetInputs`; however, current upstream source treats these as named graph inputs passed into the generator, not as initializer mutation. Source: https://onnxruntime.ai/docs/genai/api/cpp.html#oganamedtensors
@@ -133,7 +133,7 @@ The current `WeightSessionCache` loads serialized `.tensor` files into allocated
 Verified position after reviewing local code and current docs:
 
 - Manual ORT inference already supports updated weights through `AddExternalInitializers`, but those values are allocated/copied tensors, not `mmap` views.
-- GenAI config exposes decoder `session_options` and `config_entries`, so ORT config entries can be passed through the package and tested.
+- ~~GenAI config exposes decoder `session_options` and `config_entries`~~ — decoder `session_options` yes, `config_entries` **no** (see correction).
 - GenAI search config and `past_present_share_buffer` control KV-cache allocation behavior. They do not solve model-weight or merged-weight memory mapping.
 - Current upstream ORT headers mention `session.use_memory_mapped_ort_model` for ORT-format models and immutable weights, but this repo's vendored headers do not show that key. Local headers instead expose `session.use_ort_model_bytes_directly`, `session.use_ort_model_bytes_for_initializers`, `session.model_external_initializers_file_folder_path`, and prepacked constant initializer externalization.
 - GenAI's public/local APIs expose `OgaCreateModel`, version-appropriate `SetModelInput`, `OgaCreateTensorFromBuffer`, and adapter APIs; they do not expose the local `OgaCreateModelWithInitializers` function as a stable documented path.
@@ -156,12 +156,62 @@ Recommended experiments:
 
 Recommended wording for Tier 0 implementation: first prove "no graph rewrite, no full model duplicate on disk"; then benchmark whether actual mmap reduces heap pressure enough to become a v1 requirement. Do not advertise GenAI as the memory-mapping solution until one of the experiments above passes on Android.
 
+## CORRECTION (2026-08-08): `session_options.config_entries` does NOT exist in genai 0.14
+
+**Every claim below about `config_entries` is wrong, and so is the mmap plan built on it.** They were
+taken from onnxruntime.ai's config reference. The bundled runtime disagrees, and the runtime wins.
+
+Probed directly against **onnxruntime-genai 0.14.1** (the version in
+`src/main/aarLibs/onnxruntime-genai.aar`) by feeding each key to `og.Model()` alone and recording
+whether the config parsed:
+
+| `model.decoder.session_options` key | 0.14.1 |
+| --- | --- |
+| `log_id`, `log_severity_level`, `enable_profiling`, `enable_cpu_mem_arena`, `enable_mem_pattern`, `intra_op_num_threads`, `inter_op_num_threads`, `graph_optimization_level`, `custom_ops_library`, `provider`, `provider_options`, `external_data_file` | **accepted** |
+| **`config_entries`**, `use_env_allocators`, `disable_cpu_ep_fallback`, `providers` | **REJECTED** |
+
+An unsupported key is not ignored — GenAI rejects the **entire config**, so the model never loads:
+
+```
+JSON Error: model:decoder:session_options: Unknown value "config_entries" at line 12 index 28
+```
+
+Both the array form (`[[key, value]]`) and the object form (`{key: value}`) were tried; both fail.
+
+**What this cost.** The exporter injected `config_entries` to point GenAI at the external-initializer
+folder, so every package the training stage touched was GenAI-unloadable. `ModelRuntimeFactory` fell
+back to Native silently, which made `DualEngineParityTest` compare Native with Native and pass — Gate
+0.1 #1 and #4 were both recorded as proven off single-engine measurements. See `HANDOFF.md`.
+
+**It was never needed.** ONNX external data resolves relative to the model file's directory, which is
+exactly the on-disk contract #23 already requires. With the key removed the real exported package loads
+under 0.14.1 and generates coherently (`"The capital of France is Paris. Paris is the largest city in
+France and the"`), and the device suite passes 10/10 with GenAI genuinely loaded.
+
+**Consequences for the mmap plan.** `04_memory_mapping_experiments.md` Experiment (d) — forwarding
+`session.use_ort_model_bytes_for_initializers` / `use_ort_model_bytes_directly` /
+`use_memory_mapped_ort_model` to ORT through `config_entries` — **is not executable on genai 0.14.1 as
+specified**, because the transport it assumes does not exist. Gate 0.2 must be met on the Native engine
+(which builds its `Ort::SessionOptions` in C++ and can set any config key), or by a genai version that
+accepts the key. `external_data_file` is accepted and is the only external-data lever genai exposes here.
+
+The allow-list is enforced in code (`export/inference_package.py::GENAI_SESSION_OPTION_KEYS`) and pinned
+by `tests/export/test_genai_config_compat.py`. **Re-probe on a genai version bump; do not trust the docs.**
+
+---
+
 ## GenAI Session Options And Initializer Handoff Revision
+
+> **Superseded in part — read the correction above before using anything in this section.** The
+> `config_entries` claims here are false for the bundled runtime.
 
 The current finding is:
 
 - GenAI does expose ONNX Runtime session configuration through `genai_config.json` under `model.decoder.session_options`.
-- The supported `session_options` fields include threading, memory arena, memory pattern, profiling, `use_env_allocators`, provider lists/options, graph optimization, and arbitrary `config_entries`.
+- ~~The supported `session_options` fields include threading, memory arena, memory pattern, profiling, `use_env_allocators`, provider lists/options, graph optimization, and arbitrary `config_entries`.~~
+  **Corrected:** threading, memory arena, memory pattern, profiling, provider/provider_options,
+  graph optimization and `external_data_file` are supported; `config_entries` and `use_env_allocators`
+  are **not**.
 - The public GenAI C API also exposes `OgaCreateConfig`, `OgaConfigOverlay`, `OgaCreateModelFromConfig`, and provider mutation helpers. This lets MobileTransformers build or overlay the same session options it writes to `genai_config.json`.
 - GenAI's public Python API exposes `Config(config_path)`, provider helpers, and `Model(Config)`.
 - GenAI does not publicly expose the raw `Ort::SessionOptions` handle used by the current native path, and the public docs do not show an `AddExternalInitializers` hook.
@@ -186,6 +236,10 @@ Recommended handoff order:
 `OgaNamedTensors` is therefore not a substitute for initializer replacement. It can carry named tensors into a run only if those names are actual model/session inputs. The export still has to remove trainable initializers from the inference graph and re-add them as inputs, or use an initializer-injection path before session creation.
 
 For GenAI, `session_options.config_entries` should still be emitted and tested. Recommended entries to test are the same class of entries used by the manual native path:
+
+> **SUPERSEDED.** genai 0.14.1 rejects `config_entries` outright, taking the whole config with it. The
+> JSON below will not load. Emitting it is what made every training-stage package Native-only.
+
 
 ```json
 {
@@ -285,6 +339,58 @@ Keep the manual loop if any of the following are true:
 - Android packaging or Java/C++ APIs remain preview-only in a way that would destabilize `v1.0`.
 - The model-input/initializer-injection path cannot preserve current MARS/merge semantics.
 
+#### Gate 0.1 RESULT — criteria 1 and 7 measured on device (2026-08-08)
+
+Both were previously recorded as proven and then **retracted**: GenAI could not load any package the
+training stage produced (the `config_entries` key above), and `ModelRuntimeFactory` fell back to Native
+without saying so — so the parity test compared Native with Native and the RSS table held two Native
+rows. See the correction section at the top of this file.
+
+With the config fixed and the fallback made loud (an *explicitly requested* engine that cannot load now
+raises `EngineUnavailableException` instead of substituting Native), both are measured for real:
+
+- **Criterion 1 — loads and runs from a MobileTransformers package: PASS.** `DualEngineParityTest`
+  agrees on the greedy first token across engines, and asserts `capabilities.engine == GENAI` so a
+  fallback fails the test rather than quietly satisfying it. Device: Galaxy S21 FE (SM-G990B),
+  Android 15, arm64-v8a. logcat confirms the separated engine loading its own runtime
+  (`GenAI: Attempting to dlopen libort_gen.so` → `ORT Version: 1.27.0`).
+- **Criterion 7 — memory within the accepted threshold: PASS, with room.** Four-point RSS table, same
+  device, copy path:
+
+  | engine | pre-load | post-weight-load | post-first-token | post-release | **peak** |
+  | --- | --- | --- | --- | --- | --- |
+  | native | 482,584 | 482,828 | 828,024 | 299,044 | **828,024 kB** |
+  | genai | 299,048 | 299,304 | 796,544 | 490,204 | **796,544 kB** |
+
+  GenAI's peak is **31,480 kB BELOW** the Native baseline, so the `max(20%, 64 MiB)` allowance is not
+  approached from the wrong side at all. Caveat worth keeping: both rows come from one process running
+  sequentially, so `pre-load` differs between them and only *peak* is a fair comparison. The row now
+  records the engine the runtime actually provided (`capabilities.engine`), not the one requested.
+
+Full suite that run: **10/10 instrumented tests passed, 0 skipped** — the first run in which nothing
+skipped, which matters because a skip had previously been indistinguishable from a pass at the gate.
+
+#### Ratified thresholds (2026-08-08)
+
+Gate 0.1's last criterion said "no worse ... by more than an explicitly accepted threshold" and Gate
+0.2's margin was carried as a suggestion. Neither number existed anywhere in the tree, so both gates
+were unfalsifiable — Gate 0.1 was recorded ADOPT with this criterion simply unproven. The numbers
+below are the ratified ones; the instrumented `MemoryRssTest` asserts against exactly these.
+
+- **`ACCEPTED_RSS_DELTA` (Gate 0.1, criterion 7) = `max(20% of the Native baseline peak RSS, 64 MiB)`.**
+  Relative, because the budget that matters scales with the model; with an absolute floor, because on a
+  135M int4 package the whole working set is small enough that ordinary allocator and JIT noise between
+  two runs is a large *percentage* while being irrelevant in *bytes*. Peak is taken over measurement
+  points (2) and (3). GenAI exceeding this is a Gate 0.1 fail on that criterion, not an automatic
+  "keep the manual loop" — the keep-criteria list above is separate and unchanged.
+- **Gate 0.2 pass margin = a ≥15% reduction in peak RSS at points (2)/(3) versus the copy baseline,
+  with byte-identical generated output.** This ratifies the plan's suggested figure
+  (`01_code_plans/04`, "Pass/fail framing") rather than inventing a new one. Byte-identical output is
+  the hard gate: a memory win with changed output is a fail, not a trade-off.
+- **Measurement is `VmRSS` from `/proc/self/status`**, sampled in native code (`cpp/mem_probe.h`, exposed
+  as `runtime/MemoryProbe`). Not `Debug.getPss()` — the weight blobs are mapped outside the JVM's
+  accounting, so the JVM's view would miss the thing being measured.
+
 ### Gate 0.2 - Memory-Mapping And Weight Handoff
 
 The release must document one supported handoff:
@@ -296,7 +402,49 @@ The release must document one supported handoff:
 
 No Tier 2 inference refactor starts until one path is proven with one real tiny model package.
 
-### Gate 0.3 - Training Export Toolchain
+#### Gate 0.2 RESULT — measured, and it FAILS as specified (2026-08-08)
+
+Full 2x2 table, Galaxy S21 FE / Android 15 / arm64, SmolLM2-135M package, via `make device-rss`:
+
+| engine | load path | pre | postLoad | post1tok | postRel | **peak** |
+| --- | --- | --- | --- | --- | --- | --- |
+| native | copy | 146,652 | 149,044 | 802,468 | 290,552 | **802,468 kB** |
+| native | **mmap** | 148,704 | 151,064 | 751,944 | 455,540 | **751,944 kB** |
+| genai | copy | 290,552 | 290,908 | 795,400 | 489,564 | **795,400 kB** |
+| genai | **mmap** | 455,540 | 455,900 | 796,396 | 475,436 | **796,396 kB** |
+
+- **Gate 0.1 #4: PASS** — GenAI peak minus Native peak = **-7,068 kB** (GenAI is *lower*), allowance
+  160,493 kB.
+- **Gate 0.2: FAIL** — peak reduction **6.3% on Native** and **-0.1% on GenAI**, against a required 15%.
+
+**This is not a defect in the mmap implementation; it is a scope mismatch in the gate.** `mmap`
+lives in `WeightSessionCache`, which loads the per-tensor `.bin` files named by the handoff map — the
+**trainable split only**:
+
+```
+trainable .bin total (mmap-eligible):    53.1 MB   (8.2% of weight bytes)
+frozen_base.onnx.data (NOT mmapped):    598.2 MB   (91.8%)
+```
+
+A 6.3% peak reduction from zero-copying 8.2% of the bytes is **near-proportional** — the implementation
+does what it claims, on the bytes it owns. The gate measures whole-process peak RSS, so 15% is
+arithmetically out of reach while 91.8% of the weights still load through ORT's own external-data path.
+
+The GenAI row is a **no-op by construction**: GenAI never routes through `WeightSessionCache`, so the
+toggle cannot affect it. `-0.1%` is run-to-run noise, and the correct reading is "not applicable",
+not "regression".
+
+**Consequences.**
+
+1. **Gate 0.2 does not block v1** — the plan's own criterion says mmap is "an optimization, not a v1
+   requirement". Recording FAIL is the honest outcome, not a release blocker.
+2. To actually reach 15%, `frozen_base.onnx.data` has to be mapped rather than copied. That is ORT's
+   external-initializer load, reachable from the Native engine's C++ `Ort::SessionOptions`
+   (`session.use_ort_model_bytes_for_initializers` and friends) — and **not** reachable through
+   `genai_config.json`, because genai 0.14.1 has no `config_entries` (see the correction section).
+3. Re-specify the gate against what it can measure: either apply the 15% target to the *trainable-split*
+   bytes it governs, or first extend mmap coverage to the frozen base and re-measure. Do not restate the
+   current number as a pass.
 
 Choose one:
 
@@ -340,14 +488,14 @@ Follow the global order in `05_cross_cutting_release_modernization.md`. Tier 0 s
 10. Emit `model_support_matrix.json` with Optimum task support, package-export status, training-artifact status, Android smoke status, and blockers.
 11. Define the minimal MobileTransformers package manifest fields needed by Tier 0 smokes: inference files, training files, tokenizer files, engine candidate, ORT/GenAI versions, checksums, cache mapping, and handoff mode.
 12. Add `trainable_tensor_map.json` / `weight_handoff_map.json` generation that maps training checkpoint names to merger names, merged tensor names, inference initializer names, and optional GenAI model-input names.
-13. Extend the Python inference builder to emit a minimal GenAI package directory with `genai_config.json`, decoder ONNX, tokenizer files, `session_options.config_entries`, and MobileTransformers manifest metadata.
+13. Extend the Python inference builder to emit a minimal GenAI package directory with `genai_config.json`, decoder ONNX, tokenizer files, and MobileTransformers manifest metadata. (`session_options.config_entries` was struck: genai 0.14.1 rejects it — see correction.)
 14. Port the older `weight_input=true` graph-input conversion from `artifact/onnx_builder.py` into the chosen inference builder so GenAI model-input injection is generated by the same export path as `genai_config.json`.
 15. Validate that each merged tensor in the handoff map exactly matches an inference initializer or GenAI graph input by name, dtype, shape, quantization metadata, and transpose policy.
 16. Run the current `inference/generator_genai.py` desktop smoke with model-input injection from known trainable weights.
 17. Add an Android JNI GenAI proof that loads the generated package and produces one token without custom sampling.
 18. Implement model-input injection on Android using `OgaGeneratorParamsSetModelInput` and the exported handoff map instead of hard-coded name replacement.
 19. Verify whether the linked GenAI library exports `OgaCreateModelWithInitializers` using `nm`, `readelf`, or the Android build equivalent. If present, add a narrow wrapper and compare memory/latency against model-input injection.
-20. Test GenAI `session_options.config_entries` for ORT-format byte reuse and, if supported by the chosen ORT/GenAI build, `session.use_memory_mapped_ort_model`.
+20. ~~Test GenAI `session_options.config_entries` for ORT-format byte reuse~~ — **done, result negative:** 0.14.1 has no `config_entries`, so no ORT session-config key (including `session.use_memory_mapped_ort_model`) can be reached through genai_config.json. Gate 0.2 must be met on the Native engine.
 21. Replace one tiny merged-weight load with an `mmap`-backed buffer in the manual ORT path and compare against the current copied-buffer `AddExternalInitializers` path.
 22. If upgrading GenAI, verify whether the Android AAR/header exposes `OgaCreateNamedTensors`, `OgaNamedTensorsSet`, and `OgaNamedTensorsGetNames`; if it does, keep `OgaNamedTensors` as a convenience wrapper, not as the primary LLM trained-weight handoff.
 23. Spike `.onnx_adapter` conversion only after LoRA/MARS parameter naming and merge semantics are documented.
@@ -362,7 +510,7 @@ Follow the global order in `05_cross_cutting_release_modernization.md`. Tier 0 s
 - Model-input injection may require exporting different ONNX graph shapes than the current manual loop.
 - GenAI adapter support may map cleanly to LoRA but not to MARS merged-weight semantics.
 - GenAI may internally copy tensors even when buffers are supplied by the app, weakening the memory story.
-- GenAI may accept `session_options.config_entries` but ignore or reject ORT-format memory-map keys depending on the bundled ORT/GenAI build.
+- ~~GenAI may accept `session_options.config_entries` but ignore or reject ORT-format memory-map keys~~ — **resolved: 0.14.1 rejects `config_entries` itself**, and rejects the whole config with it. Risk realised; see correction.
 - ORT model memory mapping applies to immutable ORT-format model bytes and weights; it should not be confused with mapping mutable trained deltas after on-device training.
 - Optimum ONNX may support exporting a model family before MobileTransformers can train, merge, quantize, or run it within Android memory budgets.
 - `trust_remote_code=True` can be necessary for some Optimum exports, but it increases security/reproducibility review requirements for starter packages.
@@ -385,7 +533,7 @@ Follow the global order in `05_cross_cutting_release_modernization.md`. Tier 0 s
 - Desktop GenAI smoke: load generated `genai_config.json` package and generate one token.
 - Desktop GenAI handoff smoke: inject one changed trainable tensor with `params.set_model_input` and verify output/logits change.
 - Android symbol smoke: verify whether `OgaCreateModelWithInitializers` is exported by the linked GenAI library.
-- GenAI session-options smoke: add harmless `session_options.config_entries` to `genai_config.json` and verify they reach ORT logging; then try ORT-format memory-related keys on a tiny ORT-format package.
+- GenAI session-options smoke: **run, negative** — `config_entries` is not a valid key in 0.14.1. The standing guard is `tests/export/test_genai_config_compat.py`, which pins the accepted key set.
 - GenAI config overlay smoke: create an `OgaConfig`, overlay or emit `session_options.config_entries`, construct a model from config, and verify behavior matches the file-based config.
 - GenAI C++ API smoke: compile against the pinned Android GenAI headers and record whether the API surface is local params-level `SetModelInput`, upstream generator-level `SetModelInput`, or full `OgaNamedTensors` creation/set/get.
 - Android GenAI smoke: load package, tokenize prompt, generate one token, stream token callback.
@@ -403,7 +551,7 @@ Follow the global order in `05_cross_cutting_release_modernization.md`. Tier 0 s
 - The source-built ORT training wheel/AAR process is documented with build flags, ORT revision, checksums, and local install path.
 - Memory-mapped or low-copy merged-weight handoff is documented and covered by a smoke test.
 - The inference export path emits a validated trainable/merged tensor handoff map.
-- GenAI `session_options.config_entries` are supported as session configuration, but not documented as a trained-weight injection mechanism.
+- ~~GenAI `session_options.config_entries` are supported as session configuration~~ — **not in 0.14.1** (see correction). They were never a trained-weight injection mechanism either.
 - The chosen handoff mode explicitly states whether trained tensors are consumed as ORT external initializers, GenAI model inputs, or adapters.
 - Packaging and config restructure scope is approved.
 - License decision is recorded as a release blocker or accepted deferral.

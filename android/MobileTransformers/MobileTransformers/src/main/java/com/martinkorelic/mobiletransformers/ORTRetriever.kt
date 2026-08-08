@@ -12,6 +12,11 @@ import com.martinkorelic.mobiletransformers.repository.RagCallback
 
 class ORTRetriever(val cacheDir : String, val applicationContext: Context, var _ragConfig : ORTRagConfig) {
 
+    init {
+        NativeLibrary.ensureLoaded()
+    }
+
+
     private val LOG_TAG = "ORTRetriever"
 
     // Tokenizer should be saved under cacheDir/modelName/embedding/tokenizer/...

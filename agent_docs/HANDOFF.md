@@ -1043,3 +1043,1558 @@ migrated there would have landed permanently ungated. Proven with planted probe 
 a plan: the **starter model zoo**, the **MobileTransformersApp improvements** section (package-cache
 screen, dev-settings screen, adapter share action), the `default/` package alias, and HEAD/`etag`
 metadata.
+
+---
+
+# Device acceptance session (2026-08-08) — the seam finally crossed
+
+**Device:** Galaxy S21 FE (SM-G990B), arm64-v8a, **Android 15 / API 35**, 91 GB free.
+**Package:** `HuggingFaceTB/SmolLM2-135M-Instruct`, `cpu-int4` variant, inference + genai + rag stages
+(no `train/` — see "Still open").
+
+| Gate | Before | After |
+| --- | --- | --- |
+| Python `make check` | 367 / 10 skipped | **374 / 10 skipped** |
+| Kotlin JVM (`make test-jvm`) | 149 | **151** |
+| C++ (`make test-cpp`) | 12 | 12 |
+| **Instrumented (`make device-test`)** | **0 run — all 5 skipped** | **7 pass / 1 skip** |
+
+```
+PASS  ConversationResetTest.twoSequentialPromptsBothComplete          (#23)
+PASS  DualEngineParityTest.nativeAndGenaiAgreeOnGreedyFirstToken      (#11/#24, Gate 0.1 #1)
+PASS  FacadeLoadGenerateTest.fromPretrainedGeneratesAndReportsInferenceFeature (#17/#23)
+PASS  GenAISpikeTest.genaiResolvesExternalDataAndSwapIsObserved       (#10, Gate 0.1 #2/#3/#5)
+PASS  ObjectBoxParityTest.objectBoxRankingAndScoresMatchCosineReference (#25, NEW)
+PASS  RagDeviceTest.ingestThenGroundedGenerate                        (#26/#27)
+PASS  ExampleInstrumentedTest.useAppContext
+SKIP  TrainMergeGenerateTest.trainMergeGenerateDivergesFromBaseline   (needs TRAIN=1)
+```
+
+## The point of this session
+
+The audit's headline deficit was "**an untested seam between the Python export and the Android runtime
+that no device test has ever crossed**." Crossing it took **ten defects**, none of which any host gate
+could see. Every one was found by running, not by reading. The instrumented classes had existed since
+the 2026-07-15 sweep and had **never once executed their bodies** — they `assumeTrue`-skipped, and a
+skip is indistinguishable from a pass in Gradle's output.
+
+## Defects found and fixed on device
+
+**Export → runtime contract (the seam itself):**
+
+1. **No KV geometry in the exported graph → SIGSEGV.** `session_cache.h::loadModelMetadata` sizes the KV
+   cache from ONNX `metadata_props` (`head_dim`/`num_kv_heads`/`num_layers`). The legacy
+   `inference/builder.py` stamped them; the Optimum export never did. `num_layers` stayed 0, no past
+   tensors were created, and `generateWithKVCache` then declared the graph's 63 inputs while binding 3 —
+   an out-of-bounds read inside ORT. Fixed by `_stamp_runtime_metadata` (`export/pipeline.py`), sharing
+   one `_model_dims` with `genai_config.json` so the two can never disagree.
+2. **Tokenizer config written one directory too deep → SIGABRT.** `export_tokenizer_config` appends its
+   own `tokenizer/` under `output_dir`, and it was being handed the tokenizer stage itself, producing
+   `shared/tokenizer/tokenizer/mobiletransformers_tokenizer_config.json`. That file is the *only* carrier
+   of `model.vocab_size`, so on device `vocabSize` stayed 0 and generation aborted in `greedySampling`'s
+   `vocab_size > 0` assert. Now emitted at the right level **and required** — its absence fails the
+   export instead of producing a package that dies at first token.
+3. **Embedding stage was a fail-closed stub**, so `--include-rag` could not produce a package at all and
+   `RagDeviceTest` could never run. Implemented: Optimum `feature-extraction` export + the model's own
+   sentence-transformers pooling grafted on (the device does no pooling), emitting
+   `embedding/{embedding_model.onnx, rag_config.json, tokenizer/}`. Fails closed when the pooled width is
+   not one `DimensionRegistry` can index.
+
+**Public API / facade (all reachable from `fromPretrained`, i.e. every SDK consumer):**
+
+4. **`System.loadLibrary` was never called on the Native path.** Only `ORTGeneratorGenAI` and
+   `GenAISpike` loaded it, so the entire facade path died with
+   `UnsatisfiedLinkError: No implementation found for … createTokenizerSession`. New `NativeLibrary`
+   object is now the single owner and every JNI-declaring class touches it.
+5. **`GenerationConfig` clobbered the package's model identity.** `ORTGenerationConfig` defaults
+   `repoName`/`onnxName` to `"model"`/`".onnx"` and the facade never set them, so the session tried to
+   open `<cache>/model/inference/.onnx`. `LLMRepository` now pins both from what is actually installed
+   (`resolveInferenceGraphName`).
+6. **`RagConfig` did the same to the encoder.** `RagConfig()` defaulted `embeddingRepoId="model"` and
+   `embeddingDimension=256`, wholesale replacing the package's `rag_config.json`. The three encoder
+   identity fields are now nullable — `null` means "whatever the package declares" — and `toOrt(base)`
+   overlays instead of replacing.
+7. **Second turn in a conversation crashed the process.** `pastAttentionMaskLength = attentionMask.size - 2`
+   under-counts the KV cache by one, so turn two built a mask one short of `past + new` and ORT aborted:
+   *"Attempting to broadcast an axis by a dimension other than 1. 51 by 52"*. Now `- 1`. Unreachable from
+   any host test — it needs two real generates in one session.
+8. **Engine parity was broken by prompt construction, not weights.** Native rendered the prompt through
+   the model's chat template; GenAI passed the raw string to `OgaGenerator`. Same package, different
+   tokens, different first token ("Hello" vs ","). GenAI now applies the same `ORTConversationState`
+   rendering and writes the reply back for multi-turn parity. **This is what Gate 0.1 #1 was asserting.**
+9. **ObjectBox stored `document` and `content` swapped**, for every one of the eight dimensions:
+   the entities declare `(id, name, document, content, …)` while `insertVector` passed
+   `(0, name, content, document, …)`. Documents came back with their text in `id` and their id in
+   `text`, and `queryByContent` — which indexes `content` — was searching over ids instead of bodies.
+   Rewritten with named arguments. Caught by the new `ObjectBoxParityTest`; #25 was the one plan the
+   audit called fully sound.
+10. **KV cache tensors were built over freed memory.** `initializeKVCache` used
+    `CreateTensorWithDataAsOrtValue`, which *borrows* the caller's buffer, over a `std::vector<float>`
+    local to each loop iteration. Now allocator-owned.
+
+**Robustness (turned crashes into diagnosable failures):**
+
+- A C++ exception crossing JNI called `std::terminate` and killed the process — one bad step aborted the
+  **entire instrumentation run**, so later tests never reported. `performInferenceStep` now converts to a
+  Java exception (and releases its array elements on both paths).
+- `generateWithKVCache` asserts its bound input/output counts match the graph's before `Run`.
+- `initializeKVCache` fails closed naming the missing metadata instead of producing an empty cache.
+- `DeviceModel.requireCacheRoot` now reports *why* each candidate was rejected. The first run of this
+  session skipped with no explanation; the message is what located defect #4.
+
+## Provisioning (`scripts/device_package.sh`) — it could not have worked as written
+
+- **Pushed to `/data/local/tmp`**, which is SELinux `shell_data_file`: the app domain cannot list it on a
+  modern Android and cannot write it at all (which the merge/checkpoint legs need). Now pushes to the
+  test app's external files dir, already `DeviceModel`'s first candidate.
+- **`adb push` leaves the tree `shell`-owned mode 0770**, so the app got nothing — `listFiles()` returned
+  null. Now `chmod -R 777` after push (production installs are app-owned and writable; the RAG store
+  creates `embedding/database/` *inside* the package).
+- **Never passed `--include-rag`**, so `RagDeviceTest` was structurally unable to run.
+- **`df -m` is rejected by Android 15's toybox**, and under `set -e` the free-space probe killed the
+  script with no output at all.
+- Added: device/ABI preflight, `--validate`, `mt_genai_spike` staging (the #10 suite had no provisioning
+  path and could only ever skip), and a `VARIANT` mismatch check.
+
+## Other decisions taken
+
+- **`ACCEPTED_RSS_DELTA` and Gate 0.2's margin are now ratified** in
+  `01_tier0_foundation_decisions.md` ("Ratified thresholds"). Both gates were previously unfalsifiable —
+  `ACCEPTED_RSS_DELTA` appeared nowhere in the tree, which is why Gate 0.1 was recorded ADOPT with that
+  criterion simply unproven.
+- **x86_64 dropped from `abiFilters`** (and from `android_build_aar.sh`'s default `ABIS`). `jniLibs/x86_64`
+  lacks `libonnxruntime.so` and both tokenizers archives — absent here *and* in `../ORTTransformer` — so
+  `libmobiletransformers.so` has never existed for that ABI. The build advertised an ABI whose consumer
+  would fail at `System.loadLibrary`, and `android_build_aar.sh` already refused to publish it.
+- **`MTF_MMAP_WEIGHTS` is now also a system property** (`debug.mtf.mmap_weights`). An instrumented test
+  cannot set an env var in the process it measures, so the Gate 0.2 four-point table was unreachable.
+  `runtime/MemoryProbe` exposes `VmRSS` + the resolved toggle over `cpp/mem_probe.h`.
+
+## Still open
+
+- **`TrainMergeGenerateTest`** — the only skipping suite. Needs `make device-package TRAIN=1`, i.e. the
+  `ort-training-local` profile run that fills `train/` and the real (non-empty) handoff map. That single
+  run also closes #18/#19's device legs and #9's merged-weight load.
+- **The Gate 0.1 #4 / Gate 0.2 RSS tables.** The probe and the toggle now exist; the harness that walks
+  the four points under each engine and each mmap setting is not written.
+- **Phases 3-5 of the plan are not started**: Migration S6-S8 + the 7 architecture-registry rows; CI
+  provisioning + `device.yml`'s body (still two `echo`s); #30's mavenLocal consumer proof;
+  `RELEASE_CHECKLIST.md`; #35's role vocabulary; `docs/ANDROID_SDK.md`; the bookkeeping de-drift.
+- **The exported `cpu-int4` variant is not actually quantized.** `_build_inference_stage` runs Optimum
+  with no quantization step, so the variant id claims int4 while the graph is fp32 (`model.onnx_data`
+  is 650 MB for a 135M model). The device legs above all passed on that fp32 graph, so this is an
+  honesty bug in the variant naming, not a blocker — but it must be fixed or renamed before release.
+
+## Training-stage export (2026-08-08, cont.) — `--stages training` had never run either
+
+Producing the `TRAIN=1` package needed for `TrainMergeGenerateTest` meant running
+`_build_training_stage` for the first time on a real model. It failed **six** times, each on a different
+defect. Like the device legs, none of these were visible to any host gate — `tests/integration/
+test_training_stage_smoke.py` is env-gated and never runs in CI, and Gate 0.3's smoke uses a model small
+enough to miss two of these code paths entirely.
+
+1. **`peft.peft_model.PEFT_TYPE_TO_MODEL_MAPPING` no longer exists.** peft renamed it to
+   `PEFT_TYPE_TO_TUNER_MAPPING` in 0.15, so `export/training_export.py` did not import at all. Now
+   accepts both spellings.
+2. **The profile had drifted off its own recorded pairing.** `ort-training-local` pinned torch,
+   transformers, numpy and onnx to `manifest.json`'s `paired_stack` but left `peft>=0.13` floating, which
+   resolved to 0.19 — and peft 0.19 needs `torch.distributed.tensor` (torch >= 2.8) while the group pins
+   torch 2.7.1, so `get_peft_model` died with `AttributeError: module 'torch.distributed' has no
+   attribute 'tensor'`. Now pinned `peft==0.13.2`, matching the manifest. **`uv lock` updated.**
+3. **`sklearn` was an import-time dependency of every training export.** `lora_xs/svd_utils.py` imported
+   `TruncatedSVD` at module scope, and `training_export.py` imports `initialization_utils` at module
+   scope, so a plain `--peft lora` run died with `ModuleNotFoundError: No module named 'sklearn'` —
+   scikit-learn is in no profile. Now imported lazily inside `run_svd`, with a message naming the fix, so
+   only the LoRA-XS path needs it.
+4. **`HF_TOKEN` was hard-required for public models.** `optimum_hf_export` called
+   `settings.require_hf_token()` in three places, so exporting a public model with no token configured
+   failed. The 2026-08-07 secrets migration (P3.21) over-applied `require_` here; these are now the
+   optional `settings.hf_token`, which is what `AutoModel.from_pretrained` wants anyway.
+5. **ORT-training's `onnxblock` collides with itself on any model large enough to use external data.**
+   Every `Block` writes `temp.onnx` + `temp.onnx.data` into the **current working directory**
+   (`blocks.py:36`) under one shared filename and only removes them in `__del__`, so the second Block of
+   a `generate_artifacts` run saves onto the first's file — and onnx >= 1.16 raises
+   `FileExistsError: External data file exists in temp.onnx.data` rather than overwriting. ORT 1.23 +
+   onnx 1.18 is exactly the pairing `manifest.json` records, so this is not drift to pin away; Gate 0.3's
+   smoke misses it because its model never takes the `has_path` branch. `gen_artifacts` now restores
+   pre-1.16 overwrite semantics for the duration of that one call (`_onnx_external_data_overwrite`).
+6. **The quantized-name hazard, again — this time fatal.** `gen_artifacts` selects `requires_grad` by
+   **substring**, so a trainable `…lora_B.lora.weight` also matched `…lora_B.lora.weight_quantized` and
+   its `_scale`/`_zero_point`. Those are not differentiable, and ORT rejected the entire artifact
+   generation: *"Cannot compute the partial derivative for '…weight_quantized' as it's unreachable from
+   the output node(s)"*. So **no quantized PEFT export could ever produce training artifacts.** Fixed by
+   excluding the quantizer's companion suffixes — the same hazard `HandoffMap.validate` already guards on
+   the emit side.
+
+**Standing lesson:** every one of these sat behind an env-gated code path that CI cannot reach. The
+`ort-training-local` profile is exercised by exactly one smoke test, on a model small enough to skip two
+of the branches above. Until the training stage runs on a real model in some automated place, expect this
+class of breakage to keep accumulating silently.
+
+### Where the training stage stands now (the next agent starts here)
+
+After the six fixes above, `--stages training` gets **all the way through
+`artifacts.generate_artifacts`** — the training / eval / optimizer graphs and the checkpoint are built
+successfully for SmolLM2-135M with `--peft lora --quant int4`. That is new; it had never happened.
+
+It then fails in the **next** step, `export_inference_package`, with:
+
+```
+export failed: no inference initializers matched the adapted layers;
+inference/training naming drifted
+(trainable seeds: ['base_model.model.model.layers.0.attn.k_proj.MatMul', ...])
+```
+
+**This is the #8/#9 tensor-identity contract failing, and the cause is structural.**
+
+*(First diagnosis in this section was `attn` vs `self_attn` — that is real but it is NOT the blocker.
+Corrected below after inspecting the actual graph.)*
+
+The Optimum inference export **does not preserve HF parameter names for the projection weights at all**.
+Inspecting the exported `model.onnx`:
+
+```
+total initializers: 273
+  model.embed_tokens.weight
+  model.layers.0.input_layernorm.weight        <- names survive for norms/embeddings
+  ...
+non-norm/embed initializers: 212
+  model.norm.weight
+  onnx::MatMul_8914                            <- every q/k/v/o and MLP weight
+  onnx::MatMul_8915
+  onnx::MatMul_8916
+```
+
+`torch.onnx` inlines each `nn.Linear` weight as an **anonymous** `onnx::MatMul_<n>` initializer. There is
+no `…self_attn.q_proj…` initializer to key anything onto — so no rewrite of the seed spelling can ever
+match, because the target does not exist under any name.
+
+The legacy `inference/builder.py` graph *did* preserve `<layer>.MatMul.weight`, which is precisely why the
+whole #8/#9 handoff-map design assumes name-based identity and why `weight_merger.cpp:904` has a rewrite
+rule at all. **#7 replaced the inference front door with Optimum and the handoff-map contract was never
+re-validated against it** — the two halves have only ever been exercised separately.
+
+So this needs a decision, not a patch. The options:
+
+1. **Make the inference export preserve parameter names.** A post-export pass that walks each `MatMul`
+   node and renames its anonymous weight initializer back to the module path (recoverable from the node's
+   own name, e.g. `/model/layers.0/self_attn/q_proj/MatMul`). Keeps the #8/#9 contract and the C++ mirror
+   intact; the most contained option, and the one that matches what `docs/MODEL_FORMAT.md` already
+   documents.
+2. **Key the handoff map on something other than names** (node identity / graph position). Contradicts the
+   documented contract and the C++ reader; large blast radius.
+3. **Use the legacy builder for training-capable inference graphs.** It preserves the names, but it is
+   unimportable under the `export` profile (`tests/unit/test_guards.py:38-41`), so this reopens a problem
+   #7 deliberately closed.
+
+Option 1 is the recommendation. Whichever is chosen, `docs/MODEL_FORMAT.md` must state which side owns
+tensor identity — it currently documents the map's *shape* but never says who names the tensors.
+
+**What was changed here (and what it does not fix):** `TrainableTensorCodec.candidate_inference_names`
+now offers both the legacy `attn` and canonical `self_attn` spellings, with tests
+(`tests/unit/test_handoff_map.py`). That is a correct generalization and keeps
+`canonical_inference_name`'s C++-mirrored result unchanged — but it does **not** unblock this, because the
+initializers are anonymous. Do not mistake it for the fix.
+
+Until then `TrainMergeGenerateTest` stays skipped and #9/#18/#19 stay open.
+
+### Tensor identity: fixed at the source (2026-08-08, cont.)
+
+The anonymous-initializer problem above is **resolved**, and deliberately not by patching the consumers.
+
+`handoff_io.h:25` is explicit — *"No string-rewrite on device"*: the C++ merger and loader read canonical
+names out of `inferenceInitializerNames`, they never re-derive them. So Python already owned naming, and
+the fix could be made once, in the place that already guarantees canonical IO names.
+
+**`export/normalize.py::canonicalize_initializer_names`** walks the graph and gives every anonymous
+weight initializer the module path of the node that consumes it:
+
+```
+/model/layers.0/self_attn/q_proj/MatMul   ->   model.layers.0.self_attn.q_proj.MatMul.weight
+```
+
+Why this rather than a rewrite table:
+
+- **Identity comes from the graph's own structure.** `torch.onnx` names each node after the module that
+  produced it, so nothing is guessed and there is no per-architecture table to maintain. It covers every
+  named module — MLP projections and `o_proj` included, not just the currently-adapted `q_proj`/`k_proj`.
+- **It lands exactly on the shape the contract already parses.** `<seed>.<role-token>` is what
+  `inference_package._seed_and_token` splits on, so #8's codec, #9's merger and #23's loader are unchanged.
+- **Idempotent and non-destructive.** Initializers that already carry real names (legacy
+  `inference/builder.py` graphs, or re-normalising an existing package) are left alone, so old packages
+  keep working and re-running is safe.
+- **Runs before the external-data split**, so each trainable tensor's `<name>.bin` is written under its
+  final name.
+
+The training half meets it there: **`_strip_wrapper_prefixes`** (`artifacts/handoff_map.py`) now removes
+`backbone.` *and* peft's `base_model.model.` generically, looping because the wrappers nest. Only
+`backbone.` came off before, which is why seeds still carried `base_model.model.` even after the
+attention-spelling fix.
+
+**Naming authority is now a single point in the pipeline** — `normalize.py` for the inference side,
+`_strip_wrapper_prefixes` + `candidate_inference_names` for the training side, meeting at the model's own
+module path. `docs/MODEL_FORMAT.md` should state this explicitly; it still documents only the map's shape.
+
+### A seventh training-stage defect: TRAIN=1 poisons its own environment
+
+`make device-package TRAIN=1` failed where running the training stage alone succeeded:
+
+```
+ImportError: cannot import name 'PropagateCastOpsStrategy' from 'onnxruntime.capi._pybind_state'
+```
+
+Step 1 installs the **export** profile's stock `onnxruntime` into the shared `.venv`; `uv run --group
+ort-training-local` then does **not** displace it, because the source-built training wheel provides a
+distribution of the same name and the resolver treats the requirement as already satisfied. The training
+import then finds a runtime with no training APIs. `scripts/device_package.sh` now does an explicit
+`uv sync` before `uv run --no-sync` for that stage.
+
+Note the recovery is not free: switching the shared `.venv` between these two profiles can leave
+`onnxruntime` half-installed ("unknown location"), and the reliable reset is `rm -rf .venv` followed by a
+fresh profile sync. This is the sharp edge behind the handoff's long-standing "`uv run` mutates `.venv`"
+warning, now with a concrete reproduction.
+
+### Training stage now SUCCEEDS; the remaining gap is data, not naming
+
+With the identity fix in place, `--stages training` completes (`EXIT=0`) and produces a real
+train-capable package:
+
+```
+train/  checkpoint  training_model.onnx  eval_model.onnx  optimizer_model.onnx
+        training_config.json  trainable_parameters.json
+weight_handoff_map.json:  60 entries   (30 layers x q_proj/k_proj)
+  base_model.model.model.layers.0.self_attn.k_proj.base_layer
+    -> model.layers.0.self_attn.k_proj.MatMul.weight
+```
+
+**The tensor-identity contract is closed.** 1.59 GB pushed to the device; `train/` is present and the
+suite no longer skips.
+
+`TrainMergeGenerateTest` now *runs* and fails on the next thing, which is a **packaging gap, not a
+naming one**:
+
+```
+java.lang.IllegalArgumentException: Unsupported task: none.
+Please provide a customPreprocess function.
+```
+
+Two fields the exported `train/` stage does not carry:
+
+1. **`taskName`** — `FileUtil.kt:68` reads `trainConfig.optString("taskName", "none")` and
+   `DataUtil.kt:71` fails closed on anything outside
+   `logiqa | boolq | mini_personalqa | mini_recommendation | cola`. `_build_training_stage` passes
+   `training_config={}` into `gen_artifacts`, so the field is never written.
+2. **The dataset itself.** `ORTTrainerNative.kt:37` builds its `ORTDataCurator` over
+   `<cacheDir>/<repo>/train/<datasetOptions.trainFile>` (default `arc_e`). The train stage ships model
+   artifacts only — no data file — so even with a valid `taskName` there is nothing to read.
+
+So an on-device training run needs the exporter to (a) record `taskName` in `training_config.json` and
+(b) either ship a small dataset into `train/` or have the facade accept a caller-supplied dataset path /
+`customPreprocess`. That is a deliberate product decision — shipping training data inside a model package
+is a licensing and size question — and it should be settled before the code is written. `TrainingConfig`
+already exposes `DatasetConfig(trainFile=…)`, so the caller-supplied route is likely the right one, with
+the instrumented test pushing its own tiny fixture.
+
+**Net:** #9's handoff-map emit is proven end to end. #18/#19's device train→merge→generate remains open
+on the data question above, not on tensor identity.
+
+### train -> LOAD proven on device; MERGE is a no-op (2026-08-08, cont.) [CORRECTED]
+
+`TrainMergeGenerateTest` now runs the full flow on the S21 FE (93 s): baseline generate -> train 1 step
+-> merge -> reload -> generate. The chain the whole restructure exists to deliver is **verified**:
+
+```
+Loaded merged initializer: model.layers.20.self_attn.q_proj.MatMul.weight
+                            <- model.layers.20.self_attn.q_proj.MatMul.weight.bin
+...  (60 entries)
+Successfully initialized WeightSessionCache from .../inference
+```
+
+Those names are exactly what `normalize.py::canonicalize_initializer_names` emits, so the #8 map and the
+#23 load side agree on tensor identity **on a real device, on a real package**.
+
+**CORRECTION (later in the same session).** An earlier version of this note claimed the *merge* was
+proven too. It is not. Those `Loaded merged initializer` lines are the **load** side reading the
+per-tensor `.bin` files, which exist from the export's trainable split whether or not anything was
+merged into them. Once `TrainMergeGenerateTest` was changed to fingerprint those files, it failed:
+
+```
+merge wrote no new weights: all 60 trainable .bin files are unchanged
+```
+
+and logcat gives the reason, once per layer:
+
+```
+I Running lora merger for: backbone.model.layers.0.self_attn.q_proj
+E Merger model not found for variant: lora
+```
+
+**The merger-variant key does not match.** The package emits `mergerModels = {"lora_q":
+"merger_lora_q_qin_qout.onnx"}` (quantized-in/quantized-out), and the file is present in
+`inference/`; the device asks for variant **`lora`**. So `merge()` runs, finds no graph for its key,
+logs, and continues — **fail-open**, which is what P1.8 was supposed to have closed. A partial/empty
+merge still reports success to the caller.
+
+Two things to fix, in this order:
+
+1. **Reconcile the `MergerVariant` key** between `config/registry/merger.py`'s emit side (which
+   chose `lora_q` from the quantized in/out spec) and the device's lookup (which asks for `lora`).
+   The C++ mirror is `handoff_io.h`'s `MergerVariant`; `tests/unit/test_merger_builder.py` pins the
+   Python side to goldens, so change whichever is wrong and re-pin, do not paper over it.
+2. **Make the miss fail closed.** `weight_merger.cpp` logging `Merger model not found` and carrying
+   on is exactly the silent-degradation mode #9's DoD forbids; it should abort the merge.
+
+This is a good outcome for the test, not a regression: the byte-fingerprint assertion caught a
+no-op merge that the previous text-comparison assertion had reported as a mere 'output did not
+diverge'. Keep the fingerprint assertion.
+
+Two more defects fixed getting here:
+
+- **`TrainConfig.toOrt()` clobbered model identity**, same bug as generation and RAG: it built a fresh
+  `ORTTrainingConfig`, resetting `repoName`/`onnxName`/`taskName`, so the trainer looked for data under
+  `<cacheDir>/model/train/`. It now overlays the package's parsed config, and `LLMRepository` pins
+  `repoName` to the installed directory. **All three config paths had the identical defect** — worth a
+  guard so a fourth cannot appear.
+- **`destroySession` double-free.** The native handle was passed to `releaseTrainingSession`
+  unconditionally and never cleared, so the second call (training end, then teardown) freed an
+  already-freed `TrainingSessionCache` and killed the process with SIGSEGV. Now idempotent and
+  `@Synchronized`.
+
+**The dataset question is resolved without a packaging decision.** `DatasetConfig` gained `task`
+(nullable, falling back to whatever the package declares): the caller supplies the data *and* names the
+preprocessor that parses it, so packages need not ship training sets. `TrainMergeGenerateTest` writes its
+own 8-row `cola` JSONL fixture into `train/`.
+
+**Remaining: the assertion, not the pipeline.** The test fails on
+`merged output did not diverge from baseline` — one LoRA step at lr 1e-4 on q/k only does not shift 8
+greedy tokens, which is expected, not a defect. The assertion is measuring the wrong thing. Replace it
+with something that actually detects the merge: assert the merged `.bin` bytes differ from the pre-merge
+copy, or compare first-token logits, or train enough steps to move the argmax. Everything underneath it
+is proven.
+
+### State at session end — read before the next device run
+
+**The device is un-provisioned.** I ran `adb uninstall com.martinkorelic.mobiletransformers.test` while
+chasing the runner error below, which also deletes `/sdcard/Android/data/<pkg>/files` — so the 1.59 GB
+package is gone from the phone. `build/pkg` on the host is intact and complete (inference + train +
+embedding + genai, with the 60-entry handoff map), so re-provisioning is just the reshape+push, not
+another export:
+
+```bash
+SAN=HuggingFaceTB__SmolLM2-135M-Instruct
+D=/sdcard/Android/data/com.martinkorelic.mobiletransformers.test/files/mt_pkg
+rm -rf build/device_cache && mkdir -p build/device_cache/$SAN
+for s in inference train embedding; do cp -r build/pkg/variants/cpu-int4/$s build/device_cache/$SAN/$s; done
+cp -r build/pkg/shared/tokenizer build/device_cache/$SAN/tokenizer
+adb shell "rm -rf '$D' && mkdir -p '$D'" && adb push build/device_cache/. "$D"
+adb shell "chmod -R 777 '$D'"
+```
+
+(or `make device-package TRAIN=1 MODEL=HuggingFaceTB/SmolLM2-135M-Instruct` to redo it from scratch —
+note the profile-switch caveat above.)
+
+**`TrainMergeGenerateTest`'s assertion was rewritten but NOT re-verified.** It now fingerprints the
+per-tensor `.bin` files before training and asserts that the merge changed at least one of them, which
+is the direct evidence #9's DoD wants; the text comparison is demoted to a logged observation because a
+single LoRA step legitimately leaves 8 greedy tokens unchanged. **It compiles** (`assembleDebugAndroidTest`
+green) but the device run then failed with:
+
+```
+java.lang.RuntimeException: Failed to instantiate test runner class
+androidx.test.internal.runner.junit4.AndroidJUnit4ClassRunner    (Time: 0.011)
+```
+
+This appeared *before* the uninstall, so it is not the missing package. It fails in ~10 ms, i.e. during
+runner construction, not in the test body — so suspect class loading rather than logic. I did not get to
+diagnose it. **The last version that demonstrably ran end to end (93 s, reaching its assertion) is the
+one asserting `after != baseline`;** `git diff` on
+`androidTest/.../TrainMergeGenerateTest.kt` shows exactly what changed on top of it, and reverting that
+one file restores a known-good runnable state if the runner error turns out to be the new code.
+
+Everything else in this session is verified and unaffected: the export pipeline, the naming contract, the
+60-entry handoff map, and the train->merge->load device proof (which was captured on the *previous*
+version of this test, before the assertion rewrite).
+
+### Merger-variant mismatch fixed (2026-08-08, cont.)
+
+Root cause of the no-op merge, and the fix on both sides.
+
+**Python — emit the merger for the tensors that are actually there.** `export_inference_package` chose
+the merger variant from the *requested* `--quant` (`quant_in`/`quant_out` = `plan.quant != "fp16"`), so a
+`--quant int4` run shipped `mergerModels = {"lora_q": …}`. But the inference stage does not quantize, so
+the graph's tensors are fp32 and the device resolves `lora` (`weight_merger.cpp`:
+`has_adapter_A && !has_quantized -> LORA`). It then found no graph for its key and merged nothing.
+
+`_emit_merger_models` is now driven by `any(entry.is_quantized for entry in entries)` — the observed
+state — and logs a loud warning when that disagrees with the request. The warning fires on today's
+packages, which is correct: it is the same requested-vs-actual quantization gap that leaves the
+`cpu-int4` variant holding an fp32 graph. After the fix the package ships
+`{"lora": "merger_lora_fpin_fpout.onnx"}`.
+
+**C++ — a missing merger graph must abort.** `run_merger_model` was `void` and `return`ed after logging
+`Merger model not found for variant`, so `merge_and_export_weights` sailed on and reported *"Weight
+merging process completed successfully"* having merged zero of 60 tensors. It now returns `bool` (every
+early-out and the `catch` return false) and the call site aborts the merge, matching the fail-closed rule
+the unresolved-variant branch immediately above it already followed. P1.8 closed one half of this; this
+was the other.
+
+**Why nothing caught it earlier:** the emit side is unit-tested against goldens, the C++ merger is
+compile-verified, and the two had never been run against each other on a real package. The
+byte-fingerprint assertion in `TrainMergeGenerateTest` is what surfaced it — the previous text-comparison
+assertion reported the same no-op merge as an unremarkable "output did not diverge".
+
+### Next blocker, precisely located: the merge writes a 2x-sized tensor
+
+With the variant mismatch fixed, the merge **runs** (merger graph found, all 60 layers processed) and
+`merge_and_export_weights` reports success. The failure has moved to the reload, where the #23 load-side
+precondition catches it — fail-closed, exactly as designed:
+
+```
+Loaded handoff map: 60 entries
+E Error initializing weight cache: size mismatch for model.layers.9.self_attn.q_proj.MatMul.weight
+  file has 2654208 bytes, map declares float32 331776 elements = 1327104 bytes
+E createInferenceSession failed: merged weights requested but WeightSessionCache::init failed
+  ...; refusing to fall back to base weights
+```
+
+**Exactly 2x** (331776 x 4 = 1327104; the file is 2654208). Ruled out already:
+
+- **Not the merger graph.** `merger_lora_fpin_fpout.onnx` is all float32 and its output is declared
+  `merged_weight [out_features, in_features]` — the same shape as its `weight` input. Nodes are just
+  `MatMul, Mul, Add, Identity`.
+- **Not an appending write.** `write_raw_tensor_atomic` opens with `std::ios::trunc`, writes to a temp
+  and renames; the byte count is `GetElementCount() * dtype_byte_size(GetElementType())` off the tensor
+  itself, so it is self-consistent.
+- **Not the pre-merge `.bin`.** Those load fine (every other device suite passes against them), and the
+  map's declaration matches them.
+
+So the merged `Ort::Value` genuinely carries 2x the elements (or a 2x-wide dtype). The remaining
+suspects, in order: what C++ binds as the merger's `weight` input in
+`WeightMerger::run_merger_model` (`base_layer_params_[...]` — is it the fp32 inference initializer, or
+something from the training checkpoint with a different width?), and whether `adapter_A`/`adapter_B`
+shapes make the `MatMul` broadcast to `[2*out, in]`. Dump the output tensor's shape and element type
+right before `write_raw_tensor_atomic` — one log line will settle it.
+
+**This is a good failure.** Before this session the same run reported *"Weight merging process completed
+successfully"* having merged nothing. It now merges, and when the result is wrong the load refuses it by
+name instead of silently serving base weights.
+
+### The 2x tensor: re-export was silently corrupting the package [FIXED]
+
+Not a merger bug at all. The doubled `.bin` was produced by the **exporter**, and the evidence was in the
+graph itself:
+
+```
+graph dims: [576, 576]  elem_type: FLOAT          -> 331776 elements = 1327104 bytes
+external:   location=...MatMul.weight.bin, offset=1327104, length=1327104
+file bytes: 2654208
+```
+
+`onnx.write_external_data_tensors` **appends** to an existing blob and records each tensor's
+`(offset, length)` into the graph. Re-running an export into a directory that already holds those files
+therefore writes a second copy and re-points the graph at it. The model stays perfectly self-consistent —
+which is why nothing host-side complained, `--validate` passed, and the manifest hashed happily — but
+#23's on-disk contract is *one raw tensor per file at offset 0*, so the device's size check rejects it.
+
+I hit this only because I re-ran `--stages training` into the same `build/pkg` several times while fixing
+the earlier defects. **Any user re-exporting into an existing output directory would have hit it too**,
+and the failure surfaces on device, far from the cause.
+
+**Fix:** `_split_external_data` now deletes the stale `frozen_base.onnx.data`, the per-tensor `.bin`s and
+their `.sha256` sidecars before writing, so a re-export is idempotent.
+
+**Regression test:** `tests/export/test_external_data_idempotent.py` — splits the same model three times
+and asserts each per-tensor blob stays one tensor long, that the graph references it at `offset 0`, and
+that the frozen-base blob does not grow. Two tests, in the core gate (377 -> 379).
+
+**Operational note:** the device merge mutates the package's `.bin` files in place, so a package that has
+been merged into is no longer pristine. If a merge produces bad output, re-push the package before the
+next run — the earlier `TrainMergeGenerateTest` failures were partly this: the *baseline* generate at the
+start of the test was already failing on `.bin`s left doubled by the previous run.
+
+### Current head of the merge chain: "Missing base weight for LoRA merger"
+
+After the export-idempotency fix the package is clean (`.bin` back to the declared 1327104 bytes) and the
+device load is healthy — **60 external initializers added** with correct GQA dims (`[576,576]` q_proj,
+`[576,192]` k_proj). The merge then runs and fails honestly:
+
+```
+Loaded handoff map: 60 entries, 1 merger model(s)
+Loaded merger session 'lora' <- merger_lora_fpin_fpout.onnx        <- variant fix works
+Running lora merger for: backbone.model.layers.9.self_attn.q_proj
+E Missing base weight for LoRA merger
+E merger failed for layer ...; aborting the merge                   <- fail-closed abort
+E MissingArtifactException: weight merge failed ...                 <- surfaces to Kotlin
+```
+
+**Diagnosis.** `WeightMerger::extract_base_layer_params` (`weight_merger.cpp:421-505`) reads base weights
+out of the ORT **CheckpointState**, deriving the key as
+
+```cpp
+replace_prefix(base_layer_name, "base_model.model.model.", "backbone.model.") + ".weight"
+// peft_mapping key: base_model.model.model.layers.9.self_attn.q_proj
+// looked up as:     backbone.model.layers.9.self_attn.q_proj.weight
+```
+
+That name shape does not exist in what this exporter produces. Verified against the emitted package:
+
+- `training_model.onnx` has **0** initializers beginning with `backbone.` (328 initializers total, only
+  4 anonymous `onnx::`), and **no** `*.weight` initializer for `layers.9` at all — ORT moves the
+  parameters into the checkpoint, so the graph only retains `/backbone/model/layers.9/.../MatMul_Grad/
+  *_target_shape` shape constants.
+- So the merger's `.weight` lookup can never hit, for any layer.
+
+**Next step (bounded).** Enumerate the CheckpointState's actual parameter names and reconcile the C++
+rule with them. Note `CheckpointState.load_checkpoint(...)` in ORT 1.23 does not expose an iterable
+`.parameters` — use the C++ `Ort::CheckpointState` API or ORT's checkpoint-dump utility. Then fix
+`extract_base_layer_params`'s key derivation (and give it the same treatment as the Python side: derive
+identity from one place rather than a hardcoded `replace_prefix`). The `.weight_quantized`/`.weight_scale`
+/`.weight_zero_point` lookups immediately above it use the same prefix rule and are equally suspect.
+
+**This is the training-side twin of the inference naming problem fixed earlier this session** — the same
+lesson, on the other half of the contract: a name-shape assumption baked into a consumer, never checked
+against what the producer emits.
+
+**What is now proven on device:** export -> push -> load (60 merged-external initializers, fail-closed on
+any mismatch) -> generate -> train (1 step, real data) -> merge attempt -> honest failure. The only
+unproven link left in train->merge->generate is the base-weight lookup above.
+
+### Base-weight lookup FIXED; merge now runs 11 of 60 and stops on a lifetime bug
+
+**Fixed:** `extract_base_layer_params` asked the checkpoint for `<layer>.weight`. peft wraps the original
+Linear as `base_layer`, so the frozen weight is `<layer>.base_layer.weight` (the adapters sit beside it as
+`<layer>.lora_A.lora.weight`). The `backbone.model.` prefix rewrite was correct all along — only the
+`.base_layer` segment was missing. Confirmed from the package itself (`training_config.json`'s
+`requires_grad`, and the map's `trainingBaseLayerName` which already carries `.base_layer`), and it now
+matches the predicate the Python codec uses (`inference_package.py`). Appended idempotently so the two
+cannot drift again. Device confirms:
+
+```
+Found non-quantized weight: backbone.model.layers.9.self_attn.q_proj.base_layer.weight
+```
+
+**Now blocked one layer deeper — a parameter-lifetime bug.** The merge gets through **11** layers, then:
+
+```
+Completed lora merger            x11
+E unresolved merger variant for layer backbone.model.layers.3.self_attn.k_proj; aborting the merge
+```
+
+Extraction is NOT the problem — the log confirms all of it succeeded before the loop started:
+
+- `Extracted base layer params` x **60**
+- `Found adapter_A param` x **60**, `Found adapter_B param` x **60**
+- including `backbone.model.layers.3.self_attn.k_proj.lora_A.lora.weight`
+
+So the adapter for that layer existed and was gone by the time the loop reached it. `resolve_merger_variant`
+returns `nullopt` when neither `has_adapter_A` nor `has_shared_A` holds, which is what "unresolved variant"
+means here — an *emptied* entry, not a missing one.
+
+**Where to look** (`weight_merger.cpp`):
+1. `run_merger_model` `std::move`s adapter/base tensors into its input vector, then calls
+   `free_used_parameters(tracker)`. Check whether the `ParameterTracker` records names such that a layer's
+   free also drops another layer's entries — the failing name is `layers.3` after ~11 merges, and
+   substring-style matching would make `layers.1` collide with `layers.10..19`.
+2. `resolve_merger_variant` (`:651`) and `run_merger_model` (`:671`) both use `map[key]` on
+   `base_layer_params_` / `adapter_params_`. `operator[]` **default-inserts** on a miss, so a genuinely
+   absent key silently becomes an empty entry that reports `has_adapter_A == false` — indistinguishable
+   from "freed". Switch to `.find()` and fail with a message that says *missing* vs *emptied*; that alone
+   will tell you which of the two is happening.
+3. The merge loop iterates `peft_mapping_` (unordered), so the 11 that succeed are not layers 0-10 —
+   ordering is arbitrary. Do not read significance into which layer fails.
+
+**Everything below this point is now proven on device:** export -> push -> load (60 external initializers,
+correct GQA dims, fail-closed on mismatch) -> generate -> train 1 step on real data -> checkpoint ->
+base-weight + adapter extraction (60/60) -> 11 successful LoRA merges. The chain fails honestly and
+loudly at the 12th, having written nothing (`save_merged_parameters` is never reached), and the test
+reports it as `merge wrote no new weights: all 60 trainable .bin files are unchanged`.
+
+### Merge aborted at layer 12/60: the loop was revisiting an already-merged layer
+
+Diagnosed by logging `adapter_params_.size()` once per merge-loop iteration. The loop does not walk 60
+distinct layers:
+
+```
+merge loop: layer=backbone.model.layers.3.self_attn.k_proj  adapters_remaining=51
+merge loop: layer=backbone.model.layers.29.self_attn.q_proj adapters_remaining=50
+merge loop: layer=backbone.model.layers.3.self_attn.k_proj  adapters_remaining=49   <- same layer again
+```
+
+`layers.3.self_attn.k_proj` is visited twice. The first visit merges it and erases its adapter entry; the
+second finds nothing and aborts the whole merge. That is why exactly 11 merges completed and the
+`Missing`/`Unable to determine` counters disagreed — the entry was *erased*, not absent.
+
+**Not duplicate input.** Verified on the host against the emitted `training_config.json`: 60
+`peft_mapping` keys -> 60 distinct adjusted names, zero collisions. `peft_mapping_` is never modified
+during the loop, so a repeated visit to an unmodified `unordered_map` means its traversal was corrupted.
+
+**Cause:** `run_merger_model` called `free_used_parameters(tracker)` *inside* the loop. That releases
+`allocator_` buffers (which ORT may still reference after `std::move` into the input vector) and
+**erases entries from `adapter_params_`** while `merge_and_export_weights` is mid-traversal.
+
+**Fix:** frees are deferred. Each layer's tracker is pushed onto `merge_trackers_`, and the new
+`WeightMerger::release_merge_inputs()` runs them all *after* `save_merged_parameters` — so no map is
+mutated and no buffer is released while anything is still iterating or in use. Cost for a 135M model is
+~50 MB of retained base weights (rank-8 adapters are negligible); the free-as-you-go scheme can come back
+as a measured optimisation once it is demonstrably safe.
+
+**Lesson worth keeping:** three separate symptoms this session — "Missing base weight", "unresolved merger
+variant", and a merge that silently did nothing — were all one never-executed code path. Reading it did
+not find them; running it with one `size()` log did.
+
+### TRAIN -> MERGE -> LOAD -> GENERATE PASSES ON DEVICE (2026-08-08)
+
+`TrainMergeGenerateTest`: **OK (1 test)**, 104 s, Galaxy S21 FE / Android 15 / arm64.
+
+```
+merged 60/60 tensors
+baseline = "The capital of France is Paris.<|im_end|>"
+after    = ",,,,,,,,"
+Weight merging process completed successfully
+```
+
+60 layers merged, 60 per-tensor `.bin` files rewritten, and the reloaded session demonstrably differs
+from the pre-train baseline. **This is the last device box.** #9 (merge + handoff emit), #18 and #19
+(train lifecycle + facade train->merge->generate) now have their device legs.
+
+The final two defects, both name-identity mismatches:
+
+1. **`peft_mapping_[base_layer_name]` used the ADJUSTED name against a RAW-keyed map**, so `operator[]`
+   inserted a fresh entry per layer. That mutated `peft_mapping_` while `merge_and_export_weights` was
+   range-for iterating it (rehash mid-traversal: 12 iterations for 60 layers, one layer visited twice),
+   AND returned default-constructed `alpha`/`rank`, so the merger computed `weight + 0 * (B @ A)` —
+   byte-identical output. One bug, both symptoms. Fixed by passing the caller's `PeftMapping` in.
+2. **`find_handoff_entry` handled the `.base_layer` suffix difference but not the prefix one** — the map
+   keys `base_model.model.model.…`, the merger queries `backbone.model.…`. All 60 merges then failed to
+   find their entry and wrote nothing. Now tries both prefix forms x both suffix forms.
+
+**Caveat, stated plainly:** the post-merge text is `,,,,,,,,`. That is expected for one LoRA step at
+lr 1e-4 over an 8-row synthetic `cola` fixture, and the test asserts *that the merge happened*, not that
+the model improved. "The merge works" and "the merge is numerically sane" are different claims and only
+the first is evidenced. A follow-up should train enough steps to show a falling loss and coherent output.
+
+### The pattern behind 11 of this session's defects — worth fixing structurally
+
+The same layer identity is spelled five different ways, and every consumer re-derives it ad hoc:
+
+| where | form |
+| --- | --- |
+| inference graph | `model.layers.0.self_attn.q_proj.MatMul.weight` |
+| ORT checkpoint | `backbone.model.layers.0.self_attn.q_proj.base_layer.weight` |
+| `peft_mapping` key | `base_model.model.model.layers.0.self_attn.q_proj` |
+| handoff map key | `base_model.model.model.…q_proj.base_layer` |
+| merger runtime | `backbone.model.layers.0.self_attn.q_proj` |
+
+Five of this session's fixes were one of these forms being compared against another. **Recommended
+follow-up:** a single C++ layer-name normalizer (the twin of Python's `_strip_wrapper_prefixes`) that
+every lookup goes through, plus an export-time assertion that each `trainingBaseLayerName` in the map
+resolves to a real checkpoint parameter. That assertion alone would have caught three of today's bugs on
+the host instead of on a phone.
+
+### CORRECTION: Gate 0.1 #1 and #4 are NOT proven — GenAI silently falls back to Native
+
+Two claims made earlier in this handoff are **wrong** and are retracted here.
+
+`ModelRuntimeFactory.create` falls back to Native *transparently* when GenAI fails to load (by design —
+#11 wanted a guaranteed floor). On this package GenAI always fails:
+
+```
+W ModelRuntimeFactory: GenAI engine unavailable, falling back to Native:
+  GenAI OgaCreateModel failed for .../inference
+E OgaCreateModel: Error encountered while parsing genai_config.json
+  JSON Error: model:decoder:session_options: Unknown value "config_entries" at line 12 index 28
+```
+
+Consequences:
+
+- **`DualEngineParityTest` passes by comparing Native with Native.** It is green, and it proves nothing
+  about cross-engine parity. **Gate 0.1 #1 remains unproven.**
+- **Both `MemoryRssTest` rows are Native.** The "GenAI peak 834576 kB vs Native 798468 kB, within the
+  ratified allowance" reading is meaningless — it is Native vs Native, i.e. run-to-run noise.
+  **Gate 0.1 #4 remains unproven.** (The harness itself works; the rows are just not what they claim.)
+
+**Cause:** `_ensure_session_config_entries` (`export/inference_package.py`) injects
+`model.decoder.session_options.config_entries` to point GenAI at the external-initializers folder.
+onnxruntime-genai **0.14 rejects that key outright** and refuses to parse the config. So every package the
+training stage touches is GenAI-unloadable.
+
+**Fix direction:**
+1. Stop emitting `config_entries`, or emit whatever key genai 0.14 actually accepts for an
+   external-initializers folder (check the AAR's schema — the #10 spike's working config is the
+   reference; it loaded fine before the training stage rewrote the file).
+2. **Make the fallback loud.** A transparent fallback that turns a cross-engine test into a same-engine
+   test is worse than a failure. Either `ModelRuntimeFactory.create` should not fall back when an engine
+   was *explicitly requested* (only when auto-selecting), or the tests must assert
+   `model.capabilities.engine == the requested engine`. The second is one line per test and should land
+   regardless.
+
+This is the same lesson as the merge that reported "completed successfully" having merged nothing: a
+silent degradation path made a green test meaningless. Two of the three such paths found this session are
+now fail-closed; this is the third.
+
+---
+
+# Session 2026-08-08 (cont.) — GenAI proven, the name normalizer landed, S7 migrated
+
+Four things closed this session. The first is a retraction being *repaired*, not repeated.
+
+## 1. Gate 0.1 #1 and #4 are now genuinely proven [was RETRACTED, now PASS]
+
+The previous entry retracted these because GenAI silently fell back to Native. Both halves are fixed.
+
+**Root cause, measured rather than guessed.** `config_entries` is not a valid `session_options` key in
+onnxruntime-genai **0.14.1**. Probed by feeding each candidate key to `og.Model()` alone:
+
+| `model.decoder.session_options` | 0.14.1 |
+| --- | --- |
+| `log_id`, `log_severity_level`, `enable_profiling`, `enable_cpu_mem_arena`, `enable_mem_pattern`, `intra_op_num_threads`, `inter_op_num_threads`, `graph_optimization_level`, `custom_ops_library`, `provider`, `provider_options`, `external_data_file` | accepted |
+| **`config_entries`**, `use_env_allocators`, `disable_cpu_ep_fallback`, `providers` | **REJECTED** |
+
+Both the array form and the object form fail identically, so it is the key, not its shape. An
+unsupported key rejects the **whole config** — it is not ignored — which is why one line made every
+training-stage package Native-only.
+
+**Two defects, not one.** The value written was also a *host* path
+(`build/pkg/variants/cpu-int4/inference`), embedded in an artifact whose entire purpose is to be pushed
+to a device. Even on a runtime that accepted the key it would have pointed at nothing.
+
+**Neither was needed.** ONNX external data resolves relative to the model file's directory — exactly
+#23's on-disk contract. Verified on the real 1.3 GB package: with the key stripped it loads under
+0.14.1 and generates coherently (`"The capital of France is Paris. Paris is the largest city in France
+and the"`).
+
+**Fixes.**
+- `_ensure_session_config_entries` → `_sanitize_genai_session_options`: an **allow-list** that drops any
+  key the bundled runtime cannot parse, with a loud warning. Sanitising (not merely not-emitting) because
+  `genai_config.json` is produced upstream and only augmented here, so a bad key introduced anywhere
+  ahead of this point would otherwise ship. `runtime_inference_dir` is deleted — a dead parameter that
+  existed only to feed the host path.
+- **The fallback is now conditional on who chose the engine.** `ModelRuntimeFactory.mayFallBackToNative`
+  (pure, JVM-tested) says: auto-selected GenAI may fall back to the Native floor; *explicitly requested*
+  GenAI raises `EngineUnavailableException`. Asking for an engine and silently getting another is not a
+  graceful degradation, it is a wrong answer.
+
+**Device result — 10/10 instrumented tests, 0 skipped**, the first run where nothing skipped (a skip had
+been indistinguishable from a pass at the gate). Galaxy S21 FE / Android 15 / arm64.
+
+| | pre-load | post-load | post-token | post-release | **peak** |
+| --- | --- | --- | --- | --- | --- |
+| native | 482,584 | 482,828 | 828,024 | 299,044 | **828,024 kB** |
+| genai | 299,048 | 299,304 | 796,544 | 490,204 | **796,544 kB** |
+
+GenAI peaks **31,480 kB below** Native. Both rows now record `capabilities.engine` — the engine that
+actually ran — because labelling a row with the *request* is precisely how two Native measurements were
+once published as a cross-engine comparison.
+
+**A fourth silent-degradation path found while fixing this.** `LLMRepository.prepareGeneration` caught
+every exception, logged it, and set `llmState = ReadyGenerate` with `modelRuntime == null`;
+`runGenerationStream` then logged "Model has not been initialized" and returned. So a generate() that
+produced nothing and reported no error, with the real cause only in logcat. The failure is now retained
+(`lastGenerationSessionFailure`) and re-raised when work is requested.
+
+**Consequence for Gate 0.2 that must not be lost:** the mmap plan's Experiment (d) forwards ORT config
+keys to the session *through* `config_entries`. That transport does not exist on 0.14.1, so the
+experiment is **not executable as specified**. Gate 0.2 has to be met on the Native engine (which builds
+its own `Ort::SessionOptions` in C++) or on a genai version that accepts the key. `01_tier0_foundation_decisions.md`
+now carries a correction section; all ten claim sites in it are struck through individually.
+
+## 2. One shared C++ layer-name normalizer — the structural fix for 5 defects
+
+`cpp/layer_name.h`: one definition of how an adapted layer is spelled, the twin of Python's
+`handoff_map._strip_wrapper_prefixes`. `to_checkpoint` / `to_raw` / `with_base_layer` /
+`checkpoint_weight_param` / `candidate_handoff_keys`.
+
+**Nine** call sites in `weight_merger.cpp` were open-coding the prefix rewrite as string literals; all
+nine now route through the header, and `WeightMerger::replace_prefix` is **deleted** so it cannot be
+re-used. 10 host tests (`test_layer_name.cpp`), each encoding a defect that actually shipped —
+C++ host suite 12 → **22**.
+
+Re-ran the full device suite after the refactor: **10/10, merged 60/60 tensors**. The refactor is
+behaviour-preserving on real hardware, not just compile-clean.
+
+## 3. The export-time assertion that would have caught three of them on the host
+
+`artifacts/checkpoint_names.py::verify_handoff_names_resolve` — every `trainingBaseLayerName` in the
+handoff map must name a parameter the checkpoint actually contains. Wired into the training stage, so a
+package whose merge cannot possibly work fails the export instead of the phone.
+
+It needs **no ORT profile**: parameter names are plain UTF-8 in the checkpoint flatbuffer, so membership
+is an exact byte-substring test — no parsing, no schema assumptions, no false positives. Runs in ms.
+
+Verified against the real package: **60/60 resolve**, and the historical buggy spelling
+(`<layer>.weight`, no `.base_layer`) returns `False` — the check has real discriminating power rather
+than being trivially satisfiable. 9 unit tests.
+
+## 4. Migration S7 — `database/` → `src/mobiletransformers/rag/` (1,421 lines)
+
+Moved with the characterisation net, which earned its keep again: it caught the `logger` symbol dropped
+from the generated shims **and** the ObjectBox `@Entity` decorators falling outside the relocation
+search, both before any human read the diff.
+
+- 4 modules moved; `database/` keeps deprecation shims (removed in S9), cross-checked by AST so every
+  re-exported name provably exists in its target.
+- The one real caller (`evaluation/openehr/openehr_eval.py`) repointed.
+- `rag/__init__.py` documents what the subpackage owns and why it does **not** re-export at package
+  level (objectbox/LangChain are not core deps).
+- Lint/mypy ratchet entries added per the established pattern — `F403`/`F405` are the ObjectBox entity
+  DSL's required star-import, which is a behaviour change to fix, not part of a move.
+- Refined `test_placeholder_subpackages_stay_empty_until_they_are_migrated`: it exempted only
+  *byte-empty* `__init__.py`, which forced a migrated subpackage to stay undocumented. Now exempts any
+  `__init__.py` defining no public symbols, measured with the net's own `public_symbols`.
+
+## 5. Phase 3a — the architecture registry now covers the whole ladder (#6 remainder)
+
+8 → **16** rows. Added Mistral, Phi, PhiMoE, Phi3Small, Phi3V, Nemotron and ChatGLM (**two** rows: a
+quantized ChatGLM declares `ChatGLMForConditionalGeneration`, the HF model declares `ChatGLMModel`, and
+the ladder `or`-ed them).
+
+**The design gap the plan flagged is closed.** Three branches did more than pick a class, and those side
+effects are now data on the row: `option_overrides` (PhiMoE forces cuda+int4), `extra_option_overrides`
+(Phi3V forces `exclude_embeds`), `config_overrides` (ChatGLM forces `hidden_act="swiglu"`), plus
+`warnings` so the operator-facing reasons stop being bare `print`s.
+
+Two findings from verifying rather than assuming the bindings, both checked against the pinned
+optimum-onnx 0.1.0 in the uv cache:
+
+- **Four architectures have no Optimum config at all** (PhiMoE, Phi3Small, Phi3V, ChatGLM). They are
+  inference-only. `onnx_config_class` is now `str | None` and `load_onnx_config_class()` fails closed
+  saying so — binding a plausible-looking name would have died with `AttributeError` at export time.
+- **Gemma2/Gemma3 were bound to the generic `GemmaOnnxConfig`.** `Gemma2OnnxConfig` and
+  `Gemma3OnnxConfig` both exist. Gemma2 adds alternating sliding-window attention and logit soft-capping,
+  so the generic config describes the wrong graph. **Fixed, but NOT exercised end to end** — no profile
+  in this checkout has optimum installed and the paths resolve lazily. The export profile must confirm it.
+
+The dispatch **site** rewrite (`inference/builder.py:3238-3275`) stays blocked on the same thing it
+always was: the module needs `onnxruntime.quantization` symbols no declared profile provides. The guard
+comment now says that precisely, instead of blaming missing registry rows. Ratchet stays at 14.
+
+Also replaced `assert len(peft) > len(ARCHITECTURE_REGISTRY)`, which was a size *proxy* for "wider
+coverage" and went false the moment the registry legitimately grew. It now asserts what actually matters:
+the two tables have **disjoint key spaces** (model_type vs architectures[0]) and PEFT reaches
+encoder/seq2seq models the export registry does not build.
+
+## Gates at session end
+
+| gate | result |
+| --- | --- |
+| Python | **409 passed / 10 skipped** (was 379) |
+| C++ host | **22** (was 12) |
+| Kotlin JVM | **153** (was 151) |
+| Device | **10/10, 0 skipped** (was 9/10) |
+| guard / parity / `uv lock --check` | 5 / OK / clean |
+
+Nothing committed; the tree is dirty by design for review.
+
+## Still open, in priority order
+
+1. **Migration S8 / S6 / S6b / S9.** `evaluation/` (2,882) is next and is **judgement-heavy, not
+   mechanical** — the map says "reusable evaluators to the package, actual tests to `tests/`", and the
+   tree mixes libraries (`eval_adapter_models.py` 745, `recommendation_eval.py` 778) with thin CLI
+   scripts (`benchmark/*` ~30 lines each) and things named `test/` that are not tests. That split needs
+   deciding per file. S6 (`inference/builder.py`, 3,441) is a move guarded only by the symbol/decorator
+   goldens because the module is unimportable everywhere; S6b is the ~2.3k lines of validators the map
+   names but S6–S8 omit. **Deliberately not started** — half a migration leaves shims pointing at both
+   locations, which is worse than none.
+2. **Gate 0.2 needs re-specifying** against the Native engine, because `config_entries` does not exist
+   (see §1). The four-point harness and the `debug.mtf.mmap_weights` toggle already work; only the
+   GenAI leg of the plan is unexecutable.
+3. **Phase 4/5**: CI native-dep provisioning, #30 mavenLocal consumer proof, `RELEASE_CHECKLIST.md`,
+   #35 role vocabulary, `docs/ANDROID_SDK.md`, and the `IMPLEMENTATION_ORDER.md` de-drift.
+4. **Numerical sanity of the merge.** Still only "the merge happened" (60/60 `.bin` files rewritten),
+   not "the merge is correct" — one LoRA step on an 8-row fixture yields `,,,,,,,,`. A run with enough
+   steps to show falling loss and coherent output is the missing evidence.
+
+---
+
+# Session 2026-08-08 (cont. 2) — Gate 0.2 measured, #30 proven, #35 decided
+
+## 6. Gate 0.2 MEASURED — and it FAILS as specified. This is the useful result.
+
+Full 2x2 table via `make device-rss` (S21 FE / Android 15 / arm64, SmolLM2-135M):
+
+| engine | load | pre | postLoad | post1tok | postRel | **peak** |
+| --- | --- | --- | --- | --- | --- | --- |
+| native | copy | 146,652 | 149,044 | 802,468 | 290,552 | **802,468 kB** |
+| native | **mmap** | 148,704 | 151,064 | 751,944 | 455,540 | **751,944 kB** |
+| genai | copy | 290,552 | 290,908 | 795,400 | 489,564 | **795,400 kB** |
+| genai | **mmap** | 455,540 | 455,900 | 796,396 | 475,436 | **796,396 kB** |
+
+- **Gate 0.1 #4: PASS** — GenAI peak is **7,068 kB BELOW** Native (allowance 160,493 kB).
+- **Gate 0.2: FAIL** — **6.3%** peak reduction on Native, **-0.1%** on GenAI, against 15% required.
+
+**The failure is a scope mismatch in the gate, not a defect in the mmap code.** `mmap` lives in
+`WeightSessionCache`, which loads the per-tensor `.bin` files named by the handoff map — the trainable
+split only:
+
+```
+trainable .bin (mmap-eligible):    53.1 MB   ( 8.2% of weight bytes)
+frozen_base.onnx.data (copied):   598.2 MB   (91.8%)
+```
+
+6.3% peak reduction from zero-copying 8.2% of the bytes is **near-proportional** — the implementation
+does what it claims on the bytes it owns. 15% is arithmetically unreachable while 91.8% of the weights
+still load through ORT's own external-data path. The GenAI row is a **no-op by construction** (GenAI
+never routes through `WeightSessionCache`), so `-0.1%` is noise and reads as "not applicable", not
+"regression".
+
+**Does not block v1** — the plan's own criterion calls mmap "an optimization, not a v1 requirement".
+To actually reach 15%, `frozen_base.onnx.data` must be mapped, which is reachable from the Native
+engine's C++ `Ort::SessionOptions` and **not** through `genai_config.json` (no `config_entries`, §1).
+Recorded in `01_tier0_foundation_decisions.md` under "Gate 0.2 RESULT".
+
+## 7. #30 consumer proof — PROVEN, after finding why it never ran
+
+`examples/consumer-app` **had no Gradle wrapper**, so `make consumer-app` died on
+`./gradlew: not found`. The scripts, POM and `maven-publish` config were all real; the one missing file
+meant the box could never be ticked. Wrapper added (copied from the library build, Gradle 8.7).
+
+`make publish-local && make consumer-app` now passes end to end. The consumer is a **separate Gradle
+build** with `RepositoriesMode.FAIL_ON_PROJECT_REPOS`, so it can only resolve the coordinates from
+mavenLocal — it cannot accidentally see the source project.
+
+Verified the APK rather than trusting BUILD SUCCESSFUL: **105 MB**, carrying all 7 native libraries out
+of the AAR (`libonnxruntime.so` 59.9 MB, `libort_gen.so` 28.0 MB, `libmobiletransformers.so` 6.4 MB,
+`libonnxruntime-genai.so` 5.6 MB, `libobjectbox-jni.so` 2.5 MB, 2 JNI shims), all `lib/arm64-v8a/`.
+Compilation alone would not have shown the native payload transfers. This also settles the third-party
+AAR question: onnxruntime-genai is **vendored**, so a consumer declares no extra dependency.
+
+## 8. #35 role vocabulary — DECIDED and enforced, golden untouched
+
+Adopted the **codec** vocabulary as normative: `{weight, weight_quantized, scale, zero_point}`. The tier
+doc's `{adapter, trainable_weight, head}` was never implemented by anything, so the doc was amended to
+match the code rather than the reverse — which is why `federated_record.golden.bin` is **byte-identical**
+and #36's gateway mirrors one vocabulary instead of translating between two.
+
+Two things fixed while there:
+
+- **`aggregation` had two unreachable values.** `average` and `server_only` were declared in a dataclass
+  comment and set by no caller. In a **wire format** that is worse than absent: a peer may legitimately
+  emit one, and `deserialize` accepted it, so a tensor marked `server_only` would have been aggregated
+  as a weighted average. Now rejected on read, along with unknown roles. 8 new tests; 30/30 federated
+  tests pass with the golden intact.
+- **The comm-size claim is corrected in the doc, not quietly.** v1 exchanges merged-weight-shaped
+  tensors (`aggregation_role="merged_base_plus_adapter"`), so per-round traffic is the size of the
+  adapted weights, not the rank-r adapters — off by roughly `d_in*d_out / (r*(d_in+d_out))`. That reads
+  against the tier doc's "do not aggregate merged base weights", and reconciling it is a **v2 decision
+  left explicitly open** rather than silently resolved.
+
+#36 is **no longer gated** on the vocabulary question.
+
+## 9. `docs/ANDROID_SDK.md` — the last missing page
+
+Written from the actual API surface (`MobileTransformers.fromPretrained`, `MobileTransformerModel`,
+the exception hierarchy, `build.gradle.kts`), not from the plan. Covers install-from-mavenLocal,
+features, the two engines, training/merge, RAG, errors and memory. States plainly the three things a
+consumer will otherwise discover the hard way: **arm64-v8a only** (so no x86_64 emulator), **`merge()`
+rewrites the package in place**, and **naming an engine is binding** (`EngineUnavailableException`
+rather than a silent Native substitution). Linked from the README table.
+
+## Bookkeeping de-drift
+
+Ticked with the run recorded (device, Android version, date), never on a skip: #17/#23 facade
+load→generate, #18/#19 train→merge→generate, #23 device trio, #12 RSS experiments, mmap-non-blocking,
+and #30's three boxes.
+
+Deliberately **not** ticked: the two callback-parity boxes. `DualEngineParityTest` proves both engines
+agree on the greedy first token and that GenAI genuinely loaded — it does **not** assert an ordered
+callback-event sequence. Their notes now say what is proven and what is left, and record that the
+blocker (no working dual-engine package) is gone.
+
+## Gates
+
+Python **409 / 10 skipped** · C++ **22** · JVM **153** · device **10/10, 0 skipped** · RSS 2x2 collected
+· consumer APK built from mavenLocal · guard 5 · parity OK · `uv lock --check` clean. Nothing committed.
+
+## Still open
+
+1. **Migration S8 / S6 / S6b / S9** — unchanged, and still deliberately not started (see previous entry).
+2. **Gate 0.2 re-specification** — either scope the 15% to the trainable split, or extend mmap to
+   `frozen_base.onnx.data` and re-measure. Do not restate 6.3% as a pass.
+3. **CI native-dep provisioning** — `ci.yml` android-assemble and `ort-training-smoke.yml` still
+   self-skip; `device.yml` has a real body but no runner.
+4. **#32 relicensing** — CC-BY-NC-4.0 still contradicts the consumable-AAR goal. Now demonstrably not a
+   theoretical blocker: the artifact is proven consumable, and the licence is the only thing preventing
+   anyone from doing so commercially.
+5. **Numerical sanity of the merge** — still "the merge happened", not "the merge is correct".
+
+---
+
+# Session 2026-08-08 (cont. 3) — S8 and S6b migrated; src/ no longer imports any legacy root
+
+## 10. Migration S8 — `evaluation/` (2,882 lines), split on evidence rather than by directory
+
+The Migration Map says "reusable evaluators to the package, actual tests to `tests/`". Neither half of
+that described the tree, so the split was made on a measurable property — **does the module have an
+importable API?**
+
+```
+                                       classes  defs  → destination
+eval_adapter_models.py        (745)          1     1    src/…/evaluation/
+eval_adapter_onnx_model.py     (49)          1     0    src/…/evaluation/
+mobile_evaluator.py           (266)          1     0    src/…/evaluation/
+mobile/{base_mobile_eval,mobile_eval,recommendation_eval}.py    src/…/evaluation/mobile/
+openehr/{openehr_eval,openehr_eval_plots}.py                    src/…/evaluation/openehr/
+benchmark/*.py  (5 files)                    0     0    research/evaluation/benchmark/
+test/*.py       (3 files)                    0     0    research/evaluation/scripts/
+```
+
+The eight files in `benchmark/` and `test/` have **zero classes and zero functions**: they do their work
+in top-level statements, so *importing one runs a benchmark*, and they hardcode
+`experiment_results/TinyLlama_v1.1-lora_xs/...` paths. An installable wheel must not ship modules that
+execute an experiment on import, so they went to `research/` — the same call S5 made for
+`artifact/tflite_builder.py`. (`evaluation/test/` contained no tests, despite the name; nothing moved to
+`tests/`.) Recorded in `RELOCATED_OUT_OF_PACKAGE` with the reason, and in `research/evaluation/README.md`.
+
+`deepeval` is a declared `eval` extra, so dependency availability was **not** the discriminator — worth
+saying, because that was my first hypothesis and it was wrong.
+
+## 11. Migration S6b — the ~2.3k lines of validators the map names but S6–S8 omit
+
+- `inference/validator.py` (518) → `artifacts/validation.py`
+- `trainer/validator.py` (1,251) → `training/validators.py`
+- `trainer/merge_validator.py` (547) → `training/merge_validators.py`
+
+All three had migrated equivalents for every legacy import (`inference.generator`, `tools.utils`,
+`tools.parser_config`, `trainer.utils`), so this was clean rather than blocked.
+
+## 12. Two library helpers were stranded in `research/` — found by the net, not by reading
+
+`test_no_src_to_legacy_imports` failed on `src/…/evaluation/eval_adapter_models.py` importing
+`research.utils`, and again on `training/validators.py` importing `research.offline_train_eval`. **A
+packaged module importing `research.` works from a checkout and fails from an installed wheel** — the
+exact failure that guard exists to catch, and it caught it twice within minutes.
+
+Both were genuine library code sitting in the research tree:
+
+- `load_mars_adapters` (11 lines) → `peft/adapters.py`
+- `PEFTBenchmarkDataset` + `DATASET_MAPPING` (the benchmark dataset registry) →
+  `training/benchmark_datasets.py`
+
+Moved rather than allow-listed, with `research/` re-exporting both so its scripts keep working. Also
+documented why `DATASET_MAPPING` is **not** a duplicate of `config.constants.TASK_NAME_TO_DATASET`:
+different key space (benchmark task ids vs export CLI task names) and it carries a preprocessor id.
+
+## Migration status
+
+**`src/` imports zero legacy roots.** `test_no_src_to_legacy_imports` runs with `ALLOWED = {}` and
+passes, and its companion "wheel is self-contained once the allow-list empties" now asserts positively
+rather than describing debt.
+
+| legacy root | files | shims | real code left |
+| --- | --- | --- | --- |
+| `database/` | 4 | **4/4** | none |
+| `evaluation/` | 8 | **8/8** | none |
+| `peft_models/` | 15 | 13/15 | — |
+| `trainer/` | 6 | 5/6 | — |
+| `inference/` | 6 | 1/6 | **`builder.py` (3,441)** |
+| `artifact/`, `tools/` | 8 | 2/8 | small glue |
+
+**S9 (deleting the shims) is deliberately NOT done.** The shims are what keep existing callers and the
+research tree working; removing them is a breaking change that belongs with a version bump, not tucked
+into a migration pass.
+
+**S6 (`inference/builder.py`, 3,441 lines) remains the one real blocker**, unchanged and for the
+unchanged reason: it needs `onnxruntime.quantization` symbols that **no declared profile provides**, so
+it cannot be imported, executed or tested from this repo. Moving it would be a `git mv` guarded only by
+the symbol/decorator goldens, with its 14-branch dispatch site still unrewritable. The registry rows it
+needs are already in place (§5), so the work is unblocked the moment the profile question is answered.
+
+## Gates
+
+Python **421 passed / 12 skipped** · C++ **22** · JVM **153** · device **10/10, 0 skipped** ·
+guard 5 · parity OK · `uv lock --check` clean · consumer APK from mavenLocal. Nothing committed.
+
+Every moved module's shim was cross-checked by AST — all 15 re-export only names that exist in their
+target. Ruff/mypy ratchet entries added per the established pattern; every entry is style debt carried
+across unchanged, never a behaviour change smuggled into a move.
+
+## GitHub workflows disabled (2026-08-08, at the user's request)
+
+All three are now **`workflow_dispatch`-only**; nothing fires automatically.
+
+| workflow | was | now |
+| --- | --- | --- |
+| `ci.yml` | push (main, restructure, `v*` tags) + pull_request | manual |
+| `device.yml` | manual + nightly cron `17 3 * * *` | manual |
+| `ort-training-smoke.yml` | manual only (never had automatic triggers) | manual (unchanged) |
+
+Rationale recorded in each file: they are not in use, and the native-dependency provisioning question
+they depend on is unresolved, so runs either self-skip or fail for reasons unrelated to the change under
+test — a red badge nobody acts on trains everyone to ignore CI.
+
+**Nothing was deleted.** Every job body is intact and each workflow stays manually runnable from the
+Actions tab. The original `on:` block is preserved verbatim in a comment at the top of each file, so
+re-enabling is restoring one block. `docs/RELEASE_CHECKLIST.md` now flags that its "CI green" item needs
+a manual run (or the triggers restored) rather than assuming a badge.
+
+---
+
+# S6 IS UNBLOCKED — the "unimportable under every profile" claim was wrong
+
+`inference/builder.py` (3,441 lines, largest file in the repo, the last unmigrated one) has been
+recorded across several sessions as blocked because "it needs `onnxruntime.quantization` symbols that
+no declared profile provides". **That diagnosis was wrong**, and it blocked both Migration S6 and the
+rewrite of the 14-branch architecture ladder onto the registry.
+
+## What it actually was: one renamed import
+
+Tested each required symbol against a real onnxruntime (1.27.0):
+
+```
+onnxruntime.quantization.QuantFormat        OK      onnx_quantizer.ONNXQuantizer     OK
+onnxruntime.quantization.QuantType          OK      onnx_quantizer.QuantizationMode  OK
+onnxruntime.quantization.quantize_dynamic   OK
+onnxruntime.quantization.quantize_static    OK
+onnxruntime.quantization.matmul_4bits_quantizer   ← ModuleNotFoundError (the ONLY failure)
+```
+
+ONNX Runtime generalised the 4-bit weight-only MatMul quantizer to N-bit and **renamed both the module
+and the class, deleting the old names** rather than leaving an alias
+(`matmul_4bits_quantizer.py` is a 404 on `microsoft/onnxruntime@main`):
+
+| old | new (verified in ORT 1.27) |
+| --- | --- |
+| `onnxruntime.quantization.matmul_4bits_quantizer` | `onnxruntime.quantization.matmul_nbits_quantizer` |
+| `MatMul4BitsQuantizer` | `MatMulNBitsQuantizer` |
+
+The constructor is call-compatible for our use: every keyword the builder passes (`model`,
+`block_size`, `is_symmetric`, `accuracy_level`, `nodes_to_exclude`, `quant_format`,
+`op_types_to_quantize`) exists on the new class, which adds `bits: int = 4` — so the default already
+means 4-bit and behaviour is preserved without passing it.
+
+## The fix
+
+`export/quantizer_compat.py` resolves the class at call time, newest spelling first, and fails with a
+message naming both spellings, the installed ORT version, and where to add a future one — instead of a
+bare `ModuleNotFoundError` that reads like onnxruntime is missing. A resolver rather than a straight
+edit because **both spellings are live**: this repo pins two ORT lines (1.24.3 and 1.27.0 under
+different resolution markers) plus the source-built training wheel's own, and hard-coding either name
+re-breaks the other. 6 tests, run in the core env against stub modules (no ORT needed).
+
+## Proof
+
+```
+$ .venv-genai-spike/bin/python -c "import inference.builder as b; ..."
+inference/builder.py IMPORTS OK
+  quantizer resolved -> MatMulNBitsQuantizer
+  model classes defined -> 15
+```
+
+(That venv happens to carry onnxruntime 1.27 + torch 2.13 + transformers 5.13 + onnx + numpy; only
+`python-dotenv`, a core project dependency, had to be added to it.)
+
+## What this opens up, in order
+
+1. **The dispatch-site rewrite is now executable and testable.** `inference/builder.py:3238-3275`'s
+   14 branches can consume `ARCHITECTURE_REGISTRY`, whose rows — including the three branches' side
+   effects as `option_overrides` / `extra_option_overrides` / `config_overrides` — are already in place.
+   Then `DISPATCH_ALLOWLIST["inference/builder.py"]` drops 14 → 0 and the guard flips to an assertion.
+2. **S6 itself** — `git mv inference/builder.py src/mobiletransformers/inference/builder.py` + shim,
+   registered in `MODULE_LOCATIONS`/`MIGRATED_PATHS`, ruff/mypy ratchet entries, exactly as S7/S8/S6b
+   went. It is now guarded by an actual import, not only by the symbol/decorator goldens.
+3. **The profile question is smaller than it looked.** The builder needs `onnxruntime` +
+   `torch` + `transformers` + `onnx`, which is the **`export` extra** (`optimum-onnx[onnxruntime]`
+   brings ORT). Worth confirming `export` resolves an ORT that has `matmul_nbits_quantizer` — 1.27
+   does; 1.24.3 needs checking — but with the resolver in place either outcome works.
+4. **`architecture.py`'s `_INF = "inference.builder"` lazy dotted path** moves with S6, and it is the
+   one allow-listed path the wheel-self-containment test watches.
+
+**Caveat, stated plainly:** what is proven is that the module *imports* and that the quantizer class
+resolves. Nothing here executed a quantization or built a graph — the call-compatibility argument above
+is from signature inspection, not a run. The first real export through this path should be checked
+against a known-good int4 package before the fix is trusted for output, not just for import.
+
+## S6 DONE — #6 closed, and both migration allow-lists are now empty
+
+Having unblocked the import, the rest followed in one pass.
+
+**1. The 14-branch ladder is gone.** `inference/builder.py:3243-3280` now resolves through
+`ARCHITECTURE_REGISTRY`, applying each row's `warnings`, `option_overrides` (PhiMoE → cuda+int4),
+`extra_option_overrides` (Phi3V → `exclude_embeds`) and `config_overrides` (ChatGLM → `hidden_act`)
+before constructing. Verified **class-for-class against a live import**:
+
+```
+15/15 branches resolve to the SAME class object the ladder used
+  Gemma, Gemma2, Llama, Mistral, Phi, Phi3(4K/128K), PhiMoE(128K),
+  Phi3Small(8K/128K), Phi3V, Qwen, Nemotron, ChatGLM(x2 architecture strings)
+```
+
+`io_dtype` is still computed *before* the overrides apply — deliberately, because the original ladder
+did the same (PhiMoE mutated `precision`/`execution_provider` after `io_dtype` was fixed). Preserving
+that is faithful; "fixing" it would be an untested behaviour change inside a move.
+
+**2. `git mv inference/builder.py → src/mobiletransformers/inference/builder.py`** + shim (24 symbols,
+AST-verified). `architecture.py`'s `_INF` now points at `mobiletransformers.inference.builder`.
+
+**3. Both ratchets are empty and have become assertions:**
+
+- `DISPATCH_ALLOWLIST = {}` — any string-literal dispatch in a legacy root now fails outright.
+- `ALLOWED_DOTTED = {}` — its only entry was the lazy `inference.builder` path held open for exactly
+  this move. **No dotted string in `src/` resolves into an unpackaged root any more**, which is the
+  failure mode that guard exists for: works from a checkout, breaks from an installed wheel.
+
+**4. Wheel confirmed self-contained:** 121 files, and `mobiletransformers/inference/builder.py`
+(211 KB) is in it. No legacy root leaks in.
+
+Two meta-tests needed refining, both because they encoded "there is debt" as a permanent truth:
+`test_dispatch_allowlist_is_tracked_not_forgotten` demanded an `Owner:` line for debt that no longer
+exists (would have forced a fake entry to stay green), and `ALLOWED_DOTTED`'s shrink-check fired
+correctly the moment the path stopped being legacy.
+
+### Latent bug surfaced by the move — flagged, NOT fixed
+
+Ruff `F821` on the moved file, ×2:
+
+```
+inference/builder.py: Undefined name `q_proj`   (make_mlp_unpacked_lora)
+inference/builder.py: Undefined name `k_proj`
+```
+
+`make_mlp_unpacked_lora` does `mlp.gate_proj = LoraLayer(q_proj)` / `mlp.up_proj = LoraLayer(k_proj)`,
+but neither name is bound in that scope — copy-paste from the attention method, where they should
+almost certainly be `gate_proj`/`up_proj`. It is a **latent `NameError`** that fires the moment that
+LoRA-MLP path runs, which is presumably why it has never been noticed.
+
+**Pre-existing** — verified against `git show HEAD:inference/builder.py` (lines 1803/1808), so the move
+did not introduce it. Left as-is and ratcheted with the reason, because fixing it is a behaviour change
+in code no profile here can execute; it belongs in its own reviewed commit. Tracked, not forgotten.
+
+### Migration status
+
+`database/` and `evaluation/` are pure shims. `inference/` is down to a shim plus small glue. The only
+remaining non-shim legacy code is `artifact/`, `tools/` and a few `trainer/` files (~200 lines of glue).
+
+**S9 (deleting the shims) is still deliberately not done** — it is a breaking change for existing
+callers and belongs with a version bump.
+
+---
+
+# S9 DONE — all seven legacy roots deleted; the restructure is structurally complete
+
+`trainer/`, `artifact/`, `inference/`, `tools/`, `peft_models/`, `database/` and `evaluation/` **no
+longer exist**. Every line of Python is now either in `src/mobiletransformers/`, `tests/`, or `research/`.
+
+## Why this was not a plain `rm`
+
+Three things had to be built first, and each caught something.
+
+**1. The symbol golden depended on the shims.** 30 of its 55 modules had no `MODULE_LOCATIONS` entry
+because "a module whose old path still holds a shim needs no entry" — the shim re-exported the same
+`__all__`, so the golden matched either way. Deleting the shims removed that fallback. Each module's new
+home was derived **from the shim's own import statement** rather than guessed, and the entries were
+added and verified green *while the shims still existed* — so the mapping was proven before anything
+was destroyed.
+
+**2. Two modules were SPLIT, which `MODULE_LOCATIONS` cannot express** (it maps one module to one file):
+
+```
+tools.utils   (10 symbols) -> utils/paths.py + utils/templating.py + training/data.py + training/callbacks.py
+trainer.utils (14 symbols) -> training/preprocessing.py + peft/mapping.py
+```
+
+That is the actual reason S9 was not trivial. Added `MODULE_SPLITS`, which asserts the **union** of the
+parts still covers the golden — coverage no shim test ever had, because a shim only proved the old path
+resolved, never that the split lost nothing.
+
+**3. Empty legacy package `__init__.py` files** (`artifact`, `inference`, `peft_models`,
+`peft_models.lora_xs`, `tools`, `trainer`) are recorded in `REMOVED_EMPTY_PACKAGES`, which **asserts the
+golden holds zero symbols for each** rather than assuming deletion is safe.
+
+## Two real problems caught during the delete
+
+**Data files were about to be lost.** `database/default.json` and `database/objectbox-model.json` are
+the ObjectBox schema, and the migrated `rag/` code references them —
+`rag/builder.py` resolves `script_dir / "objectbox-model.json"`, and `rag/json2entity.py` hardcoded
+`"database/default.json"`. Deleting the root would have left the RAG builder pointing at nothing.
+Both moved into `src/mobiletransformers/rag/`, the hardcoded path is now package-relative
+(`Path(__file__).parent`), and **both files are confirmed present in the built wheel**. The three
+unreferenced `*.sql` profiling queries went to `research/evaluation/mobile_profiling/`.
+
+**`emit_merger_models` was missing from its module's `__all__`.** `config/registry/merger.py` defines it
+and `artifacts/builder.py` imports it, but it was absent from the declared public surface — so the
+module's advertised API disagreed with its real one. Surfaced only because the golden reads `__all__`
+when present. Fixed.
+
+### One non-shim file moved rather than deleted
+
+`inference/generator_genai.py` was the only genuinely non-shim module left in the seven roots. It is a
+**desktop prototype**: no importers anywhere, a hardcoded model path, and two exploratory smokes for the
+onnxruntime-genai Python loop. It was NOT deleted, because the plans explicitly name it as a reference —
+`01_code_plans/03` says it "stays as the desktop reference for the GenAI loop", and the Tier-0 doc cites
+its `params.set_model_input` prototype.
+
+It moved to `research/genai/` with a README saying what it is and is not, and is recorded in
+`RELOCATED_OUT_OF_PACKAGE` with the reason. Same call as the S8 benchmark scripts: a wheel should not
+ship modules that run an experiment on import. The shipping GenAI path is the Android engine
+(`ORTGeneratorGenAI` + `genai_runtime.cpp`), not this file.
+
+## The shim tests were deleted *with* the shims — and replaced by stronger coverage
+
+`test_import_compat.py`'s shim block asserted that each old path resolved, re-exported the **identical
+object** (`is`, so a shim could not redefine), and emitted a `DeprecationWarning`. Those were the reason
+the shims were trustworthy, and they are gone because their subject is gone. What replaced them is
+strictly stronger, and the file now says so in place of the deleted tests:
+
+- `test_symbol_golden.py` proves every public symbol reached its new home, **including the two split
+  modules as a union**;
+- `test_no_src_to_legacy_imports.py` runs with **both** allow-lists empty;
+- `test_import_weight.py` proves the wheel is self-contained.
+
+Also repointed rather than deleted: `test_registries.py`'s "MARS and ablation tables are the same
+object" invariant (a real property, just imported from the new path) and the integration training smoke.
+
+## Config that referenced the roots is now honest
+
+```diff
+-extend-exclude = ["/research/", "/trainer/", "/artifact/", "/inference/", "/tools/",
+-                  "/peft_models/", "/database/", "/evaluation/", "/config.py", ...]
++extend-exclude = ["/research/", "/config.py", "tests/fixtures/tiny_trainable.onnx"]
+
+-exclude = "^(research|trainer|artifact|inference|tools|peft_models|database|evaluation)/"
++exclude = "^research/"
+
+-module = ["artifact.*", "trainer.*", "inference.*", "tools.*", "peft_models.*", "research.*", ...]
++module = ["research.*"]
+
+-LEGACY_ROOTS = ("trainer", "artifact", "inference", "tools", "peft_models", "evaluation", "database")
++LEGACY_ROOTS: tuple[str, ...] = ()
+```
+
+**Every line of migrated code is now linted and type-checked.** It never was before — the roots were
+excluded from both gates, which is how ~17.5k lines moved without ruff or mypy ever seeing them.
+
+## Proof, not assertion
+
+The wheel was installed into a **clean venv** and imported **from outside the checkout** (cwd in
+`/tmp`), so nothing could resolve from the source tree:
+
+```
+imported 10/10 core modules from the installed wheel
+architecture registry rows: 16
+objectbox schema shipped: True
+```
+
+## Gates
+
+Python **410 passed / 12 skipped** · C++ 22 · JVM 153 · device 10/10 · guard 5 · parity OK ·
+`uv lock --check` clean · wheel 123 files, self-contained.
+
+The test count fell 427 → 410 because 17 shim tests were deleted along with their subject. That is a
+reduction in *surface*, not in coverage — see above.
+
+## What is actually left
+
+1. **#32 relicensing** — CC-BY-NC-4.0 still contradicts the consumable-AAR goal, and it is now the
+   single named blocker on the release gate. Everything technical it was waiting behind is done.
+2. **CI native-dep provisioning** — and note the workflows are currently `workflow_dispatch`-only by
+   request, so this is a decision about intent before it is a decision about runners.
+3. **Gate 0.2 re-specification** (scope the 15% to what mmap actually covers, or extend the coverage).
+4. **Numerical sanity of the merge** — still "the merge happened", not "the merge is correct".
+5. **The `F821` in `inference/builder.py`** — a latent `NameError` in `make_mlp_unpacked_lora`,
+   pre-existing, ratcheted with its reason. Worth a small reviewed commit.
+
+---
+
+# Final code pass — parity locked, F821 fixed, and a REAL DEFECT found in on-device training
+
+## 1. `F821` fixed (was ratcheted, now gone)
+
+`make_mlp_unpacked_lora` wrapped `q_proj`/`k_proj`, unbound in that scope, instead of the
+`gate_proj`/`up_proj` it builds immediately above and otherwise **never uses** — which is what makes the
+intent unambiguous. `make_attention_unpacked_lora` is the copy-paste source and shows the exact pattern.
+A latent `NameError` on any unpacked-MLP LoRA export. Ratchet entry shrunk accordingly.
+
+## 2. Callback-sequence parity — #11 and #24's last v1 boxes, PASSING
+
+`DualEngineParityTest.bothEnginesEmitTheSameOrderedCallbackSequence`. `GenerateCallback`'s docstring
+promised `onStartGeneration` → N×`onPartialResult` → `onCompletion` on every engine, and nothing checked
+it. Records the **ordered event names** — order, not counts, because a sequence that completes before
+its last partial is a real API break for a caller driving a UI.
+
+Asserts the contract on Native *first* (two engines identically wrong would otherwise pass as "parity"),
+re-asserts `capabilities.engine` so a fallback can't fake it, then compares the two lists. **Passes.**
+
+## 3. Merge numerical sanity — the caveat is now measured, and it FAILS
+
+Two tests, because the answer is two different things.
+
+**`lossFallsOverTrainingSoTheMergeCarriesRealLearning` — PASSES.** The optimizer genuinely works:
+
+```
+step 16: 10.393  →  20: 10.357  →  24: 10.318  →  28: 10.276
+30 steps: firstThirdMean=10.469  lastThirdMean=10.297  drop=1.6%
+```
+
+Monotonic, smooth, no noise — gradients flow and the optimizer applies them. The threshold (1%) is
+**calibrated against this trace**, not guessed; it separates "applying gradients" from "doing nothing",
+which is all it claims to do.
+
+**`trainingStartsFromPretrainedWeightsNotRandomOnes` — FAILS, and that is the finding.**
+
+```
+initial training loss = 14.25
+uniform-prediction floor = ln(49152) = 10.80
+a working pretrained 135M model on English ≈ 3
+```
+
+The loss starts **above** the uniform floor. A randomly-initialised model would sit at 10.80; worse than
+that means the training graph is not merely un-pretrained but actively mis-parameterised.
+
+**The same package generates coherent text through the inference path** ("The capital of France is
+Paris."), so the weights exist and are correct *for inference*. It is the **training** artifact that
+does not carry them:
+
+```
+training_model.onnx    2.6 MB
+checkpoint           176.3 MB  →  ~44M fp32 params
+SmolLM2-135M                     ~135M params (~540 MB fp32)
+```
+
+Roughly **two thirds of the model is in neither artifact**.
+
+**Why nothing caught this before.** Every existing assertion is byte-level or structural — the merge
+rewrites 60/60 `.bin` files, the handoff names resolve, the reload succeeds — and all of them are
+*correct*. The plumbing genuinely works. Only the numbers are wrong, and no test looked at numbers until
+now. This is the same shape as every other defect this session: two halves each verified alone.
+
+**Left failing on purpose.** Relaxing or deleting it would restore a green suite meaning exactly what the
+pre-fingerprint suite meant: nothing. On-device fine-tuning currently optimises correctly from
+near-random weights, so it cannot improve on the pretrained model — that is a v1 blocker for the
+training feature, and it should be visible.
+
+**Where to look next**, in order: how `gen_artifacts` decides which parameters enter the CheckpointState
+vs stay as graph initializers (the 2.6 MB graph says almost none stay); whether the quantized
+`quant_model.onnx` input to the training export carries dequantizable weights at all; and whether the
+frozen base is expected to be supplied separately at session build (it is not — `frozen_base.onnx.data`
+is 598 MB and lives only in `inference/`).
+
+## Device suite: 12 of 13
+
+| | |
+| --- | --- |
+| PASS | ConversationReset, DualEngineParity ×2, ExampleInstrumented, FacadeLoadGenerate, GenAISpike, MemoryRss ×2, ObjectBoxParity, RagDevice, **TrainConvergence(trend)**, TrainMergeGenerate |
+| FAIL | **TrainConvergence(pretrained-weights)** — the defect above |
+
+Host gates unchanged: Python 410/12 skipped · C++ 22 · JVM 153 · guard 5 · parity OK · lock clean.
+
+## Bookkeeping closed out
+
+- **`IMPLEMENTATION_ORDER.md`**: the two callback-parity boxes (#11, #24) are ticked with the run
+  recorded, now that the ordered-event assertion exists and passes. **94 ticked / 15 unticked (86%)**;
+  11 of the 15 remaining are Tier-3 (#33/#34/#36/#37), which the plan states never block v1.0. Against
+  the 98 in-scope boxes that is 94 done.
+- **`CHANGELOG.md`**: the restructure, the registry, the quantizer-rename resolver, the export-time
+  merge-contract check and the device suite are in `Added`; the GenAI silent-fallback, the swallowed
+  session failure, the shared C++ normalizer, the `F821`, the Gemma bindings, the `__all__` gap and the
+  non-idempotent export are in `Fixed`. A new **`Known issues`** section carries the four things a
+  reader must not discover the hard way: the training-weights defect, Gate 0.2 not being met, arm64-only,
+  and the licence.
+- **`01_tier0_foundation_decisions.md`**: the `config_entries` correction (all ten claim sites struck
+  individually), the Gate 0.1 RESULT with the measured RSS table, and the Gate 0.2 RESULT with the
+  scope-mismatch diagnosis.
+- **`docs/`**: `ANDROID_SDK.md` written and linked from the README; `FEDERATED.md` and
+  `04_code_plans/03` amended for the #35 decision; `RELEASE_CHECKLIST.md` flags that its "CI green"
+  item now needs a manual run.
+
+**Not documented, deliberately:** nothing. The one gap found while auditing this — that the
+`generator_genai.py` relocation was in the test fixtures but not in this file — is fixed above.

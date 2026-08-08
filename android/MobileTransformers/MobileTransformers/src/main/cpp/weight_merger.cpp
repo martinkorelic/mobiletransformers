@@ -3,6 +3,8 @@
 //
 
 #include "weight_merger.h"
+
+#include "layer_name.h"
 #include <jni.h>
 #include <string>
 #include <unordered_map>
@@ -137,6 +139,17 @@ bool write_raw_tensor_atomic(const std::string& final_path, const Ort::Value& te
     size_t count = info.GetElementCount();
     size_t bytes = count * dtype_byte_size(info.GetElementType());
     const void* data = tensor.GetTensorData<uint8_t>();
+    {
+        // Diagnostic: a merged tensor that does not match the handoff map's declared shape is rejected
+        // at load time by WeightSessionCache, far from here. Name the shape at the point of writing.
+        auto shape = info.GetShape();
+        std::string dims;
+        for (size_t i = 0; i < shape.size(); ++i) {
+            dims += (i ? "x" : "") + std::to_string(shape[i]);
+        }
+        LOGI("writing merged tensor %s: shape=[%s] elemtype=%d count=%zu bytes=%zu",
+             final_path.c_str(), dims.c_str(), static_cast<int>(info.GetElementType()), count, bytes);
+    }
     std::string tmp = final_path + ".tmp";
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
@@ -344,13 +357,6 @@ std::vector<int64_t> WeightMerger::get_tensor_shape(const Ort::Value& tensor) {
     return tensor.GetTensorTypeAndShapeInfo().GetShape();
 }
 
-// Replace prefix in parameter name
-std::string WeightMerger::replace_prefix(const std::string& name, const std::string& old_prefix, const std::string& new_prefix) {
-    if (name.substr(0, old_prefix.length()) == old_prefix) {
-        return new_prefix + name.substr(old_prefix.length());
-    }
-    return name;
-}
 
 // Load and parse PEFT mapping from JSON
 bool WeightMerger::load_peft_mapping(const std::string& json_path) {
@@ -411,15 +417,25 @@ void WeightMerger::extract_base_layer_params(Ort::CheckpointState& checkpoint_st
     LOGI("Extracting base layer parameters...");
 
     for (const auto& [base_layer_name, _] : peft_mapping_) {
-        std::string adjusted_name = replace_prefix(base_layer_name, "base_model.model.model.", "backbone.model.");
+        std::string adjusted_name = layer_name::to_checkpoint(base_layer_name);
 
         BaseLayerParams base_params;
 
+        // peft wraps the original Linear as `base_layer`, so the frozen base weight is
+        // `<layer>.base_layer.weight` — the adapters sit beside it as `<layer>.lora_A.lora.weight`.
+        // Looking up `<layer>.weight` (no `.base_layer`) matched nothing in the checkpoint for ANY
+        // layer, so every merge aborted with "Missing base weight for LoRA merger".
+        //
+        // This mirrors what the Python codec already does when it seeds its lookup
+        // (`inference_package.py`: `base if base.endswith(".base_layer") else base + ".base_layer"`),
+        // and it is the same name the handoff map records as `trainingBaseLayerName`.
+        const std::string base_module = layer_name::with_base_layer(adjusted_name);
+
         // Look for different weight parameter types
-        std::string weight_quantized_name = adjusted_name + ".weight_quantized";
-        std::string weight_scale_name = adjusted_name + ".weight_scale";
-        std::string weight_zero_point_name = adjusted_name + ".weight_zero_point";
-        std::string weight_name = adjusted_name + ".weight";
+        std::string weight_quantized_name = base_module + ".weight_quantized";
+        std::string weight_scale_name = base_module + ".weight_scale";
+        std::string weight_zero_point_name = base_module + ".weight_zero_point";
+        std::string weight_name = base_module + ".weight";
 
         // Try to get quantized weight
         auto quantized_tensor = GetParameterIfType(
@@ -502,13 +518,13 @@ void WeightMerger::extract_adapter_params(Ort::CheckpointState& checkpoint_state
     LOGI("Extracting adapter parameters...");
 
     for (const auto& [base_layer_name, mapping] : peft_mapping_) {
-        std::string adjusted_base_name = replace_prefix(base_layer_name, "base_model.model.model.", "backbone.model.");
+        std::string adjusted_base_name = layer_name::to_checkpoint(base_layer_name);
 
         adapter_params_[adjusted_base_name] = std::unordered_map<std::string, AdapterParams>();
 
         // Extract adapter_B
         if (!mapping.adapter_B.empty()) {
-            std::string adapter_name = replace_prefix(mapping.adapter_B, "base_model.model.model.", "backbone.model.");
+            std::string adapter_name = layer_name::to_checkpoint(mapping.adapter_B);
             adapter_name += ".weight";
 
             try {
@@ -526,7 +542,7 @@ void WeightMerger::extract_adapter_params(Ort::CheckpointState& checkpoint_state
 
         // Extract shared_A
         if (!mapping.shared_A.empty()) {
-            std::string adapter_name = replace_prefix(mapping.shared_A, "base_model.model.model.", "backbone.model.");
+            std::string adapter_name = layer_name::to_checkpoint(mapping.shared_A);
             adapter_name += ".weight";
 
             try {
@@ -544,7 +560,7 @@ void WeightMerger::extract_adapter_params(Ort::CheckpointState& checkpoint_state
 
         // Extract intermediate
         if (!mapping.intermediate.empty()) {
-            std::string adapter_name = replace_prefix(mapping.intermediate, "base_model.model.model.", "backbone.model.");
+            std::string adapter_name = layer_name::to_checkpoint(mapping.intermediate);
             adapter_name += ".weight";
 
             try {
@@ -562,7 +578,7 @@ void WeightMerger::extract_adapter_params(Ort::CheckpointState& checkpoint_state
 
         // Extract adapter_A (for LoRA)
         if (!mapping.adapter_A.empty()) {
-            std::string adapter_name = replace_prefix(mapping.adapter_A, "base_model.model.model.", "backbone.model.");
+            std::string adapter_name = layer_name::to_checkpoint(mapping.adapter_A);
             adapter_name += ".weight";
 
             try {
@@ -589,11 +605,17 @@ bool WeightMerger::load_handoff_map(const std::string& json_path) {
 }
 
 const HandoffEntry* WeightMerger::find_handoff_entry(const std::string& base_layer_name) const {
-    auto it = handoff_map_.find(base_layer_name);
-    if (it != handoff_map_.end()) return &it->second;
-    // The map keys the training base layer as "<layer>.base_layer"; the merge loop uses the bare layer.
-    it = handoff_map_.find(base_layer_name + ".base_layer");
-    if (it != handoff_map_.end()) return &it->second;
+    // The merge loop works in "adjusted" space (`backbone.model.<layer>`, no `.base_layer`), while the
+    // handoff map keys entries by the raw training name (`base_model.model.model.<layer>.base_layer`).
+    // Only the `.base_layer` half of that difference was handled, so every merged layer failed to find
+    // its entry and `save_merged_parameters` wrote nothing while reporting per-layer errors — the merge
+    // ran 60/60 and still left all 60 `.bin` files untouched.
+    //
+    // Try both prefix forms and both suffix forms rather than assuming one direction.
+    for (const auto& key : layer_name::candidate_handoff_keys(base_layer_name)) {
+        auto it = handoff_map_.find(key);
+        if (it != handoff_map_.end()) return &it->second;
+    }
     return nullptr;
 }
 
@@ -647,12 +669,13 @@ std::optional<MergerVariant> WeightMerger::resolve_merger_variant(const std::str
     return std::nullopt;
 }
 
-void WeightMerger::run_merger_model(MergerVariant variant, const std::string& base_layer_name) {
+bool WeightMerger::run_merger_model(MergerVariant variant, const std::string& base_layer_name,
+                                   const PeftMapping& mapping) {
     LOGI("Running %s merger for: %s", to_wire(variant), base_layer_name.c_str());
 
     if (merger_sessions_.find(variant) == merger_sessions_.end()) {
         LOGE("Merger model not found for variant: %s", to_wire(variant));
-        return;
+        return false;
     }
 
     try {
@@ -668,15 +691,25 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
         std::vector<const char*> input_names;
 
         // Storage for scalar values (must persist during inference)
-        float alpha_value = peft_mapping_[base_layer_name].alpha;
-        int64_t adapter_index_value = peft_mapping_[base_layer_name].adapter_index;
-        int64_t rank_value = peft_mapping_[base_layer_name].rank;
+        // Take these from the caller's mapping. They used to be read as
+        // `peft_mapping_[base_layer_name]`, but `base_layer_name` here is the ADJUSTED name
+        // (`backbone.model.…`) while `peft_mapping_` is keyed by the RAW name
+        // (`base_model.model.model.…`). `operator[]` therefore inserted a fresh default entry on every
+        // single layer, which caused BOTH observed failures:
+        //   1. it mutated `peft_mapping_` while `merge_and_export_weights` was range-for iterating it,
+        //      rehashing mid-traversal — the loop ran 12 times for 60 layers and revisited one;
+        //   2. alpha/rank/adapter_index came back default-constructed 0, so the merger computed
+        //      `weight + 0 * (B @ A)` == weight and every "successful" merge wrote byte-identical data
+        //      (the `merge wrote no new weights: all 60 unchanged` assertion).
+        float alpha_value = mapping.alpha;
+        int64_t adapter_index_value = mapping.adapter_index;
+        int64_t rank_value = mapping.rank;
 
         if (variant == MergerVariant::LORA) {
             // LoRA merger inputs: base_weight, adapter_A, adapter_B, alpha
             if (!base_params.weight) {
                 LOGE("Missing base weight for LoRA merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*base_params.weight));
             input_names.push_back("weight");
@@ -685,7 +718,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
             if (adapter_params.find("adapter_A") == adapter_params.end() ||
                 !adapter_params["adapter_A"].data) {
                 LOGE("Missing adapter_A for LoRA merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*adapter_params["adapter_A"].data));
             input_names.push_back("adapter_A");
@@ -694,7 +727,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
             if (adapter_params.find("adapter_B") == adapter_params.end() ||
                 !adapter_params["adapter_B"].data) {
                 LOGE("Missing adapter_B for LoRA merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*adapter_params["adapter_B"].data));
             input_names.push_back("adapter_B");
@@ -712,7 +745,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
             // LoRA quantized merger inputs
             if (!base_params.weight_quantized) {
                 LOGE("Missing quantized weight for LoRA quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*base_params.weight_quantized));
             input_names.push_back("weight_quantized");
@@ -720,7 +753,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
 
             if (!base_params.x_scale) {
                 LOGE("Missing x_scale for LoRA quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*base_params.x_scale));
             input_names.push_back("x_scale");
@@ -728,7 +761,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
 
             if (!base_params.x_zero_point) {
                 LOGE("Missing x_zero_point for LoRA quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*base_params.x_zero_point));
             input_names.push_back("x_zero_point");
@@ -737,7 +770,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
             if (adapter_params.find("adapter_A") == adapter_params.end() ||
                 !adapter_params["adapter_A"].data) {
                 LOGE("Missing adapter_A for LoRA quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*adapter_params["adapter_A"].data));
             input_names.push_back("adapter_A");
@@ -746,7 +779,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
             if (adapter_params.find("adapter_B") == adapter_params.end() ||
                 !adapter_params["adapter_B"].data) {
                 LOGE("Missing adapter_B for LoRA quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*adapter_params["adapter_B"].data));
             input_names.push_back("adapter_B");
@@ -763,7 +796,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
             // MARS quantized merger inputs
             if (!base_params.weight_quantized) {
                 LOGE("Missing quantized weight for MARS quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*base_params.weight_quantized));
             input_names.push_back("weight_quantized");
@@ -771,7 +804,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
 
             if (!base_params.x_scale) {
                 LOGE("Missing x_scale for MARS quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*base_params.x_scale));
             input_names.push_back("x_scale");
@@ -779,7 +812,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
 
             if (!base_params.x_zero_point) {
                 LOGE("Missing x_zero_point for MARS quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*base_params.x_zero_point));
             input_names.push_back("x_zero_point");
@@ -788,7 +821,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
             if (adapter_params.find("shared_A") == adapter_params.end() ||
                 !adapter_params["shared_A"].data) {
                 LOGE("Missing shared_A for MARS quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*adapter_params["shared_A"].data));
             input_names.push_back("shared_A");
@@ -797,7 +830,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
             if (adapter_params.find("adapter_B") == adapter_params.end() ||
                 !adapter_params["adapter_B"].data) {
                 LOGE("Missing adapter_B for MARS quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*adapter_params["adapter_B"].data));
             input_names.push_back("adapter_B");
@@ -806,7 +839,7 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
             if (adapter_params.find("intermediate") == adapter_params.end() ||
                 !adapter_params["intermediate"].data) {
                 LOGE("Missing intermediate for MARS quantized merger");
-                return;
+                return false;
             }
             input_tensors.push_back(std::move(*adapter_params["intermediate"].data));
             input_names.push_back("intermediate");
@@ -876,8 +909,14 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
         // Store the merged output
         merged_outputs_[base_layer_name] = std::move(output);
 
-        // Now free the used parameters
-        free_used_parameters(tracker);
+        // Deliberately NOT freeing here: `free_used_parameters` erases from `adapter_params_` and
+        // releases allocator buffers, and doing that mid-merge mutates state the surrounding loop
+        // still depends on. (This was not what caused the revisited-layer bug — that was the
+        // `peft_mapping_[...]` insert below — but mutating containers mid-traversal is the same
+        // hazard and is not worth keeping.) Deferred to release_merge_inputs(); costs ~50 MB of
+        // retained base weights on a 135M model, and free-as-you-go can return as a measured
+        // optimization once it is demonstrably safe.
+        merge_trackers_.push_back(tracker);
 
         // Clear input and output tensors
         input_tensors.clear();
@@ -887,10 +926,21 @@ void WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
 
     } catch (const std::exception& e) {
         LOGE("Error running merger model %s for %s: %s", to_wire(variant), base_layer_name.c_str(), e.what());
+        return false;
     }
+    return true;
 }
 
 // Add this method to your WeightMerger class
+// Release every buffer the merge borrowed, after the loop has finished. Split out from the merge so
+// the maps are never mutated while `merge_and_export_weights` is walking them.
+void WeightMerger::release_merge_inputs() {
+    for (const auto& tracker : merge_trackers_) {
+        free_used_parameters(tracker);
+    }
+    merge_trackers_.clear();
+}
+
 void WeightMerger::free_used_parameters(const ParameterTracker& tracker) {
     //LOGI("Freeing used parameters for layer: %s", tracker.base_layer_name.c_str());
 
@@ -946,6 +996,7 @@ void WeightMerger::free_used_parameters(const ParameterTracker& tracker) {
 
         // If no more adapter parameters for this layer, remove the entire entry
         if (adapter_map.empty()) {
+            LOGI("free: erasing adapter entry for %s", tracker.base_layer_name.c_str());
             adapter_params_.erase(adapter_it);
         }
     }
@@ -1078,7 +1129,12 @@ bool WeightMerger::merge_and_export_weights(Ort::CheckpointState& checkpoint_sta
 
     // Process each base layer
     for (const auto& [base_layer_name, mapping] : peft_mapping_) {
-        std::string adjusted_name = replace_prefix(base_layer_name, "base_model.model.model.", "backbone.model.");
+        std::string adjusted_name = layer_name::to_checkpoint(base_layer_name);
+
+        // Diagnostic: adapter_params_ should shrink by exactly one entry per merged layer. Anything
+        // else means entries are disappearing that this loop did not consume.
+        LOGI("merge loop: layer=%s adapters_remaining=%zu base_remaining=%zu",
+             adjusted_name.c_str(), adapter_params_.size(), base_layer_params_.size());
 
         // Determine appropriate merger type
         std::optional<MergerVariant> variant = resolve_merger_variant(adjusted_name);
@@ -1089,12 +1145,20 @@ bool WeightMerger::merge_and_export_weights(Ort::CheckpointState& checkpoint_sta
             return false;
         }
 
-        // Run the appropriate merger
-        run_merger_model(*variant, adjusted_name);
+        // Run the appropriate merger. A miss here (no merger graph shipped for this variant) used to
+        // LOGE and continue, so `merge()` reported success having merged NOTHING — the package shipped a
+        // `lora_q` graph while the device resolved `lora`, and all 60 tensors stayed at base weights.
+        // Same fail-closed rule as the unresolved-variant branch above.
+        if (!run_merger_model(*variant, adjusted_name, mapping)) {
+            LOGE("merger failed for layer %s; aborting the merge", adjusted_name.c_str());
+            return false;
+        }
     }
 
     // Save merged parameters. A partial write must NOT report success (#9).
-    if (!save_merged_parameters(output_directory)) {
+    const bool saved = save_merged_parameters(output_directory);
+    release_merge_inputs();  // deferred cleanup: safe now that nothing is iterating
+    if (!saved) {
         LOGE("Weight merging failed: one or more merged tensors could not be written");
         return false;
     }

@@ -49,7 +49,37 @@ HANDOFF_MAP_FILENAME = "weight_handoff_map.json"
 FROZEN_BASE_BLOB = "frozen_base.onnx.data"
 
 #: The real ORT session-options key that points file/buffer loads at the external-initializer folder.
+#: Valid for a *directly driven* ORT session (the Native engine builds one in C++). It is NOT reachable
+#: through genai_config.json — see GENAI_SESSION_OPTION_KEYS.
 EXTERNAL_INITIALIZERS_FOLDER_KEY = "session.model_external_initializers_file_folder_path"
+
+#: The `model.decoder.session_options` keys the BUNDLED onnxruntime-genai accepts. Probed directly
+#: against onnxruntime-genai 0.14.1 (the version in `src/main/aarLibs/onnxruntime-genai.aar`), not read
+#: off the docs: each key was fed to `og.Model()` alone and classified by whether the config parsed.
+#:
+#: Anything outside this set makes GenAI reject the WHOLE file — it is a hard parse error, not an
+#: ignored key — so an unknown key does not degrade the package, it makes it unloadable. That is how
+#: `config_entries` silently reduced every training-stage package to Native-only.
+#:
+#: NOTE `config_entries` is deliberately absent and must stay absent. onnxruntime.ai's config reference
+#: documents it, and `agent_docs/01_tier0_foundation_decisions.md` records it as available on that
+#: authority, but 0.14.1 rejects it outright. Re-probe before trusting the docs on a version bump.
+GENAI_SESSION_OPTION_KEYS = frozenset(
+    {
+        "log_id",
+        "log_severity_level",
+        "enable_profiling",
+        "enable_cpu_mem_arena",
+        "enable_mem_pattern",
+        "intra_op_num_threads",
+        "inter_op_num_threads",
+        "graph_optimization_level",
+        "custom_ops_library",
+        "provider",
+        "provider_options",
+        "external_data_file",
+    }
+)
 
 #: Reconcile BOTH quantized-tensor vocabularies into the 4 canonical handoff roles: the QDQ /
 #: DequantizeLinear naming the merger emits (weight_quantized/weight_scale/weight_zero_point, see
@@ -154,6 +184,25 @@ def _split_external_data(
 
     trainable_bins: list[Path] = []
     wrote_base = False
+
+    # onnx's write_external_data_tensors APPENDS to an existing blob and records the tensor's (offset,
+    # length) into the graph. Re-exporting into a directory that already holds these files therefore
+    # doubles every `.bin` and points the graph at the second copy — the package still "validates"
+    # (the graph is self-consistent) but the device rejects it, because #23's on-disk contract is one
+    # raw tensor per file at offset 0 and it checks `file size == declared elements * dtype size`.
+    #
+    # That is exactly how a re-run of `--stages training` into an existing `build/pkg` produced
+    # `offset=1327104 length=1327104` inside a 2654208-byte file. Remove the stale blobs first so a
+    # re-export is idempotent rather than silently corrupting.
+    stale = [output_dir / FROZEN_BASE_BLOB]
+    stale += [output_dir / f"{name}.bin" for name in trainable_names]
+    for path in stale:
+        if path.exists():
+            path.unlink()
+        sidecar = path.with_suffix(path.suffix + ".sha256")
+        if sidecar.exists():
+            sidecar.unlink()
+
     for init in model.graph.initializer:
         # set_external_data needs raw_data present.
         if not init.HasField("raw_data"):
@@ -190,22 +239,51 @@ def _emit_merger_models(
     return {spec.variant.value: spec.output_filename}
 
 
-def _ensure_session_config_entries(output_dir: Path, runtime_inference_dir: str) -> None:
-    """Belt-and-suspenders: add the external-initializers-folder ORT entry to an existing
-    ``genai_config.json``. No-op (logged) if the file is not present — full genai_config production is
-    owned by the inference builder / one-command CLI (#15), not this phase."""
+def _sanitize_genai_session_options(output_dir: Path) -> list[str]:
+    """Drop `session_options` keys the bundled GenAI runtime cannot parse, and return the dropped names.
+
+    This used to *add* `config_entries` pointing at the external-initializer folder ("belt and
+    suspenders"). Both halves of that were wrong:
+
+    1. **GenAI 0.14 rejects `config_entries`**, and rejects the entire config with it, so every package
+       this exporter touched was GenAI-unloadable. `ModelRuntimeFactory` then fell back to Native
+       silently, which turned the dual-engine parity test into a Native-vs-Native comparison that
+       passed while proving nothing (Gate 0.1 #1/#4).
+    2. **The value was a host path** (`build/pkg/variants/.../inference`). A package is a relocatable
+       artifact — it gets pushed to a device where that path does not exist — so even on a runtime that
+       accepted the key it would have pointed at nothing.
+
+    Neither is needed: ONNX external-data references resolve **relative to the model file's directory**,
+    which is exactly the on-disk contract #23 already requires (one raw tensor per `<name>.bin` at
+    offset 0, beside `model.onnx`). Verified end to end — the exported package loads under
+    onnxruntime-genai 0.14.1 and generates coherently with no session entry at all.
+
+    Sanitizing rather than merely not-emitting matters because `genai_config.json` is produced upstream
+    (inference builder / #15) and merely augmented here: an unsupported key introduced anywhere ahead of
+    this point would otherwise ship unnoticed and only surface as a fallback on a device.
+    """
     path = output_dir / GENAI_CONFIG_FILENAME
     if not path.exists():
-        logger.info("no %s to augment (produced upstream); skipping session entry", GENAI_CONFIG_FILENAME)
-        return
+        logger.info("no %s to check (produced upstream); skipping", GENAI_CONFIG_FILENAME)
+        return []
     config = json.loads(path.read_text(encoding="utf-8"))
-    session_options = (
-        config.setdefault("model", {}).setdefault("decoder", {}).setdefault("session_options", {})
+    session_options = config.get("model", {}).get("decoder", {}).get("session_options")
+    if not isinstance(session_options, dict):
+        return []
+
+    dropped = sorted(set(session_options) - GENAI_SESSION_OPTION_KEYS)
+    if not dropped:
+        return []
+    for key in dropped:
+        session_options.pop(key)
+    logger.warning(
+        "%s: dropped session_options key(s) the bundled onnxruntime-genai cannot parse: %s. Leaving "
+        "them in makes GenAI reject the whole config and the runtime fall back to Native.",
+        GENAI_CONFIG_FILENAME,
+        ", ".join(dropped),
     )
-    entries = session_options.setdefault("config_entries", [])
-    if not any(e and e[0] == EXTERNAL_INITIALIZERS_FOLDER_KEY for e in entries):
-        entries.append([EXTERNAL_INITIALIZERS_FOLDER_KEY, runtime_inference_dir])
     _atomic_write_sidecar(path, json.dumps(config, indent=2) + "\n")
+    return dropped
 
 
 def export_inference_package(
@@ -217,7 +295,6 @@ def export_inference_package(
     quant_in: bool,
     quant_out: bool,
     handoff_mode: HandoffMode = HandoffMode.EXTERNAL_INITIALIZER,
-    runtime_inference_dir: str | None = None,
 ) -> ExportedPackage:
     """Build the unified inference package from a normalized ``model.onnx`` + training config.
 
@@ -249,11 +326,14 @@ def export_inference_package(
     model = onnx.load(str(model_path), load_external_data=True)
 
     # Trainable seeds are the adapted layers' inference MatMul seeds (canonical, from #8's codec rule).
+    # Both attention-module spellings: the legacy builder's `attn` and Optimum's HF-canonical
+    # `self_attn`. The seed is a lookup key only — the observed initializer name is what gets recorded.
     trainable_seeds = {
-        TrainableTensorCodec.canonical_inference_name(
+        seed
+        for base in peft_mapping
+        for seed in TrainableTensorCodec.candidate_inference_names(
             base if base.endswith(".base_layer") else base + ".base_layer", arch_spec
         )
-        for base in peft_mapping
     }
     observed, trainable_names = _classify_initializers(model, trainable_seeds)
     if not observed:
@@ -284,7 +364,25 @@ def export_inference_package(
             if location in bin_sha:
                 entry.sha256[role] = bin_sha[location]
 
-    merger_models = _emit_merger_models(output_dir, peft_method, quant_in, quant_out)
+    # The merger variant MUST describe the tensors that are actually in the package. The device
+    # resolves the variant from what it observes (`weight_merger.cpp`: `has_adapter_A && !has_quantized
+    # -> LORA`), so shipping a graph keyed on the *requested* quantization means `merge()` looks up a
+    # variant that is not there, logs "Merger model not found", and silently merges nothing.
+    #
+    # That is exactly what happened: `--quant int4` set quant_in/quant_out, so the package shipped
+    # `lora_q`, while the inference stage had emitted an unquantized graph and the device asked for
+    # `lora`. Derive from the entries instead, and make the disagreement loud — it is the same
+    # requested-vs-actual quantization gap that leaves the `cpu-int4` variant holding an fp32 graph.
+    observed_quantized = any(entry.is_quantized for entry in entries)
+    if observed_quantized != (quant_in or quant_out):
+        logger.warning(
+            "requested quantization (in=%s out=%s) disagrees with the exported tensors "
+            "(quantized=%s); emitting the merger for the OBSERVED state so the device can find it",
+            quant_in,
+            quant_out,
+            observed_quantized,
+        )
+    merger_models = _emit_merger_models(output_dir, peft_method, observed_quantized, observed_quantized)
 
     handoff = HandoffMap(entries=entries, handoff_mode=handoff_mode, merger_models=merger_models)
     handoff_map_path = output_dir / HANDOFF_MAP_FILENAME
@@ -294,7 +392,7 @@ def export_inference_package(
     final_model_path = output_dir / MODEL_FILENAME
     onnx.save(model, str(final_model_path))
 
-    _ensure_session_config_entries(output_dir, runtime_inference_dir or str(output_dir))
+    _sanitize_genai_session_options(output_dir)
 
     logger.info(
         "exported inference package: %d trainable tensor(s), frozen_base=%s, mergers=%s -> %s",

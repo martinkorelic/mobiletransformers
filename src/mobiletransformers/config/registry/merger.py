@@ -396,4 +396,7 @@ def emit_merger_models(
     return emitted
 
 
-__all__ = ["MergerSpec", "resolve_merger", "build_merger_model"]
+# `emit_merger_models` was defined here and imported by artifacts/builder.py, but omitted from
+# __all__ — so the module's declared public surface disagreed with its actual one. Surfaced by
+# the S9 symbol golden, which reads __all__ when a module declares one.
+__all__ = ["MergerSpec", "resolve_merger", "build_merger_model", "emit_merger_models"]

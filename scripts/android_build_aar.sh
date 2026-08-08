@@ -15,8 +15,10 @@ JNI_LIBS="${MODULE_DIR}/src/main/jniLibs"
 
 # Libraries the CMake link line requires from jniLibs/<abi>/ (see cpp/CMakeLists.txt).
 REQUIRED_LIBS=(libonnxruntime.so libonnxruntime-genai.so libtokenizers_c.a libtokenizers_cpp.a)
-# Release AARs must carry both ABIs (#30). Override to build a partial artifact for local work.
-ABIS="${ABIS:-arm64-v8a x86_64}"
+# v1 ships arm64-v8a only, matching build.gradle.kts's abiFilters — jniLibs/x86_64 lacks
+# libonnxruntime.so and the tokenizers archives, so libmobiletransformers.so cannot be built for it.
+# Set ABIS="arm64-v8a x86_64" once those are vendored; the completeness check below then enforces it.
+ABIS="${ABIS:-arm64-v8a}"
 
 if [ ! -d "${JNI_LIBS}" ]; then
   echo "error: ${JNI_LIBS} is absent." >&2

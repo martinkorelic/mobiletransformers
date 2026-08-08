@@ -155,8 +155,27 @@ namespace inference {
         logTensorMemoryUsage(input_values);
         output_values.emplace_back(nullptr);
 
+        // Fail closed on an input-count mismatch. `Run` is handed `input_count` (the graph's input
+        // count) and reads that many values out of `input_values`; if the KV cache was never
+        // initialized — which happens when the graph carries no `num_layers` metadata — this reads
+        // past the end of the vector and segfaults inside ORT with an unrelated-looking stack. An
+        // exception naming the two counts points straight at the exporter.
+        if (input_values.size() != input_count) {
+            throw std::runtime_error(
+                    "inference input count mismatch: graph expects " + std::to_string(input_count) +
+                    " inputs but " + std::to_string(input_values.size()) + " were bound (" +
+                    std::to_string(session_cache->past_key_values.size()) +
+                    " KV tensors). The graph is missing the num_layers/num_kv_heads/head_dim metadata "
+                    "the KV cache is sized from — re-export the package.");
+        }
+        if (output_values.size() != output_count) {
+            throw std::runtime_error(
+                    "inference output count mismatch: graph declares " + std::to_string(output_count) +
+                    " outputs but " + std::to_string(output_values.size()) + " slots were prepared.");
+        }
+
         auto session_run_opts = Ort::RunOptions();
-        
+
         // Get the logits
         session_cache->inference_session->Run(session_run_opts, input_names.data(), input_values.data(),
                                               input_count, output_names.data(), output_values.data(), output_count);

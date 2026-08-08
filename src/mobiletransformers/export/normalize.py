@@ -36,6 +36,78 @@ _TOKENIZER_FILES = (
 )
 
 
+#: Initializer-name prefixes the ONNX exporters generate when a tensor has no meaningful name of its own.
+#: `torch.onnx` emits `onnx::MatMul_8914` for every inlined `nn.Linear` weight.
+_ANONYMOUS_INITIALIZER_PREFIXES = ("onnx::", "onnx_")
+
+#: Ops whose constant input is a layer weight worth naming (the merge targets #8/#9 key on).
+_WEIGHTED_OPS = ("MatMul", "Gemm", "Conv")
+
+
+def _is_anonymous(name: str) -> bool:
+    return name.startswith(_ANONYMOUS_INITIALIZER_PREFIXES)
+
+
+def canonicalize_initializer_names(onnx_model: object) -> dict[str, str]:
+    """Give every anonymous weight initializer the module path of the node that consumes it.
+
+    **This is where tensor identity is decided for the whole project.** The #8 handoff map, the #9
+    merger and the on-device loader all key on initializer names (`handoff_io.h:25`: *"No string-rewrite
+    on device"*), and `torch.onnx` — which Optimum uses, and which #7 made the inference front door —
+    inlines each `nn.Linear` weight as an anonymous ``onnx::MatMul_<n>`` initializer. HF parameter names
+    survive only for norms and embeddings, so a trainable projection weight had **no name to key on** and
+    no handoff map could be built for an Optimum-exported package at all.
+
+    The module path is not guessed: `torch.onnx` names the *node* after the module that produced it
+    (``/model/layers.0/self_attn/q_proj/MatMul``), so the weight's identity is recovered from the graph's
+    own structure — no per-architecture table, and it works for any module the exporter names, MLP
+    projections included. The result (``model.layers.0.self_attn.q_proj.MatMul.weight``) is exactly the
+    ``<seed>.<role-token>`` shape `export/inference_package.py` already splits on.
+
+    Idempotent and non-destructive: an initializer that already has a real name (the legacy
+    `inference/builder.py` graphs, or a re-normalized package) is left alone. Returns ``{old: new}``.
+    """
+    initializers = {init.name: init for init in onnx_model.graph.initializer}  # type: ignore[attr-defined]
+    renames: dict[str, str] = {}
+    taken = set(initializers)
+
+    for node in onnx_model.graph.node:  # type: ignore[attr-defined]
+        if node.op_type not in _WEIGHTED_OPS or not node.name.startswith("/"):
+            continue
+        module_path = node.name.lstrip("/").replace("/", ".")
+        for inp in node.input:
+            if inp not in initializers or not _is_anonymous(inp) or inp in renames:
+                continue
+            candidate = f"{module_path}.weight"
+            # Two nodes sharing one module path would collide; keep both addressable rather than
+            # silently dropping one, since a lost name means a lost merge target.
+            suffix = 1
+            while candidate in taken:
+                candidate = f"{module_path}.weight_{suffix}"
+                suffix += 1
+            renames[inp] = candidate
+            taken.add(candidate)
+
+    if not renames:
+        return {}
+
+    for init in onnx_model.graph.initializer:  # type: ignore[attr-defined]
+        if init.name in renames:
+            init.name = renames[init.name]
+    # Every reference must move with it: node inputs, and graph inputs when initializers are declared
+    # there too (older opsets/exporters do this).
+    for node in onnx_model.graph.node:  # type: ignore[attr-defined]
+        for i, inp in enumerate(node.input):
+            if inp in renames:
+                node.input[i] = renames[inp]
+    for graph_input in onnx_model.graph.input:  # type: ignore[attr-defined]
+        if graph_input.name in renames:
+            graph_input.name = renames[graph_input.name]
+
+    logger.info("canonicalized %d anonymous weight initializer name(s)", len(renames))
+    return renames
+
+
 @dataclass
 class NormalizedPackage:
     onnx_model: Path
@@ -104,6 +176,10 @@ def normalize_package(
         raise ExportError(f"export graph has no outputs (model={model_id!r})")
 
     kv_layers = _count_kv_layers(io_outputs, "present") or _count_kv_layers(io_inputs, "past_key_values")
+
+    # Tensor identity for #8/#9. Must run before the external-data split below, because that split is
+    # what writes each trainable tensor to its own `<name>.bin` — the name has to be final by then.
+    canonicalize_initializer_names(onnx_model)
 
     # Consolidate all initializers into a single external blob beside model.onnx (flat #9 shape).
     external_data = out_dir / external_data_filename

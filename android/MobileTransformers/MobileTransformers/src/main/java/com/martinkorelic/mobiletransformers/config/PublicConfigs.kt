@@ -71,11 +71,16 @@ data class GenerationConfig(
 data class RagConfig(
     val topK: Int = 10,
     val searchType: SearchType = SearchType.SEMANTIC,
-    val embeddingDimension: Int = 256,
     val minScore: Double = 0.0,
     val indexingMode: IndexingMode = IndexingMode.PRECOMPUTE,
-    val embeddingRepoId: String = "model",
-    val embeddingModelFile: String = "embedding_model",
+    // Encoder identity: `null` (the default) means "whatever the installed package declares" — these
+    // are read from `embedding/rag_config.json`, which the exporter writes from the encoder it
+    // actually shipped. Hardcoded defaults here would silently point the retriever at a directory and
+    // a vector width that need not exist in the package, and the mismatch surfaces only at first
+    // ingest on device. Set them to deliberately override the package.
+    val embeddingRepoId: String? = null,
+    val embeddingModelFile: String? = null,
+    val embeddingDimension: Int? = null,
     val chunkSize: Int = 512,
     val chunkOverlap: Int = 50,
     val maxTextLength: Int = 1024,
@@ -90,6 +95,16 @@ data class RagConfig(
 /** Local dataset description; mapped onto the existing `ORTDataCurator`/`DatasetOptions` loader. */
 data class DatasetConfig(
     val trainFile: String = "arc_e",
+    /**
+     * Which on-device preprocessor parses [trainFile] (`logiqa`, `boolq`, `mini_personalqa`,
+     * `mini_recommendation`, `cola`). `null` = whatever the installed package declares.
+     *
+     * The task belongs with the data, and the data is supplied by the caller: model packages
+     * deliberately do not ship training sets. Leaving this unset on a package that declares nothing
+     * gives `DataUtil`'s fail-closed `Unsupported task: none`, which is the honest outcome — the
+     * trainer cannot guess how to parse a file it has never seen.
+     */
+    val task: String? = null,
     val maxSequenceLength: Int = 512,
     val datasetBatchSize: Int = 64,
     val maxDatasetLength: Int = 256,

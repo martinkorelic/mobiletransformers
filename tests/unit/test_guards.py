@@ -30,18 +30,25 @@ DISPATCH_PATTERNS = (
     r'merger_type\s*==\s*["\']',
 )
 
-#: Legacy roots still outside the new package. Scanned so the debt is visible and cannot grow.
-LEGACY_ROOTS = ("trainer", "artifact", "inference", "tools", "peft_models", "evaluation", "database")
+#: Legacy roots still outside the new package. **EMPTY — S9 deleted all seven.** Kept as a named
+#: constant (rather than deleted) so the scan below still has a defined subject and so re-introducing a
+#: root outside `src/` is a one-line, visible change rather than an invisible omission.
+LEGACY_ROOTS: tuple[str, ...] = ()
 
 #: repo-relative path -> the number of dispatch hits currently tolerated. ENTRIES MAY ONLY SHRINK.
 #:
-#: `inference/builder.py` is the one remaining #6 debt: replacing its 14-branch architecture ladder
-#: needs 7 new ARCHITECTURE_REGISTRY rows (Mistral, Phi, PhiMoE, Phi3Small, Phi3V, Nemotron, ChatGLM),
-#: and the file is unimportable under every declared profile so the change cannot be tested here.
-#: Owner: the inference-builder migration.
-DISPATCH_ALLOWLIST: dict[str, int] = {
-    "inference/builder.py": 14,
-}
+#: **EMPTY — #6 is closed.** `inference/builder.py`'s 14-branch architecture ladder is gone; it now
+#: resolves through `ARCHITECTURE_REGISTRY`, side effects included (PhiMoE's cuda+int4 forcing, Phi3V's
+#: exclude_embeds, ChatGLM's hidden_act=swiglu are `option_overrides` / `extra_option_overrides` /
+#: `config_overrides` on the row). Verified class-for-class: all 15 branches resolve to the same class
+#: objects the ladder constructed.
+#:
+#: This sat at 14 for months behind "the module is unimportable under every declared profile". The real
+#: cause was one renamed ORT import (see `export/quantizer_compat.py`).
+#:
+#: An empty allow-list makes the test below an assertion rather than a ratchet: ANY string-literal
+#: dispatch in a legacy root now fails.
+DISPATCH_ALLOWLIST: dict[str, int] = {}
 
 # --- #4: secrets ------------------------------------------------------------------------------
 

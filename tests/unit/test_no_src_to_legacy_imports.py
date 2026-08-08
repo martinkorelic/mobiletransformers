@@ -81,12 +81,12 @@ def _dotted_string_references() -> dict[str, list[str]]:
 
 #: `src/`-relative module -> dotted paths into a legacy root it may still name. ONLY REMOVALS.
 #: The registries resolve these lazily via `import_from_path`; S4 moves `trainer/utils.py`.
-ALLOWED_DOTTED: dict[str, set[str]] = {
-    # The architecture registry's lazy GenAI inference-builder paths. These ride with the deferred
-    # move of `inference/builder.py` (3440 lines, unimportable under every declared profile), which
-    # the Migration Map's later steps own. Owner: the inference-builder migration.
-    "config/registry/architecture.py": {"inference.builder"},
-}
+#: **EMPTY.** The only entry was the architecture registry's lazy `inference.builder` paths, held open
+#: for "the deferred move of inference/builder.py (unimportable under every declared profile)". S6 moved
+#: it: the registry now names `mobiletransformers.inference.builder`, which is inside the wheel. There
+#: is no longer any dotted string in `src/` that resolves into an unpackaged root — the failure mode
+#: this guard exists for (works from a checkout, NameError/ImportError from an installed wheel) is gone.
+ALLOWED_DOTTED: dict[str, set[str]] = {}
 
 
 def test_no_lazy_dotted_paths_into_legacy_roots() -> None:

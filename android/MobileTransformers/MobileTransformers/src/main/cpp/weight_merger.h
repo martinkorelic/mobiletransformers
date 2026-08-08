@@ -112,8 +112,10 @@ private:
     // Helper function to get tensor shape
     std::vector<int64_t> get_tensor_shape(const Ort::Value& tensor);
 
-    // Replace prefix in parameter name
-    std::string replace_prefix(const std::string& name, const std::string& old_prefix, const std::string& new_prefix);
+    // Layer-name conversions live in layer_name.h — ONE definition shared by every consumer, and the
+    // twin of Python's handoff_map._strip_wrapper_prefixes. A per-class replace_prefix helper used to
+    // live here and was open-coded at 9 call sites with the prefixes as literals; five device-only
+    // defects came from those literals disagreeing. Do not reintroduce it.
 
     // Load and parse PEFT mapping from JSON
     bool load_peft_mapping(const std::string& json_path);
@@ -137,10 +139,16 @@ private:
     std::optional<MergerVariant> resolve_merger_variant(const std::string& base_layer_name);
 
     // Run the appropriate merger model
-    void run_merger_model(MergerVariant variant, const std::string& base_layer_name);
+    /** Returns false if no merger graph is loaded for `variant` or the merge fails. */
+    bool run_merger_model(MergerVariant variant, const std::string& base_layer_name,
+                          const PeftMapping& mapping);
 
     // Free used parameters after merging
     void free_used_parameters(const ParameterTracker& tracker);
+
+    /** Deferred cleanup of borrowed merge inputs; run only after the merge loop completes. */
+    void release_merge_inputs();
+    std::vector<ParameterTracker> merge_trackers_;
 
     // Helper function to convert OrtValue to vector for saving
     template<typename T>

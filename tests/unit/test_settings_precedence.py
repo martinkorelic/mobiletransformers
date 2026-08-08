@@ -81,12 +81,6 @@ def test_legacy_config_shim_imports_and_warns():
     assert hasattr(legacy_config, "AZURE_API_VERSION")
 
 
-def test_legacy_parser_config_shim_imports_and_warns():
-    from tools import parser_config
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        importlib.reload(parser_config)
-    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
-    assert parser_config.TRAIN_CONFIG == "TRAIN_BUILDER"
-    assert parser_config.TASK_NAME_TO_DATASET["boolq"] == "google/boolq"
+# `test_legacy_parser_config_shim_imports_and_warns` was deleted with the `tools/` shim in S9.
+# The constants it guarded now live in `mobiletransformers.config.constants`, covered by the
+# symbol golden. The root `config.py` shim tested above is a different thing and stays.

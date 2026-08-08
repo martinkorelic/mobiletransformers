@@ -6,6 +6,7 @@ The models are utilized by the on-device application.
 """
 
 import argparse
+import contextlib
 import gc
 import json
 import os
@@ -45,6 +46,59 @@ from mobiletransformers.inference.generator import generate_tokens_onnx
 from mobiletransformers.training.data import load_and_save_dataset
 from mobiletransformers.utils.paths import delete_directory, move_files_excluding, move_onnx_model
 
+#: Suffixes the quantizer appends beside a weight it packs. Same role vocabulary the handoff map uses
+#: (`artifacts/handoff_map.py`): the packed payload plus its dequantization parameters.
+_QUANT_COMPANION_SUFFIXES = ("_quantized", "_scale", "_zero_point")
+
+
+def _is_quant_companion(name: str) -> bool:
+    """True for a quantizer-produced companion of a weight (packed payload / scale / zero-point).
+
+    ``requires_grad`` is matched by **substring**, so a trainable ``…lora_B.lora.weight`` also matches
+    ``…lora_B.lora.weight_quantized`` and its ``_scale``/``_zero_point``. Those are not differentiable —
+    ORT rejects the whole artifact generation with *"Cannot compute the partial derivative for
+    '…weight_quantized' as it's unreachable from the output node(s)"*, so a quantized PEFT export could
+    not produce training artifacts at all. This is the same quantized-name hazard `HandoffMap.validate`
+    guards on the emit side.
+    """
+    return name.endswith(_QUANT_COMPANION_SUFFIXES)
+
+
+@contextlib.contextmanager
+def _onnx_external_data_overwrite():
+    """Let ``onnx.save`` overwrite an existing external-data file, for the duration of the block.
+
+    ORT-training's ``onnxblock.Block`` writes ``temp.onnx`` + ``temp.onnx.data`` into the **current
+    working directory** (`blocks.py:36`) and only removes them in ``__del__``. Every Block shares that
+    one filename, so with a model large enough to take the external-data path
+    (``accessor.has_path``), the second Block of a ``generate_artifacts`` run saves onto the first
+    Block's still-present ``temp.onnx.data`` — and onnx >= 1.16 raises
+    ``FileExistsError: External data file exists in temp.onnx.data`` instead of overwriting, killing
+    artifact generation.
+
+    ORT 1.23 and onnx 1.18 are the pairing recorded in ``third_party/onnxruntime/manifest.json``, so
+    this is not version drift we can pin away; Gate 0.3's smoke never hit it because its model is small
+    enough that ``has_path`` is false and the whole branch is skipped. Restoring the pre-1.16 overwrite
+    semantics for exactly this call is the narrowest fix available to us.
+    """
+    original_save = onnx.save_model
+
+    def _save(proto, f, *args, **kwargs):
+        location = kwargs.get("location")
+        if location and kwargs.get("save_as_external_data") and isinstance(f, (str, os.PathLike)):
+            stale = os.path.join(os.path.dirname(os.path.abspath(str(f))), str(location))
+            if os.path.exists(stale):
+                os.remove(stale)
+        return original_save(proto, f, *args, **kwargs)
+
+    onnx.save_model = _save
+    onnx.save = _save
+    try:
+        yield
+    finally:
+        onnx.save_model = original_save
+        onnx.save = original_save
+
 
 def gen_artifacts(
     train_dir,
@@ -71,26 +125,27 @@ def gen_artifacts(
     frozen_params = []
 
     for param in onnx_model.graph.initializer:
-        if any(rqp in param.name for rqp in params["requires_grad"]):
-            requires_grad.append(param.name)
-        else:
-            frozen_params.append(param.name)
+        trainable = any(rqp in param.name for rqp in params["requires_grad"]) and not _is_quant_companion(
+            param.name
+        )
+        (requires_grad if trainable else frozen_params).append(param.name)
 
     del onnx_model
     gc.collect()
 
     # Generate the training artifacts
-    artifacts.generate_artifacts(
-        onnx_model_path,
-        requires_grad=requires_grad,
-        frozen_params=frozen_params,
-        # We don't need to provide a loss function, as the loss is already
-        # computed from the PyTorch Transformer model
-        # In the case of inference model, we don't need it
-        # loss = CausalLMCE(),
-        optimizer=artifacts.OptimType.AdamW,
-        artifact_directory=artifact_dir,
-    )
+    with _onnx_external_data_overwrite():
+        artifacts.generate_artifacts(
+            onnx_model_path,
+            requires_grad=requires_grad,
+            frozen_params=frozen_params,
+            # We don't need to provide a loss function, as the loss is already
+            # computed from the PyTorch Transformer model
+            # In the case of inference model, we don't need it
+            # loss = CausalLMCE(),
+            optimizer=artifacts.OptimType.AdamW,
+            artifact_directory=artifact_dir,
+        )
 
     extended_training_config = {
         "requires_grad": requires_grad,

@@ -18,6 +18,11 @@ data class TrainingState(
 
 class ORTTrainerNative(private val context: Context, private val cacheDirPath: String, private var tokenizer: ORTTokenizerNative, private val trainingConfig: ORTTrainingConfig) {
 
+    init {
+        NativeLibrary.ensureLoaded()
+    }
+
+
     private val LOG_TAG = "ORTTrainerNative"
 
     // Pointer to the model
@@ -620,9 +625,25 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
         }
     }
 
+    /**
+     * Release the native training session. Idempotent.
+     *
+     * The handle used to be passed to `releaseTrainingSession` unconditionally and never cleared, so a
+     * second call — which the train->merge->generate flow makes, once at the end of training and once on
+     * teardown — freed an already-freed `TrainingSessionCache` and took the process down with SIGSEGV in
+     * `Java_..._releaseTrainingSession`. Zeroing the handle under the same guard makes the second call a
+     * no-op instead of a use-after-free.
+     */
+    @Synchronized
     fun destroySession(saveCheckpoint: Boolean) {
+        if (model == 0L) {
+            Log.d(LOG_TAG, "Training session already released; nothing to destroy.")
+            return
+        }
         Log.d(LOG_TAG, "Destroying training session and saving checkpoint...")
-        releaseTrainingSession(model, saveCheckpoint = saveCheckpoint)
+        val handle = model
+        model = 0L
+        releaseTrainingSession(handle, saveCheckpoint = saveCheckpoint)
     }
 
     fun mergeExportSessionWeights() {
