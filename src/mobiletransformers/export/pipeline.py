@@ -74,6 +74,9 @@ class ExportPlan:
     output_dir: Path
     features: tuple[str, ...]
     supported_engines: tuple[str, ...]
+    #: PEFT target modules override. Empty means "use the architecture registry's row for this model",
+    #: which is the per-model source of truth and the one place to edit for a new architecture.
+    peft_targets: tuple[str, ...] = ()
 
     def variant_descriptor(self) -> dict[str, Any]:
         """The #14 variant descriptor this plan will emit (fed to build_manifest)."""
@@ -101,12 +104,17 @@ def plan_export(
     variant: str | None = None,
     include_rag: bool = False,
     engines: tuple[str, ...] = ("native",),
+    peft_targets: tuple[str, ...] = (),
     discover: Callable[[str], str] | None = None,
 ) -> ExportPlan:
     """Resolve every export decision without touching large files or heavy deps.
 
     ``task`` auto-selects via ``discover`` (default: the #7 registry) when omitted. ``discover`` is
     injectable so tests avoid network. ``variant`` defaults to ``cpu-<quant>``.
+
+    ``peft_targets`` overrides which modules PEFT adapts. Left empty (the normal case) the
+    architecture registry's row for the model decides, so support for a new architecture is a data
+    row rather than a flag every caller has to remember.
     """
     method, opt = parse_peft(peft)
     quant_spec(quant)  # validate early
@@ -126,6 +134,7 @@ def plan_export(
         output_dir=Path(output),
         features=tuple(features),
         supported_engines=tuple(engines),
+        peft_targets=tuple(peft_targets),
     )
 
 
@@ -239,6 +248,7 @@ def export_package(
     include_rag: bool = False,
     embedding_model: str | None = None,
     engines: tuple[str, ...] = ("native",),
+    peft_targets: tuple[str, ...] = (),
     dry_run: bool = False,
     stages: set[str] | None = None,
     token: str | None = None,
@@ -261,6 +271,7 @@ def export_package(
         variant=variant,
         include_rag=include_rag,
         engines=engines,
+        peft_targets=peft_targets,
         discover=discover,
     )
     if dry_run:
@@ -433,6 +444,14 @@ def _build_inference_stage(
 
     # #15 DoD: record HOW this graph was produced, next to the graph. Without it a shipped package
     # cannot be traced back to the exporter/task that made it.
+    #
+    # `quantization` is the variant's REQUESTED setting, which drives the training stage and the
+    # variant id (`cpu-<quant>`). The inference export does not quantize, so a variant named
+    # `cpu-int4` ships an fp32 inference graph — a real asymmetry that nothing declared, leaving the
+    # directory name as the only (wrong) signal. `inferenceGraphPrecision` is measured from the graph
+    # that actually shipped, so the two can never silently diverge again.
+    from mobiletransformers.artifacts.parameter_budget import describe_graph_precision
+
     _write_json(
         inf / "optimum_config.json",
         {
@@ -443,6 +462,7 @@ def _build_inference_stage(
             "transformersVersion": result.transformers_version,
             "trustRemoteCode": result.trust_remote_code,
             "quantization": plan.quant,
+            "inferenceGraphPrecision": describe_graph_precision(inf / "model.onnx"),
             "supportedEngines": list(plan.supported_engines),
         },
     )
@@ -718,6 +738,8 @@ def _build_training_stage(
         lora_alpha=plan.rank,
         quantize=quantized,
         task_type=task_type,
+        # Empty -> the architecture registry's row decides (the per-model source of truth).
+        lora_target=list(plan.peft_targets) or None,
     )
 
     # 2) Training artifacts (training/eval/optimizer models + checkpoint/ + extended training_config.json).
@@ -758,6 +780,40 @@ def _build_training_stage(
             checkpoint_path,
         )
 
+    # 3c) Prove the training graph carries the model's parameters — the check that was missing.
+    #
+    # The name check above is structural: it proves the merge can FIND its weights, not that the
+    # weights are there. Nothing counted anything, which is how a byte/dtype arithmetic slip became a
+    # recorded "two thirds of the model is missing" v1 blocker that was never true. This counts, per
+    # dtype, against the source model's own parameter count. See artifacts/parameter_budget.py.
+    from mobiletransformers.artifacts.parameter_budget import verify_checkpoint_parameter_budget
+
+    training_model_path = train_stage / "training_model.onnx"
+    parameter_summary = None
+    if training_model_path.exists():
+        parameter_summary = verify_checkpoint_parameter_budget(
+            training_model_path,
+            extended_config.get("source_parameter_count"),
+        )
+    else:
+        log.warning(
+            "no training model at %s — skipping the parameter-budget check; the training stage is "
+            "UNVERIFIED against the source model",
+            training_model_path,
+        )
+
+    # 3d) Prove the two graphs agree on numbers, not just on names.
+    #
+    # The budget check proves the parameters are present; this proves they are the SAME ones the
+    # inference half ships, by running identical tokens through both and bounding the loss gap. It is
+    # what supplies a reference for any later "the training loss looks high" question — the absence of
+    # one is how a quantization-sized gap was once read as missing weights.
+    from mobiletransformers.artifacts.train_inference_parity import verify_train_inference_parity
+
+    parity = None
+    if training_model_path.exists() and inference_onnx.exists():
+        parity = verify_train_inference_parity(inference_onnx, train_stage)
+
     # #15 DoD: name the trainable tensors in the package itself. The count alone (in the manifest)
     # says how many; this says WHICH, so an adapter push or a federated round can be checked against
     # the package without re-deriving the PEFT mapping.
@@ -778,6 +834,17 @@ def _build_training_stage(
         "trainableParameterCount": extended_config.get("trainable_parameter_count"),
         "onnxRuntimeTrainingVersion": _pkg_version("onnxruntime-training"),
     }
+    if parameter_summary is not None:
+        # Recorded so a package can be audited without re-reading its graph — and so the fp32/quantized
+        # split is visible rather than inferred from a file size (the mistake parameter_budget.py exists
+        # to prevent).
+        report["trainingParameterCount"] = parameter_summary.total
+        report["trainingQuantizedParameterCount"] = parameter_summary.quantized
+        report["sourceParameterCount"] = extended_config.get("source_parameter_count")
+    if parity is not None:
+        # The measured gap between the package's two halves. Recorded so the next reader of a
+        # surprising training loss has a number to compare against instead of a guess.
+        report["trainInferenceLossDeltaNats"] = round(parity.delta, 4)
     return StageOutput(
         stage_dirs={"train": train_stage},
         report={k: v for k, v in report.items() if v is not None},

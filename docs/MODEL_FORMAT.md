@@ -73,15 +73,34 @@ Each `variants[]` entry:
 
 | Field | Meaning |
 | --- | --- |
-| `id` | variant id (e.g. `cpu-int4`). |
+| `id` | variant id (e.g. `cpu-int4`) — `cpu-<quantization>`. **Names the training-side quantization; see the note below.** |
 | `executionProvider` | `cpu` \| `xnnpack` \| `nnapi`. |
-| `quantization` | `QInt8` \| `QUInt8` \| `int4`. |
+| `quantization` | `QInt8` \| `QUInt8` \| `int4`. The **requested** setting. |
 | `supportedEngines` | subset of `["native", "genai"]`. |
 | `abi` | target Android ABI. |
 | `features` | feature groups present (`inference`, `training`, `rag`, `embedding`, …). |
 | `minimumAndroidApi` / `recommendedDeviceMemoryMb` | device requirements. |
 | `weightHandoff` | this variant's handoff-map path. |
 | `paths` | per-feature subtree paths. |
+
+### The variant id names the TRAINING quantization, not the inference graph's
+
+A variant id is `cpu-<quantization>`, and `--quant` drives the **training** stage: the training graph is
+weight-quantized (`quant_model.onnx`, dynamic per-channel) before `generate_artifacts` runs. The
+**inference** export does not quantize — it ships whatever precision optimum exported, in practice fp32.
+
+So a variant named `cpu-int4` legitimately contains a **uint8-quantized training graph beside an fp32
+inference graph**. That is the design, not a packaging bug, but nothing declared it and the directory
+name was the only (misleading) signal. Two things now make it explicit:
+
+- `inference/optimum_config.json` carries **`inferenceGraphPrecision`**, *measured from the graph that
+  shipped* (`artifacts/parameter_budget.py::describe_graph_precision`) — never inferred from the id.
+- The export gates the gap numerically: `verify_train_inference_parity` runs identical tokens through
+  both graphs and fails the export if the cross-entropy differs by more than 1.5 nats. Weight-only
+  uint8 quantization moves it ~0.4 nats; a graph that lost its weights moves it to the uniform floor.
+
+**Do not read precision off the variant id.** Read `inferenceGraphPrecision` for the inference half and
+`quantization` for the training half.
 
 ### Validation and variant selection
 

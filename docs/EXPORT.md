@@ -19,6 +19,7 @@ Common flags (see `mobiletransformers export --help`):
 | `--task` | auto | Optimum task; auto-selected from the model when omitted. |
 | `--peft` | `lora` | `lora` \| `lora-xs` \| `mars` \| `mars-opt0..mars-opt4`. |
 | `--rank` | `8` | LoRA/MARS rank. |
+| `--peft-target` | *(registry)* | Comma-separated modules PEFT adapts, e.g. `q_proj,v_proj`. Omit to use the architecture registry's row for the model — see below. |
 | `--quant` | `int4` | `qint8` \| `int4` \| `fp16`. |
 | `--variant` | `cpu-<quant>` | Variant id in the package manifest. |
 | `--include-rag` | off | Also emit the embedding/RAG variant subtree. |
@@ -50,6 +51,31 @@ export:
 mobiletransformers export --config export.yml            # everything from YAML
 mobiletransformers export --config export.yml --rank 32  # ...with rank overridden
 ```
+
+### Which modules PEFT adapts (`--peft-target`)
+
+By default this is **per model, from the architecture registry**
+(`src/mobiletransformers/config/registry/architecture.py`) — one `target_modules` row per
+architecture. That is the place to edit to support a new model or change a family's defaults, and it
+applies everywhere without a caller having to remember a flag:
+
+```python
+"LlamaForCausalLM": ArchitectureSpec("LlamaForCausalLM", ..., ("q_proj", "v_proj")),
+"DistilBertForSequenceClassification": ArchitectureSpec(..., ("q_lin", "v_lin")),
+```
+
+Override per run when you want something else:
+
+```bash
+mobiletransformers export --model <id> --output build/pkg --peft-target q_proj,k_proj,v_proj,o_proj
+```
+
+or in YAML as `peft_target: q_proj,v_proj`.
+
+> **Changed 2026-08-09.** The default used to be a hardcoded `q_proj,k_proj` that ignored the registry
+> and could not express an encoder's `query`/`value` at all. Decoder exports now adapt **Wq and Wv**
+> (the LoRA convention) rather than Wq/Wk. Pass `--peft-target q_proj,k_proj` to reproduce the old
+> behaviour.
 
 ### `--validate`
 

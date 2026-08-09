@@ -53,10 +53,17 @@ class TrainConvergenceTest {
         const val REQUIRED_RELATIVE_DROP = 0.01
 
         /**
-         * A pretrained decoder must start well below uniform-prediction loss, `ln(49152) = 10.80`.
-         * 6.0 is deliberately generous — a *working* 135M model on English sits near 3.
+         * How much better a pretrained model must score coherent English than token soup, as a
+         * fraction of its loss on the soup.
+         *
+         * **Self-calibrating by construction.** Both corpora go through the same preprocessor, the
+         * same tokenizer and the same graph; the ONLY difference is whether the supervised target is
+         * natural language. A model holding pretrained weights separates these by several nats; a
+         * randomly-initialised one cannot separate them at all, because neither is more probable than
+         * the other under an untrained distribution. 15% is far below the gap a working model shows
+         * and far above anything noise produces, and it encodes no model, tokenizer or fixture.
          */
-        const val MAX_PRETRAINED_INITIAL_LOSS = 6.0
+        const val REQUIRED_COHERENCE_MARGIN = 0.15
     }
 
     @Test
@@ -136,25 +143,31 @@ class TrainConvergenceTest {
     }
 
     /**
-     * **CURRENTLY FAILING — this is a real defect, not a mis-set threshold.**
+     * The training graph starts from the **pretrained** weights, not random ones.
      *
-     * The training session starts at a loss of ~10.47 against a uniform-prediction floor of
-     * `ln(49152) = 10.80`, i.e. the model is predicting almost uniformly over the vocabulary. The same
-     * package generates coherent text through the inference path ("The capital of France is Paris."),
-     * so the weights exist and are correct *for inference*; it is the TRAINING graph that does not
-     * appear to carry them.
+     * ### Why this is a comparison and not a threshold
      *
-     * Supporting evidence: the train stage ships a 2.6 MB `training_model.onnx` plus a 176 MB
-     * `checkpoint`. At fp32 that checkpoint holds ~44M parameters, but SmolLM2-135M has ~135M — so
-     * roughly two thirds of the model is in neither artifact.
+     * This test previously asserted `initialLoss < 6.0`, reasoning that a pretrained 135M model on
+     * English sits near 3 and the uniform-prediction floor is `ln(49152) = 10.80`. It failed at ~14.25
+     * and was recorded as a v1 blocker: "two thirds of the model is in neither artifact", from reading
+     * the 176 MB checkpoint as `176MB / 4 bytes ≈ 44M` fp32 parameters.
      *
-     * Consequence: on-device fine-tuning currently optimises correctly (see the test above — the loss
-     * falls monotonically) but *from near-random weights*, so it cannot improve on the pretrained
-     * model. Every byte-level assertion in the suite still passes, because the plumbing is genuinely
-     * fine; only the numbers are wrong.
+     * **Both halves of that were wrong.** ~90% of the checkpoint tensors are uint8, not fp32; the
+     * training graph carries all 135,436,911 parameters (verified against the shipped artifact, and
+     * now gated on the host by `artifacts/parameter_budget.py`). And the threshold measured something
+     * other than what it claimed: `ORTDataCurator` masks every prompt token to `-100`, and under
+     * `CoLAPreprocessor` the answer `"acceptable"` is a **single token** following a trailing-space
+     * prompt — so "initial loss" was the cross-entropy of one improbable token, not a sequence LM
+     * loss. ~14 is the correct value for that, and it reproduces from the fp32 *inference* graph.
      *
-     * Left failing on purpose. Deleting or relaxing it would restore a green suite that means the same
-     * thing the pre-merge-fingerprint suite meant: nothing.
+     * An absolute bound cannot distinguish "not pretrained" from "this particular answer string is
+     * unlikely". So this asserts the property that actually implies pretrained weights and needs no
+     * model-specific constant: **coherent English must cost materially less than token soup.** Only a
+     * model carrying real weights can tell them apart; an untrained one scores both alike, because
+     * under a near-uniform distribution neither is more probable.
+     *
+     * The two corpora are matched deliberately — same preprocessor, same field, same approximate token
+     * length — so the only variable is coherence.
      */
     @Test
     fun trainingStartsFromPretrainedWeightsNotRandomOnes(): Unit = runBlocking {
@@ -163,9 +176,59 @@ class TrainConvergenceTest {
         assumeTrue("package is not train-capable (no train/ stage)", DeviceModel.hasTraining(root, repoId))
 
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
-        val trainFile = "mt_device_convergence_cola"
+
+        // The SUPERVISED text, not the prompt: `ORTDataCurator` masks prompt tokens to -100, so only
+        // this side reaches the loss. `mini_recommendation` supervises its `recommendation` field
+        // verbatim, which is why this test uses it rather than `cola` (whose target is one of two
+        // fixed words chosen by `label`, and so cannot be varied at all).
+        val coherent = "open the calendar app and create a meeting for tomorrow morning at nine"
+        val soup = "gzt qwx vbn plok zrf mjud xqi wbe trng kvo phz lmq brx qynt"
+
+        val coherentLoss = initialLossFor(ctx, root, repoId, "mt_device_coherent", coherent)
+        val soupLoss = initialLossFor(ctx, root, repoId, "mt_device_soup", soup)
+        val margin = (soupLoss - coherentLoss) / soupLoss
+
+        Log.i(
+            LOG_TAG,
+            "initial loss: coherent=$coherentLoss soup=$soupLoss " +
+                "margin=${"%.1f".format(margin * 100)}%",
+        )
+
+        assertTrue(
+            "both initial losses must be finite and positive (coherent=$coherentLoss soup=$soupLoss) " +
+                "— otherwise the loss is not connected to the parameters and neither number means " +
+                "anything",
+            coherentLoss.isFinite() && soupLoss.isFinite() && coherentLoss > 0.0 && soupLoss > 0.0,
+        )
+        assertTrue(
+            "the training graph scores coherent English (loss=$coherentLoss) no better than random " +
+                "token soup (loss=$soupLoss) — margin ${"%.1f".format(margin * 100)}%, need " +
+                "${(REQUIRED_COHERENCE_MARGIN * 100).toInt()}%. A model holding its pretrained " +
+                "weights separates these by several nats; one starting from random weights cannot " +
+                "separate them at all. Check the training-stage export: the host-side parameter " +
+                "budget and train/inference parity gates in artifacts/ should have caught this first.",
+            margin >= REQUIRED_COHERENCE_MARGIN,
+        )
+    }
+
+    /**
+     * Initial (step-0) training loss over a corpus of one repeated sentence.
+     *
+     * A fresh model per corpus: `mergeAtEnd = false` leaves the on-disk checkpoint untouched, so each
+     * call genuinely starts from the packaged weights rather than from the previous call's updates.
+     */
+    private suspend fun initialLossFor(
+        ctx: android.content.Context,
+        root: File,
+        repoId: String,
+        trainFile: String,
+        supervisedText: String,
+    ): Double {
+        // Identical prompt in both corpora so the only variable is the supervised continuation.
         File(root, "$repoId/train/$trainFile.jsonl").writeText(
-            (1..16).joinToString("\n") { """{"sentence": "the cat sat on the mat.", "label": 1}""" } + "\n",
+            (1..16).joinToString("\n") {
+                """{"prompt": "what should I do next?", "recommendation": "$supervisedText"}"""
+            } + "\n",
         )
 
         val model = MobileTransformers.fromPretrained(
@@ -174,32 +237,24 @@ class TrainConvergenceTest {
             cacheDir = root.absolutePath,
             features = setOf(ModelFeature.Inference, ModelFeature.Training),
         )
-        try {
+        return try {
             val losses = mutableListOf<Float>()
             model.train(
                 DatasetConfig(
                     trainFile = trainFile,
-                    task = "cola",
+                    task = "mini_recommendation",
                     maxSequenceLength = 64,
                     maxDatasetLength = 16,
                     datasetBatchSize = 4,
                 ),
-                TrainConfig(maxSteps = 2, batchSize = 2, mergeAtEnd = false),
+                TrainConfig(maxSteps = 1, batchSize = 2, mergeAtEnd = false),
                 object : TrainCallback {
                     override fun onStepEnd(progress: TrainProgress) {
                         losses.add(progress.stepLoss)
                     }
                 },
             )
-            val initial = losses.firstOrNull()?.toDouble() ?: Double.NaN
-            Log.i(LOG_TAG, "initial training loss=$initial (uniform floor=ln(49152)=10.80)")
-            assertTrue(
-                "initial training loss $initial is at the uniform-prediction floor (ln(49152)=10.80), " +
-                    "so the training graph is not starting from the pretrained weights — even though " +
-                    "the SAME package generates coherent text through the inference path. Expected " +
-                    "< $MAX_PRETRAINED_INITIAL_LOSS for a pretrained 135M model.",
-                initial < MAX_PRETRAINED_INITIAL_LOSS,
-            )
+            losses.firstOrNull()?.toDouble() ?: Double.NaN
         } finally {
             model.close()
         }

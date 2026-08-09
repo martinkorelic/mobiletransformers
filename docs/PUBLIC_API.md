@@ -61,7 +61,7 @@ package when it is not already in the cache.
 | `TrainConfig`, `GenerationConfig`, `RagConfig`, `DatasetConfig`, `PeftConfig`, `HubConfig`, `DeviceConfig` | config | public configs; mapped to the internal `ORT*Config` types. |
 | `TrainingResult`, `TrainingSummary`, `GenerationResult`, `MergeResult`, `RetrievalResult`, `GroundedResult`, `IngestResult`, `PushResult` | results | plain data; no `ORT*`/`*Native` type appears on this surface. |
 | `TrainCallback`, `GenerateCallback`, `RetrieveCallback` | callbacks | streaming progress. |
-| `MobileTransformersException` | errors | sealed hierarchy (`PeftMismatch`, `FeatureNotInstalled`, `EngineUnavailable`, `ModelNotInstalled`, `MissingArtifact`, `NotImplementedFeature`). |
+| `MobileTransformersException` | errors | base of the hierarchy (`ModelNotInstalledException`, `MissingArtifactException`, `PeftMismatchException`, `FeatureNotInstalledException`, `EngineUnavailableException`, `NotImplementedFeatureException`). Deliberately `open`, not `sealed`: subclasses live in sibling packages (e.g. `hub.AdapterUploadDisabledException`). |
 | `constants/*` | enums | wire-value mirrors of the Python enums, parity-checked by `make parity`. |
 
 Internal packages (`repository`, `internal.*`, `ORT*`/`*Native`) are **not** public and may change.

@@ -6,7 +6,8 @@ package com.martinkorelic.mobiletransformers.constants
  */
 enum class TaskType(val wire: String) {
     TEXT_GENERATION("text-generation"),
-    FEATURE_EXTRACTION("feature-extraction");
+    FEATURE_EXTRACTION("feature-extraction"),
+    SEQUENCE_CLASSIFICATION("text-classification");
 
     companion object {
         fun fromWire(value: String): TaskType =

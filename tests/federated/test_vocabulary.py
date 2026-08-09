@@ -71,9 +71,7 @@ def test_round_trip_still_works():
 @pytest.mark.parametrize("bad", ["average", "server_only", "median", ""])
 def test_unknown_aggregation_is_rejected(bad):
     """`average`/`server_only` were declared-but-unreachable; a peer emitting one must not be misread."""
-    blob = _rewrite_header(
-        _record().serialize(), lambda h: h["tensors"][0].update(aggregation=bad)
-    )
+    blob = _rewrite_header(_record().serialize(), lambda h: h["tensors"][0].update(aggregation=bad))
 
     with pytest.raises(HandoffError, match="unsupported aggregation"):
         FederatedAdapterRecord.deserialize(blob)

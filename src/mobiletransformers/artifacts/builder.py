@@ -32,6 +32,7 @@ from onnxruntime.training import artifacts, onnxblock
 from onnxruntime.training.api import CheckpointState, Module, Optimizer
 from transformers import AutoConfig, AutoTokenizer
 
+from mobiletransformers.artifacts.graph_prep import ensure_layernorm_grad_outputs
 from mobiletransformers.config.constants import (
     ARTIFACT_CONFIG,
     INFERENCE_CONFIG,
@@ -44,7 +45,10 @@ from mobiletransformers.config.settings import get_settings
 from mobiletransformers.export.tokenizer_export import export_tokenizer_config
 from mobiletransformers.inference.generator import generate_tokens_onnx
 from mobiletransformers.training.data import load_and_save_dataset
+from mobiletransformers.utils.logging import get_logger
 from mobiletransformers.utils.paths import delete_directory, move_files_excluding, move_onnx_model
+
+logger = get_logger(__name__)
 
 #: Suffixes the quantizer appends beside a weight it packs. Same role vocabulary the handoff map uses
 #: (`artifacts/handoff_map.py`): the packed payload plus its dequantization parameters.
@@ -133,6 +137,9 @@ def gen_artifacts(
     del onnx_model
     gc.collect()
 
+    # Gradient graphs need LayerNormalization's optional saved-stat outputs; see graph_prep.
+    onnx_model_path = ensure_layernorm_grad_outputs(onnx_model_path)
+
     # Generate the training artifacts
     with _onnx_external_data_overwrite():
         artifacts.generate_artifacts(
@@ -154,6 +161,9 @@ def gen_artifacts(
         "alpha": params["alpha"],
         "peft_target": params["peft_target"],
         "trainable_parameter_count": params["trainable_parameter_count"],
+        # Carried through for the export-time parameter-budget gate (artifacts/parameter_budget.py).
+        # Absent from packages exported before that gate existed, hence .get rather than [].
+        "source_parameter_count": params.get("source_parameter_count"),
         **training_config,
     }
 
@@ -216,11 +226,15 @@ def onnx_checktrain(
 
     input_ids = inputs["input_ids"].numpy()
     position_ids = np.arange(input_ids.shape[1], dtype=np.int64)[None, :]
-    labels = inputs["input_ids"].clone().numpy()
 
+    # Labels are passed UNSHIFTED.
+    #
+    # This used to pre-shift (`labels[:, :-1] = input_ids[:, 1:]`), which double-shifted: the exported
+    # training graph already performs the HF causal shift internally (`Slice(logits, 0:-1)` against
+    # `Slice(labels, 1:)`), so every loss this helper printed was inflated by a second shift and was
+    # not comparable to the on-device number. The Android path (`ORTDataCurator`) always passed
+    # unshifted labels, so only this host-side check was wrong.
     labels = np.copy(input_ids)
-    labels[:, :-1] = input_ids[:, 1:]
-    labels[:, -1] = -100  # Optionally, set the last token to -100 to ignore it in the loss
 
     inputs = {
         "input_ids": inputs["input_ids"].numpy(),

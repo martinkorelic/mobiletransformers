@@ -2,8 +2,6 @@
 still resolve during migration."""
 
 
-
-
 def test_mobiletransformers_imports():
     import mobiletransformers
 

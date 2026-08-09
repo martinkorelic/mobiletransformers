@@ -29,6 +29,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
     parser.add_argument("--quant", default="int4", help="qint8 | int4 | fp16 (default int4).")
     parser.add_argument("--variant", default=None, help="Variant id (default cpu-<quant>).")
     parser.add_argument(
+        "--peft-target",
+        default=None,
+        help=(
+            "Comma-separated modules PEFT adapts (e.g. 'q_proj,v_proj'). Omit to use the architecture "
+            "registry's row for the model, which is the per-model default and the place to add a new "
+            "architecture."
+        ),
+    )
+    parser.add_argument(
         "--include-rag", action="store_true", help="Also emit the embedding/RAG variant subtree."
     )
     parser.add_argument("--embedding-model", default=None, help="Embedding model id for RAG.")
@@ -63,6 +72,7 @@ _OVERLAYABLE: dict[str, object] = {
     "rank": 8,
     "quant": "int4",
     "variant": None,
+    "peft_target": None,
     "include_rag": False,
     "embedding_model": None,
     "genai": False,
@@ -118,6 +128,13 @@ def run(args: argparse.Namespace) -> int:
     stages = (
         {s.strip() for s in args.stages.split(",") if s.strip()} if getattr(args, "stages", None) else None
     )
+    # Empty tuple -> the architecture registry decides. Accepts a comma-separated string (CLI) or an
+    # already-split list (YAML), so a config file can write it as a natural list.
+    raw_targets = getattr(args, "peft_target", None)
+    if isinstance(raw_targets, str):
+        peft_targets = tuple(t.strip() for t in raw_targets.split(",") if t.strip())
+    else:
+        peft_targets = tuple(raw_targets or ())
     try:
         result = export_package(
             model=args.model,
@@ -130,6 +147,7 @@ def run(args: argparse.Namespace) -> int:
             include_rag=args.include_rag,
             embedding_model=args.embedding_model,
             engines=engines,
+            peft_targets=peft_targets,
             dry_run=args.dry_run,
             stages=stages,
         )

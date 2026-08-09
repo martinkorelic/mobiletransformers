@@ -220,9 +220,7 @@ def test_public_symbols_survive_relocation(dotted: str) -> None:
         for part in paths:
             actual |= set(public_symbols(part))
         dropped = sorted(expected - actual)
-        assert not dropped, (
-            f"{dotted} was split across {MODULE_SPLITS[dotted]} and the union lost: {dropped}"
-        )
+        assert not dropped, f"{dotted} was split across {MODULE_SPLITS[dotted]} and the union lost: {dropped}"
         return
 
     path = current_path(dotted)

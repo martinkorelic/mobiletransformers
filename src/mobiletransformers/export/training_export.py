@@ -25,7 +25,7 @@ try:  # peft < 0.15
     from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 except ImportError:  # peft >= 0.15
     from peft.peft_model import PEFT_TYPE_TO_TUNER_MAPPING as PEFT_TYPE_TO_MODEL_MAPPING
-from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
+from transformers import AutoConfig
 
 # OnnxConfigWithLoss was REMOVED in optimum 2.1 (the optimum-onnx split; verified by
 # spikes/optimum_migration/check_symbols.py). export() survives, so we keep the training-graph export
@@ -33,9 +33,11 @@ from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
 # architecture registry (#6/#9) — the old architectures[0] ladder is gone.
 # PEFT registry (#6) — the old `train_method == "..."` chain is gone: the wire value is parsed ONCE
 # into the PEFTMethod enum (fail-closed on an unknown method) and every branch keys off that member.
-from mobiletransformers.config.constants import PEFTMethod, TaskType
-from mobiletransformers.config.registry.architecture import resolve_architecture
+from mobiletransformers.config.constants import PEFTMethod
+from mobiletransformers.config.registry.architecture import import_from_path, resolve_architecture
 from mobiletransformers.config.registry.peft import build_adapter_mapping
+from mobiletransformers.config.registry.task import get_task_spec
+from mobiletransformers.exceptions import UnsupportedModelError
 from mobiletransformers.export.embedding_export import add_pooling_to_onnx_model
 from mobiletransformers.export.onnx_config_with_loss import OnnxConfigWithLoss
 from mobiletransformers.export.registry import choose_task, supported_onnx_tasks
@@ -63,6 +65,9 @@ load_dotenv()
 
 from mobiletransformers.config.constants import TRAIN_CONFIG
 from mobiletransformers.config.settings import get_settings
+from mobiletransformers.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_layers_with_grad(model):
@@ -110,6 +115,15 @@ class OnnxInferenceWrapper(torch.nn.Module):
 
 
 class OnnxTrainerWrapper(torch.nn.Module):
+    """Decoder training-graph wrapper.
+
+    **The parameter names are the exported ONNX input names** — `torch.onnx` reads them by
+    introspection — so they are part of the on-device contract (`ORTDataCurator` feeds `position_ids`
+    by name). They must not be generalised into `*args`/`**kwargs`, and this signature must not
+    change. The encoder variant is a separate class for exactly that reason; the registry picks
+    between them (`TaskSpec.trainer_wrapper_class`).
+    """
+
     def __init__(self, model) -> None:
         super().__init__()
         self.backbone = model
@@ -119,6 +133,59 @@ class OnnxTrainerWrapper(torch.nn.Module):
     def forward(self, input_ids, attention_mask, position_ids, labels):
         return self.backbone(
             input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids, labels=labels
+        )
+
+
+class OnnxEncoderTrainerWrapper(torch.nn.Module):
+    """Encoder (BERT-family) training-graph wrapper.
+
+    Differs from the decoder wrapper in one input: `token_type_ids` instead of `position_ids`. Optimum
+    asserts the `OnnxConfig`'s dummy inputs are a subset of the model's, and `BertOnnxConfig` generates
+    `token_type_ids`, so a decoder-shaped wrapper fails the export with
+    `{token_type_ids, …} vs {position_ids, …}`.
+    """
+
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.backbone = model
+        self.config = model.config
+        self.training = True
+
+    def forward(self, input_ids, attention_mask, token_type_ids, labels):
+        return self.backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            labels=labels,
+        )
+
+
+class OnnxSequenceClassificationTrainerWrapper(torch.nn.Module):
+    """Encoder **classification** training-graph wrapper (#33).
+
+    Same input names as the encoder wrapper; the difference is the label contract, which is why this
+    is a distinct class rather than a flag. Classification supervises **one label per sequence**
+    (`[batch]`, int64 class indices) where every other trainable task here supervises one per token
+    (`[batch, seq]`). That shape is declared on the task row (`TaskSpec.label_shape`) and consumed by
+    the dummy-label generator, so the two cannot drift apart.
+
+    The head is randomly initialised — it does not exist in an encoder checkpoint — which is correct:
+    it is precisely the part fine-tuning learns. The pretrained *backbone* is what must survive, and
+    that is what the export-time parameter budget checks.
+    """
+
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.backbone = model
+        self.config = model.config
+        self.training = True
+
+    def forward(self, input_ids, attention_mask, token_type_ids, labels):
+        return self.backbone(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            labels=labels,
         )
 
 
@@ -269,7 +336,7 @@ def optimum_hf_export(
     model_output="onnx_models",
     training_mode=False,
     train_method="lora",
-    lora_target=["q_proj", "k_proj"],
+    lora_target=None,
     lora_rank=4,
     lora_alpha=4,
     quantize=True,
@@ -277,37 +344,83 @@ def optimum_hf_export(
     peft_config={},
     specific_peft_config={},
     postprocess=False,
-    exclude_extra_layers=["embed_head"],
+    exclude_extra_layers=None,
     exclude_specific=False,
     exclude_specific_layers=[],
     opset=20,
     task_type="text-generation",
     add_pooling=False,
+    model_init_kwargs=None,
 ):
     """
     Exports the model from Huggingface to an ONNX model representation.
     """
 
-    if task_type == "text-generation":
-        model = AutoModelForCausalLM.from_pretrained(
-            model_id, trust_remote_code=True, token=get_settings().hf_token
+    # #6/#33: one boundary parse, then the registry says what this task implies — the auto-model
+    # class, the KV-cache kwargs and PEFT's task type. Previously three separate branches, one of
+    # which (PEFT's `task_type`) was not a branch at all but a hardcoded "CAUSAL_LM".
+    task_spec = get_task_spec(task_type)
+    if training_mode and not task_spec.trainable:
+        # Fails here with a sentence instead of deep inside torch with
+        # "BertModel.forward() got an unexpected keyword argument 'labels'".
+        raise UnsupportedModelError(
+            f"task {task_spec.task.value!r} has no head and therefore no loss, so it cannot produce a "
+            "training graph. Use 'text-classification' to fine-tune an encoder; "
+            "'feature-extraction' is the inference/embedding task (it is what the RAG embedder ships)."
         )
-    else:
-        model = AutoModel.from_pretrained(model_id, trust_remote_code=True, token=get_settings().hf_token)
+
+    model = import_from_path(task_spec.auto_model_class).from_pretrained(
+        model_id,
+        trust_remote_code=True,
+        token=get_settings().hf_token,
+        # Objective-specific load kwargs (e.g. num_labels for a classification head). Caller wins.
+        **{**task_spec.model_init_kwargs, **(model_init_kwargs or {})},
+    )
     config = AutoConfig.from_pretrained(model_id, token=get_settings().hf_token)
+
+    # The reference for the export-time parameter-budget gate (artifacts/parameter_budget.py), taken
+    # here because this is the only moment the source model is in memory. Recording the number beats
+    # re-deriving it from AutoConfig shapes downstream, which would need per-architecture maintenance.
+    # `parameters()` de-duplicates, so tied embeddings count once — as they do in the exported graph.
+    source_parameter_count = sum(p.numel() for p in model.parameters())
 
     # Registry-driven dispatch (no architectures[0] ladder): the architecture registry maps the HF
     # architecture -> its Optimum OnnxConfig class, and choose_task routes task selection. Unknown
     # architectures fail closed inside resolve_architecture. Adding one is a registry entry, not an elif.
-    spec = resolve_architecture(config)
+    # Resolved from the CLASS THAT WAS LOADED, not from `config.architectures`: the head is part of the
+    # architecture identity, and a sentence-transformers checkpoint still declares `["BertModel"]` when
+    # loaded as a `BertForSequenceClassification`. For decoders the two agree.
+    spec = resolve_architecture(config, architecture=type(model).__name__)
+
+    # PEFT target modules, resolved per model rather than assumed.
+    #
+    # This used to default to a hardcoded ["q_proj", "k_proj"], which is decoder-specific AND
+    # disagreed with the architecture registry's own `target_modules` (`("q_proj", "v_proj")` for every
+    # decoder row — the LoRA convention of adapting Wq/Wv). Nothing passed the argument, so the
+    # registry's value was dead data and an encoder could not be targeted at all.
+    #
+    # The registry row is now the source of truth and the place to edit for a new/changed model — one
+    # data row per architecture — while an explicit `lora_target` (CLI `--lora-target`) still wins for
+    # ad-hoc runs.
+    if not lora_target:
+        lora_target = list(spec.target_modules)
+        logger.info(
+            "peft targets for %s taken from the architecture registry: %s",
+            spec.architecture,
+            lora_target,
+        )
+    else:
+        lora_target = list(lora_target)
+
     resolved_task = choose_task(supported_onnx_tasks(config.model_type), override=task_type)
     onnx_config_class = spec.load_onnx_config_class()
-    if spec.task == TaskType.FEATURE_EXTRACTION:
-        ocl = onnx_config_class(config, task=resolved_task)
-    else:
-        ocl = onnx_config_class(
-            config, task=resolved_task, use_past=not training_mode, use_past_in_inputs=not training_mode
-        )
+    # The architecture's own task wins over the requested one: a BertModel row declares
+    # feature-extraction and must not be handed KV-cache kwargs its OnnxConfig cannot accept.
+    ocl = onnx_config_class(
+        config,
+        task=resolved_task,
+        **get_task_spec(spec.task).onnx_config_kwargs(training_mode=training_mode),
+    )
 
     lora_config = None
     lora_model = None
@@ -321,16 +434,21 @@ def optimum_hf_export(
     # method rather than silently falling through every branch and leaving `lora_model` unbound.
     peft_method = PEFTMethod(train_method)
 
+    # The architecture's task drives PEFT's task_type. Both sites below hardcoded "CAUSAL_LM", which
+    # mis-wraps an encoder: PEFT uses this to decide which modules to adapt and which head stays
+    # trainable, and a feature-extraction model has no LM head to find.
+    peft_task_type = get_task_spec(spec.task).peft_task_type
+
     if training_mode and peft_method is PEFTMethod.LORA:
         # Apply LoRA to the model
         lora_config = LoraConfig(
-            r=lora_rank, target_modules=lora_target, task_type="CAUSAL_LM", **peft_config
+            r=lora_rank, target_modules=lora_target, task_type=peft_task_type, **peft_config
         )
         lora_model = PeftModel(model, lora_config, adapter_name="lora")
     elif training_mode and peft_method is PEFTMethod.LORA_XS:
         # TODO: Add specific PEFT config
         lora_config = LoraConfig(
-            r=lora_rank, target_modules=lora_target, task_type="CAUSAL_LM", **peft_config
+            r=lora_rank, target_modules=lora_target, task_type=peft_task_type, **peft_config
         )
         lora_model = get_peft_model(model, lora_config)
         adapter_name = "default"
@@ -382,10 +500,12 @@ def optimum_hf_export(
         mapping = build_adapter_mapping(peft_method, lora_model, **mapping_kwargs)
 
     if training_mode:
+        # The registry picks the wrapper, because its forward signature IS the exported input set.
+        trainer_wrapper = import_from_path(get_task_spec(spec.task).trainer_wrapper_class)
         if peft_method is not PEFTMethod.ALL:
-            my_model = OnnxTrainerWrapper(lora_model.base_model.model)
+            my_model = trainer_wrapper(lora_model.base_model.model)
         else:
-            my_model = OnnxTrainerWrapper(lora_model)
+            my_model = trainer_wrapper(lora_model)
         my_model.train()
     elif task_type == "text-generation":
         my_model = OnnxInferenceWrapper(lora_model)
@@ -422,6 +542,8 @@ def optimum_hf_export(
                     "frozen_params": no_grad_layers,
                     "peft_mapping": mapping,
                     "trainable_parameter_count": trainable_count,
+                    # Reference for the export-time parameter-budget gate; see parameter_budget.py.
+                    "source_parameter_count": source_parameter_count,
                     "rank": lora_rank,
                     "alpha": lora_alpha,
                     "peft_target": lora_target,
@@ -451,7 +573,14 @@ def optimum_hf_export(
             # line above computes `lora_target` for exactly this and then discarded it.
             exclude_weights=lora_target,
             weight_type=weight_type,
-            exclude_extra_layers=exclude_extra_layers,
+            # Task-declared: whatever sits on the gradient path between the loss and the adapters must
+            # stay unquantized, because ORT has no gradient for DynamicQuantizeLinear. Decoders need
+            # only the LM head; encoder classification also needs `pooler`/`classifier`.
+            exclude_extra_layers=(
+                list(exclude_extra_layers)
+                if exclude_extra_layers is not None
+                else list(get_task_spec(spec.task).quantization_exclude_layers)
+            ),
             exclude_specific=exclude_specific,
             exclude_specific_layers=exclude_specific_layers,
         )
@@ -487,10 +616,28 @@ def onnx_dynamic_quantization(
 
         if any(allowed_layer in param.name for allowed_layer in exclude_extra_layers):
             nodes_to_not_quantize.append(param.name)
-        for input_weight in param.input:
-            if any(allowed_layer in input_weight for allowed_layer in exclude_extra_layers):
-                nodes_to_not_quantize.append(param.name)
-                break
+        else:
+            for input_weight in param.input:
+                if any(allowed_layer in input_weight for allowed_layer in exclude_extra_layers):
+                    nodes_to_not_quantize.append(param.name)
+                    break
+
+    # `Gemm` is renamed before it is quantized, so excluding it by its own name silently misses.
+    #
+    # ONNX Runtime rewrites `Gemm` -> `MatMul` (+`Add`) during quantization and matches
+    # `nodes_to_exclude` against the **rewritten** name `<gemm>_MatMul`. A caller excluding
+    # `/backbone/bert/pooler/dense/Gemm` therefore excludes nothing, and the node comes back as
+    # `/backbone/bert/pooler/dense/Gemm_MatMul_quant` — a `MatMulInteger` fed by a
+    # `DynamicQuantizeLinear`, i.e. a **quantized activation**.
+    #
+    # That matters beyond tidiness: quantized *weights* are frozen and dequantize to float
+    # (`DequantizeLinear`), so the backward pass flows through them untouched. A quantized
+    # *activation* has no gradient at all — ORT registers no gradient builder for
+    # `DynamicQuantizeLinear` — so any such node on the path between the loss and the adapters makes
+    # `generate_artifacts` fail outright. Decoders never hit it because their linear layers export as
+    # `MatMul`; BERT-family heads export as `Gemm`.
+    gemm_names = {node.name for node in onnx_model.graph.node if node.op_type == "Gemm"}
+    nodes_to_not_quantize += [f"{name}_MatMul" for name in nodes_to_not_quantize if name in gemm_names]
 
     # Does not work
     # quant_pre_process(onnx_model_path, f"pre_{onnx_model_quant_output}", save_as_external_data=True, all_tensors_to_one_file=True, external_data_location=f"pre_{onnx_model_quant_output}")

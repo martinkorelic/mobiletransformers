@@ -24,6 +24,11 @@ from mobiletransformers.config.registry.peft import (
     PEFTMethodSpec,
     get_peft_spec,
 )
+from mobiletransformers.config.registry.task import (
+    TASK_REGISTRY,
+    TaskSpec,
+    get_task_spec,
+)
 
 __all__ = [
     "ARCHITECTURE_REGISTRY",
@@ -36,4 +41,7 @@ __all__ = [
     "MergerSpec",
     "resolve_merger",
     "build_merger_model",
+    "TASK_REGISTRY",
+    "TaskSpec",
+    "get_task_spec",
 ]

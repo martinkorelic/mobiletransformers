@@ -47,6 +47,65 @@ def test_cli_table_lists_every_registered_subcommand() -> None:
     assert not missing, f"docs/PUBLIC_API.md does not document: {missing}"
 
 
+#: Kotlin sources for the public facade. The internal packages are deliberately excluded — the point is
+#: to prove the *documented* surface exists, not to inventory everything under the namespace.
+_KOTLIN_FACADE_ROOT = (
+    REPO_ROOT
+    / "android"
+    / "MobileTransformers"
+    / "MobileTransformers"
+    / "src"
+    / "main"
+    / "java"
+    / "com"
+    / "martinkorelic"
+    / "mobiletransformers"
+)
+
+_KOTLIN_DECL = re.compile(
+    r"\b(?:data class|sealed class|enum class|value class|abstract class|open class|class|interface|"
+    r"fun interface|object)\s+([A-Z][A-Za-z0-9_]*)"
+)
+
+
+def test_documented_kotlin_facade_symbols_exist() -> None:
+    """Every type named in the Kotlin facade table must be a real declaration.
+
+    The Python `__all__` surface is guarded by `public_api.txt` and the CLI table by the test above;
+    the Kotlin half of the same page had no guard at all, and its table sat marked "pending #17/#19"
+    long after both landed. This closes that asymmetry: the doc can now only name types that exist.
+
+    Method names inside the table cells are not checked here — `FacadeDelegationTest` (Android JVM)
+    already pins the model handle's methods by calling them.
+    """
+    if not _KOTLIN_FACADE_ROOT.is_dir():
+        pytest.skip("Android sources not present in this checkout")
+
+    declared: set[str] = set()
+    for source in _KOTLIN_FACADE_ROOT.rglob("*.kt"):
+        declared.update(_KOTLIN_DECL.findall(source.read_text(encoding="utf-8")))
+
+    page = (DOCS / "PUBLIC_API.md").read_text(encoding="utf-8")
+    section = page.partition("## Kotlin facade")[2].partition("\n## ")[0]
+    assert section.strip(), "docs/PUBLIC_API.md has no Kotlin facade section"
+
+    # Types are the backticked identifiers in UpperCamelCase. SCREAMING_CASE tokens are enum *values*
+    # (`NATIVE`, `GENAI`), which `make parity` already checks against the Python enums wire-value by
+    # wire-value — a stronger check than existence, so re-testing them here would add nothing.
+    named = {
+        token
+        for token in re.findall(r"`([^`]+)`", section)
+        if re.fullmatch(r"[A-Z][A-Za-z0-9_]*", token) and not token.isupper()
+    }
+    assert named, "the Kotlin facade table names no types — the guard would pass vacuously"
+
+    missing = sorted(name for name in named if name not in declared)
+    assert not missing, (
+        f"docs/PUBLIC_API.md names Kotlin types that do not exist: {missing}. "
+        "Either the facade renamed them or the doc drifted."
+    )
+
+
 def test_every_doc_page_is_reachable_from_the_readme() -> None:
     """A page nobody links to is a page nobody reads."""
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")

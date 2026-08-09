@@ -54,6 +54,7 @@
   ],
   "TaskType": [
     "text-generation",
-    "feature-extraction"
+    "feature-extraction",
+    "text-classification"
   ]
 }

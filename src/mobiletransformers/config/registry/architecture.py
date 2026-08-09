@@ -195,15 +195,61 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
         attention_module_name="attention",
         task=TaskType.FEATURE_EXTRACTION,
     ),
+    # --- Encoder classification (#33) ---
+    #
+    # Separate rows from `BertModel` because the architecture key IS the head: a checkpoint loaded as
+    # `AutoModelForSequenceClassification` reports `BertForSequenceClassification`, and it is the head
+    # that decides the task, the label shape and the loss. `BertModel` stays feature-extraction (the
+    # RAG embedder), and neither row has to know about the other.
+    #
+    # Targets are the BERT attention projection names (`query`/`value`), the encoder equivalent of the
+    # decoders' `q_proj`/`v_proj` — the LoRA convention of adapting Wq and Wv.
+    "BertForSequenceClassification": ArchitectureSpec(
+        "BertForSequenceClassification",
+        f"{_OC}.BertOnnxConfig",
+        ("query", "value"),
+        attention_module_name="attention",
+        task=TaskType.SEQUENCE_CLASSIFICATION,
+    ),
+    "RobertaForSequenceClassification": ArchitectureSpec(
+        "RobertaForSequenceClassification",
+        f"{_OC}.RobertaOnnxConfig",
+        ("query", "value"),
+        attention_module_name="attention",
+        task=TaskType.SEQUENCE_CLASSIFICATION,
+    ),
+    "DistilBertForSequenceClassification": ArchitectureSpec(
+        "DistilBertForSequenceClassification",
+        f"{_OC}.DistilBertOnnxConfig",
+        # DistilBERT names its projections q_lin/v_lin, not query/value — exactly the per-architecture
+        # difference this registry exists to hold as data.
+        ("q_lin", "v_lin"),
+        attention_module_name="attention",
+        task=TaskType.SEQUENCE_CLASSIFICATION,
+    ),
 }
 
 
-def resolve_architecture(config: Any) -> ArchitectureSpec:
-    """Look up the spec for a HF config's first architecture. Fail closed on unknown."""
-    architectures = getattr(config, "architectures", None) or []
-    if not architectures:
-        raise UnsupportedModelError("model config has no `architectures`")
-    name = architectures[0]
+def resolve_architecture(config: Any, *, architecture: str | None = None) -> ArchitectureSpec:
+    """Look up the spec for a HF config's first architecture. Fail closed on unknown.
+
+    ``architecture`` overrides the lookup key and should be ``type(model).__name__`` whenever the
+    model has actually been loaded. **The head is part of the architecture identity**, and
+    ``config.architectures`` describes the *checkpoint*, not what was loaded from it: a
+    sentence-transformers encoder declares ``["BertModel"]`` even when loaded through
+    ``AutoModelForSequenceClassification`` as a ``BertForSequenceClassification``. Keying off the
+    config alone therefore resolves an encoder fine-tune to the un-headed, untrainable row.
+
+    For every already-supported path the two agree (`AutoModelForCausalLM` on a Llama checkpoint gives
+    `LlamaForCausalLM`, which is also `architectures[0]`), so passing the loaded class is strictly more
+    accurate rather than a behaviour change.
+    """
+    name = architecture
+    if not name:
+        architectures = getattr(config, "architectures", None) or []
+        if not architectures:
+            raise UnsupportedModelError("model config has no `architectures`")
+        name = architectures[0]
     spec = ARCHITECTURE_REGISTRY.get(name)
     if spec is None:
         raise UnsupportedModelError(f"unsupported architecture: {name}")

@@ -70,8 +70,13 @@ class PEFTMethod(str, Enum):
 
 
 class TaskType(str, Enum):
+    #: Decoder LM. Autoregressive, KV-cached, labels shaped [batch, seq].
     TEXT_GENERATION = "text-generation"
+    #: Encoder embedding output (the RAG embedder). Inference/export only — it has no head, so it
+    #: cannot produce a training graph; SEQUENCE_CLASSIFICATION is the trainable encoder task.
     FEATURE_EXTRACTION = "feature-extraction"
+    #: Encoder classification (#33). Single forward pass, no KV cache, labels shaped [batch].
+    SEQUENCE_CLASSIFICATION = "text-classification"
 
 
 class HandoffMode(str, Enum):
