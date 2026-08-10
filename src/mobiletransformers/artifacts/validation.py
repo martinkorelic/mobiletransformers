@@ -149,6 +149,7 @@ class MobileTransformerGenerator:
         generation_config={"type": "native"},
         load_merged_weights=False,
         merged_weights_dir=None,
+        architecture_spec=None,
         **kwargs,
     ):
         """
@@ -160,6 +161,11 @@ class MobileTransformerGenerator:
             model_dir (str): Directory containing the model
             generation_config (dict): Generation configuration
             load_merged_weights (bool): Whether to load merged weights
+            architecture_spec (ArchitectureSpec | None): resolved architecture, used to rewrite
+                checkpoint names into inference-graph names. When ``None`` the registry's default
+                decoder naming is used — correct for every decoder, and the honest fallback here
+                because this class reconstructs names from ``.npz`` FILENAMES and so has no config to
+                resolve from. Pass one explicitly for an encoder.
             **kwargs: Additional configuration parameters
         """
         self.model_id = model_id
@@ -168,6 +174,10 @@ class MobileTransformerGenerator:
         self.model_path = os.path.join(model_dir, model_name)
         self.kwargs = kwargs
         self.merged_weights_dir = merged_weights_dir
+        # The attention module spelling is DATA, not a literal. This used to be a hardcoded
+        # `replace("self_attn", "attn")`, allow-listed in the architecture-literal guard with a note
+        # that the fix was to thread a spec in rather than widen the allowance. This is that thread.
+        self.architecture_spec = architecture_spec
 
         # Load and process generation config
         self.generation_config = self._load_generation_config(generation_config)
@@ -248,6 +258,13 @@ class MobileTransformerGenerator:
 
         return session
 
+    def _attention_module_name(self) -> str:
+        """The attention module spelling for this model, from the registry rather than a literal."""
+        from mobiletransformers.config.registry.architecture import DEFAULT_ATTENTION_MODULE_NAME
+
+        spec = self.architecture_spec
+        return getattr(spec, "attention_module_name", None) or DEFAULT_ATTENTION_MODULE_NAME
+
     def _load_external_initializers(self):
         """Load external initializers from merged weights directory."""
 
@@ -272,8 +289,10 @@ class MobileTransformerGenerator:
                     arr = weights[key]
                     full_key_name = f"{base_layer_name}.{key}"
 
-                    # Renaming conventions
-                    full_key_name = full_key_name.replace("self_attn", "attn")
+                    # Renaming conventions. The source spelling comes from the architecture registry
+                    # (`attention_module_name`), not from a literal — BERT-family encoders spell it
+                    # `attention`, and a hardcoded `self_attn` silently matched nothing there.
+                    full_key_name = full_key_name.replace(self._attention_module_name(), "attn")
                     full_key_name = full_key_name.replace("base_layer", "MatMul")
                     full_key_name = full_key_name.replace("backbone.model", "model")
 

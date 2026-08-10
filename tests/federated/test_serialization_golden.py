@@ -35,7 +35,11 @@ def test_golden_deserializes_back():
     back = FederatedAdapterRecord.deserialize(_GOLDEN.read_bytes())
     assert back.base_model_id == "org/base"
     assert back.mobiletransformers_package_revision == "rev-1"
+    # Rank-r factors as of #35, in codec order: entries by canonical weight name, then adapter role.
     assert [t.name for t in back.tensors] == [
-        "model.layers.0.attn.q_proj.MatMul.weight",
-        "model.layers.1.attn.v_proj.MatMul.weight",
+        "l0.lora_A.lora.weight",
+        "l0.lora_B.lora.weight",
+        "l1.lora_A.lora.weight",
+        "l1.lora_B.lora.weight",
     ]
+    assert [t.role for t in back.tensors] == ["adapter_A", "adapter_B", "adapter_A", "adapter_B"]

@@ -111,6 +111,48 @@ class TaskSpec:
     #: site.
     model_init_kwargs: dict[str, object] = field(default_factory=dict)
 
+    # -- package shape ------------------------------------------------------
+    #
+    # Everything below describes what a task's PACKAGE looks like, not how its graph is built. Before
+    # this, `export/pipeline.py` read no `TaskSpec` at all: it emitted a GenAI decoder config, stamped
+    # KV-cache geometry, and ran a causal-LM parity check for every model, because a decoder was the
+    # only thing that had ever been packaged. An encoder came out with a `model.decoder` block
+    # describing a cache it does not have.
+
+    #: Whether the inference graph carries a `model.decoder` GenAI config (`past_key_names`, etc.).
+    #:
+    #: Separate from :attr:`uses_kv_cache` on purpose: that one governs how the ONNX config is
+    #: CONSTRUCTED, this one governs what the packager WRITES. They coincide today, and collapsing them
+    #: would be a guess about a future task rather than a fact about the current ones.
+    emits_genai_config: bool = True
+
+    #: Whether `head_dim`/`num_kv_heads`/`num_layers` are stamped into the graph's ``metadata_props``.
+    #:
+    #: The Native engine sizes its KV cache from these and fails closed when they are absent
+    #: (``session_cache.h::initializeKVCache``). For a task with no cache they are meaningless, and
+    #: stamping a decoder's geometry onto an encoder is worse than omitting it.
+    stamps_kv_metadata: bool = True
+
+    #: Dotted path to the train-vs-inference numerical gate, or ``None`` when the task has none yet.
+    #:
+    #: ``artifacts/train_inference_parity.py`` is hard causal-LM: it shifts ``logits[:, :-1]`` against
+    #: ``input_ids[:, 1:]`` and requires rank-3 logits. A classification graph emits ``[batch, labels]``
+    #: and is supervised per sequence, so running it there raises rather than measures. Naming the
+    #: checker as data keeps the gate a task property instead of an ``if`` in the pipeline.
+    parity_check: str | None = (
+        "mobiletransformers.artifacts.train_inference_parity.verify_train_inference_parity"
+    )
+
+    @property
+    def stages(self) -> tuple[str, ...]:
+        """Package stages this task can produce, in deterministic order.
+
+        Derived rather than declared: a task always ships an inference graph, and ships a training
+        stage exactly when it is :attr:`trainable`. ``embedding`` is a RAG opt-in rather than a task
+        property, so the pipeline adds it from the requested features.
+        """
+        return ("inference", "train") if self.trainable else ("inference",)
+
     @property
     def is_token_level(self) -> bool:
         """True when the objective supervises one label per token rather than per sequence."""
@@ -147,6 +189,12 @@ TASK_REGISTRY: dict[TaskType, TaskSpec] = {
         # Export/inference only — no head, therefore no loss. This is the RAG embedder's task.
         trainable=False,
         label_shape=(),
+        # No cache, so no decoder block and no cache geometry. Writing them produced a genai_config
+        # advertising `past_key_values.N` inputs this graph does not have.
+        emits_genai_config=False,
+        stamps_kv_metadata=False,
+        # No head, no loss: there is nothing to compare against the training graph.
+        parity_check=None,
     ),
     TaskType.SEQUENCE_CLASSIFICATION: TaskSpec(
         task=TaskType.SEQUENCE_CLASSIFICATION,
@@ -165,6 +213,13 @@ TASK_REGISTRY: dict[TaskType, TaskSpec] = {
         # construction (it does not exist in the checkpoint), which is correct and expected — it is the
         # part fine-tuning is supposed to learn.
         model_init_kwargs={"num_labels": 2},
+        # A classifier is not a generator: no cache, no decoder block, no cache geometry.
+        emits_genai_config=False,
+        stamps_kv_metadata=False,
+        # No causal-LM parity gate exists for a per-sequence objective yet. `None` records the absence
+        # honestly instead of running the causal checker, which raises on rank-2 logits and would read
+        # as "the package is broken" rather than "this gate does not apply".
+        parity_check=None,
     ),
 }
 

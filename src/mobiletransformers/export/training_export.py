@@ -390,7 +390,8 @@ def optimum_hf_export(
     # Resolved from the CLASS THAT WAS LOADED, not from `config.architectures`: the head is part of the
     # architecture identity, and a sentence-transformers checkpoint still declares `["BertModel"]` when
     # loaded as a `BertForSequenceClassification`. For decoders the two agree.
-    spec = resolve_architecture(config, architecture=type(model).__name__)
+    loaded_architecture = type(model).__name__
+    spec = resolve_architecture(config, architecture=loaded_architecture)
 
     # PEFT target modules, resolved per model rather than assumed.
     #
@@ -424,6 +425,9 @@ def optimum_hf_export(
 
     lora_config = None
     lora_model = None
+    # The exact trainable parameter names, needed by the quantizer below so it never freezes one.
+    # Bound here because it is populated only on the training path but read on both.
+    grad_layers: list[str] = []
 
     if training_mode:
         ocl = OnnxConfigWithLoss(ocl)
@@ -547,6 +551,12 @@ def optimum_hf_export(
                     "rank": lora_rank,
                     "alpha": lora_alpha,
                     "peft_target": lora_target,
+                    # The class that was actually LOADED, so the packaging half resolves the same
+                    # architecture row this one did. Without it `export_inference_package` re-resolved
+                    # from `config.architectures`, which for a sentence-transformers checkpoint says
+                    # `["BertModel"]` even when loaded as `BertForSequenceClassification` — the two
+                    # halves of one export then disagreed about the architecture.
+                    "architecture": loaded_architecture,
                 },
                 f,
                 ensure_ascii=False,
@@ -583,6 +593,9 @@ def optimum_hf_export(
             ),
             exclude_specific=exclude_specific,
             exclude_specific_layers=exclude_specific_layers,
+            # Belt-and-braces over `exclude_weights`, and the ONLY thing that covers a shared adapter
+            # living outside its target modules' subtrees (MARS). Empty when not training.
+            exclude_trainable_initializers=grad_layers,
         )
 
         # Add pooling operations to the quantized embedding model and save
@@ -601,12 +614,35 @@ def onnx_dynamic_quantization(
     exclude_extra_layers=[],
     exclude_specific=False,
     exclude_specific_layers=[],
+    exclude_trainable_initializers=(),
 ):
 
     nodes_to_not_quantize = []
 
+    # A tensor the export declared TRAINABLE must never be quantized, because quantized means frozen:
+    # the quantizer replaces `<w>.weight` with `<w>.weight_quantized`/`_scale`/`_zero_point`, and
+    # `gen_artifacts` (correctly) refuses to ask for a gradient of an int tensor. So the tensor is
+    # silently demoted to a frozen parameter and training simply does not touch it.
+    #
+    # `exclude_weights` alone does not cover this. It holds the PEFT TARGET MODULE names
+    # (`q_proj`/`v_proj`, `query`/`value`), matched as substrings of NODE names — which works for LoRA
+    # because `lora_A`/`lora_B` live inside the target module's own subtree. MARS's shared adapter does
+    # not: it is attached to the attention block (`.../attention/shared_qkv/...`), OUTSIDE any target
+    # module's path, which is the entire point of sharing it across projections. Measured before this
+    # fix: MARS lost exactly its shared half on both architectures (decoder 4 of 8 trainables,
+    # encoder 12 of 24), while LoRA lost none.
+    #
+    # Matching here is on node INPUTS and is EXACT, because these are full initializer names rather
+    # than name fragments — substring matching over 120 long names would be both slow and prone to
+    # accidental hits.
+    trainable_initializers = set(exclude_trainable_initializers)
+
     # Exclude trainable nodes
     for param in onnx_model.graph.node:
+        if trainable_initializers and any(inp in trainable_initializers for inp in param.input):
+            nodes_to_not_quantize.append(param.name)
+            continue
+
         if not exclude_specific:
             if any((allowed_layer in param.name) for allowed_layer in exclude_weights):
                 nodes_to_not_quantize.append(param.name)
@@ -733,8 +769,13 @@ def parse_arguments():
     parser.add_argument(
         "--lora_target",
         type=parse_argument_list,
-        default=["q_proj", "k_proj"],
-        help="Target layers for LoRA, provided as a list. Default is ['q_proj', 'k_proj'].",
+        # `None`, NOT a literal pair. This defaulted to ["q_proj", "k_proj"] — the decoder-specific
+        # pairing the architecture registry replaced — and because argparse always supplies a value,
+        # every run through this entry point silently OVERRODE the registry with it, including on
+        # encoders where those modules do not exist. The registry is the source of truth; an explicit
+        # --lora_target still wins.
+        default=None,
+        help="Target layers for PEFT. Default: the architecture registry's target_modules.",
     )
     parser.add_argument(
         "--lora_rank", type=int, default=16, help="Rank for the given LoRA method. Default is 16."

@@ -26,7 +26,23 @@ mobiletransformers = "mobiletransformers.cli.main:main"
 [project.optional-dependencies]
 # Public install surfaces. `export` uses optimum-onnx WITH the [onnxruntime] extra
 # (public onnxruntime). Never co-install with `ort-training-local` (see [tool.uv] conflicts).
-export = ["optimum-onnx[onnxruntime]>=0.1.0", "transformers>=4.45,<4.58", "onnx", "onnxscript>=0.3"]
+# transformers FLOOR is 4.50, not 4.45: Gemma-3 (`Gemma3ForCausalLM`/`Gemma3Config`, and the `gemma3`
+# row in CONFIG_MAPPING_NAMES) does not exist before it, so #37's architecture gate cannot even LOAD
+# the model on an older line — the failure is upstream of the graph entirely.
+#
+# This floor is also what FORCES the fork. `ort-training-local` pins `transformers==4.46.2` as part of
+# the source-built ORT wheel's paired stack; `[tool.uv] conflicts` already declares that group and this
+# extra mutually exclusive, but uv still prefers ONE version when a single version satisfies both — and
+# 4.46.2 satisfied `>=4.45,<4.58`. With `>=4.50` no single version can, so the two profiles resolve
+# separately, exactly as `numpy` and `onnx` already do for the 3.12 split.
+#
+# The training profile is deliberately NOT moved: its pin reproduces the environment the ORT-training
+# wheel was BUILT against, and floating a pin in that block has broken `get_peft_model` before. The
+# consequence is recorded: on-device FunctionGemma *training* stays blocked; the inference-graph gate,
+# which `04_code_plans/05` calls the real blocker, does not.
+#
+# `<4.58` is upstream's own ceiling (optimum-onnx 0.1.0 declares `transformers<4.58`), not our choice.
+export = ["optimum-onnx[onnxruntime]>=0.1.0", "transformers>=4.50,<4.58", "onnx", "onnxscript>=0.3"]
 train  = ["transformers>=4.45,<4.58", "onnxscript>=0.3", "peft>=0.13", "onnx"]
 rag    = ["langchain-community>=0.3.27", "langchain-huggingface>=0.3", "langchain-objectbox==0.1.0", "sentence-transformers>=5"]
 eval   = ["deepeval>=3.4.7", "matplotlib>=3.10"]

@@ -7,8 +7,104 @@ from peft.tuners.tuners_utils import BaseTuner, BaseTunerLayer, check_target_mod
 from safetensors.torch import save_file
 from torch.nn.modules import Module
 
+from mobiletransformers.config.registry.architecture import ArchitectureSpec, resolve_architecture
+from mobiletransformers.exceptions import UnsupportedModelError
+from mobiletransformers.utils.logging import get_logger
+
 from .layer import Linear, MarsLayer, SharedAttentionAdapter, SharedMLPAdapter
 from .utils import TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING
+
+logger = get_logger(__name__)
+
+#: Roles whose projections share one :class:`SharedAttentionAdapter`, and one
+#: :class:`SharedMLPAdapter`, respectively. Roles — not module names: the names are per-architecture
+#: data on :class:`~mobiletransformers.config.registry.architecture.ArchitectureSpec`.
+_QKV_ROLES = ("q", "k", "v")
+_MLP_ROLES = ("gate", "up")
+
+
+def _hidden_states_from(module: Module, args: tuple, kwargs: dict) -> torch.Tensor:
+    """Extract the hidden-states input of an attention/MLP block's forward.
+
+    A decoder's ``LlamaAttention.forward`` is called with ``hidden_states=`` as a keyword, which is
+    what this code used to assume unconditionally (``kwargs["hidden_states"]``). ``BertAttention``
+    and ``BertSelfAttention`` take it **positionally**, so the old form raised ``KeyError`` on every
+    encoder forward. Accept either, and fail closed naming the module rather than letting a wrong
+    tensor through.
+    """
+    hidden_states = kwargs.get("hidden_states")
+    if hidden_states is None and args:
+        hidden_states = args[0]
+    if not isinstance(hidden_states, torch.Tensor):
+        raise UnsupportedModelError(
+            f"{type(module).__name__}: MARS could not locate the hidden-states input of this module's "
+            "forward (neither a `hidden_states` keyword nor a tensor first positional argument). "
+            "The shared adapter cannot be applied without it."
+        )
+    return hidden_states
+
+
+def _owns_any_child(module: Module, names: set[str]) -> bool:
+    """True when ``module`` has a direct child submodule with one of ``names``."""
+    return any(child in names for child, _ in module.named_children())
+
+
+def _is_within(module_path: str, block_name: str) -> bool:
+    """True when ``block_name`` is one of ``module_path``'s dotted components (or the leaf itself).
+
+    ``model.layers.0.self_attn`` is within ``self_attn``; ``bert.encoder.layer.0.attention.self`` is
+    within ``attention``. Component-wise, not substring: ``attention_probs`` must not match
+    ``attention``.
+    """
+    return block_name in module_path.split(".")
+
+
+def _compute_shared_qkv(module: Module, args: tuple, kwargs: dict) -> None:
+    """Compute the block's shared QKV outputs once, for its projections to consume."""
+    module.shared_qkv._shared_outputs = module.shared_qkv(_hidden_states_from(module, args, kwargs))
+    return None
+
+
+def _pass_qkv_inputs(module: Module, args: tuple) -> tuple:
+    if module is None or not hasattr(module, "shared_qkv"):
+        return args
+
+    shared_outputs = getattr(module.shared_qkv, "_shared_outputs", None)
+    if shared_outputs is None:
+        return args
+
+    # Get the specific output for this projection type
+    if module.projection_type not in shared_outputs:
+        return args
+
+    shared_output = shared_outputs[module.projection_type]
+
+    # Delete the specific key to free memory
+    del module.shared_qkv._shared_outputs[module.projection_type]
+
+    # Optional: Clean up the entire dict when empty
+    if not module.shared_qkv._shared_outputs:
+        del module.shared_qkv._shared_outputs
+
+    # Return original input paired with shared output
+    return (shared_output,) + args
+
+
+def _compute_shared_mlp(module: Module, args: tuple, kwargs: dict) -> None:
+    gate_out, up_out = module.shared_mlp(_hidden_states_from(module, args, kwargs))
+    module.shared_mlp._shared_outputs = {"gate": gate_out, "up": up_out}
+    return None
+
+
+def _pass_mlp_inputs(module: Module, args: tuple) -> tuple:
+    projection_type = getattr(module, "projection_type", None)
+    if projection_type not in ("gate", "up"):
+        return args
+    shared_outputs = getattr(module.shared_mlp, "_shared_outputs", None)
+    if shared_outputs is None or projection_type not in shared_outputs:
+        return args
+    shared_output = shared_outputs.pop(projection_type)
+    return (shared_output,) + args
 
 
 class MarsModel(BaseTuner):
@@ -48,6 +144,16 @@ class MarsModel(BaseTuner):
         elif peft_config[adapter_name].optimization_level == 4:
             self.trainable_down = False
 
+        # Which module names carry which projection role is per-architecture DATA, resolved from the
+        # class that was actually loaded (the head is part of the architecture identity — the same
+        # reason `export/training_export.py` passes `architecture=type(model).__name__`). Resolved
+        # BEFORE `super().__init__`, because BaseTuner's constructor runs the injection that consumes
+        # it. Fails closed on an unknown architecture rather than silently applying decoder naming to
+        # a model that does not use it — which is precisely the failure this replaces.
+        self._arch_spec: ArchitectureSpec = resolve_architecture(
+            model.config, architecture=type(model).__name__
+        )
+
         super().__init__(model, peft_config, adapter_name, low_cpu_mem_usage)
 
     def _pre_injection_hook(self, model: Module, config: PeftConfig, adapter_name: str) -> None:
@@ -57,118 +163,84 @@ class MarsModel(BaseTuner):
         # Map enabled projections to indices in tuple
         enabled_list = list(enabled_qkv)
 
-        # TODO: Check modules if they are even in target_modules
-        any_mlp = any(["gate_proj" in tm or "up_proj" in tm for tm in config.target_modules])
-        any_qkv = any(["q_proj" in tm or "k_proj" in tm or "v_proj" in tm for tm in config.target_modules])
+        spec = self._arch_spec
+        qkv_names = {n for n in (spec.module_name_for_role(r) for r in _QKV_ROLES) if n}
+        mlp_names = {n for n in (spec.module_name_for_role(r) for r in _MLP_ROLES) if n}
 
-        # Register hooks for each attention layer
-        for name, module in model.named_modules():
-            # TODO: Here we assume the attention layer is named "self_attn"
-            if isinstance(module, type(model.model.layers[0].self_attn)) and any_qkv:
-                # Create a separate shared adapter for each attention layer
-                module.shared_qkv = SharedAttentionAdapter(
-                    hidden_size=model.config.hidden_size,
-                    rank=config.r,
-                    shared_rank=config.shared_r,
-                    alpha=config.alpha,
-                    enabled=enabled_list,
-                )
+        # Whether the user's target set actually reaches shared-adapter projections, decided by ROLE
+        # rather than by the decoder-only literals `q_proj`/`gate_proj` this used to test for.
+        any_qkv = any(spec.role_for_module(tm) in _QKV_ROLES for tm in config.target_modules)
+        any_mlp = any(spec.role_for_module(tm) in _MLP_ROLES for tm in config.target_modules)
 
-                # Compute shared outputs once and store them
-                def compute_shared_qkv(module, args, kwargs):
+        # The anchor for a shared adapter is the module that DIRECTLY OWNS the projections, because
+        # that is both where the hidden states arrive and the `parent` that `_replace_module` reads
+        # `shared_qkv`/`shared_mlp` off. For a decoder that is `self_attn` itself; for BERT the
+        # projections live one level deeper, in `attention.self`, so anchoring on the module named
+        # `attention_module_name` would have attached the adapter to the wrong parent and silently
+        # never wired it up. `attention_module_name` still scopes the search, so an unrelated module
+        # that happens to own a `query`/`value` child is not mistaken for attention.
+        qkv_anchors = [
+            (name, module)
+            for name, module in model.named_modules()
+            if any_qkv and _owns_any_child(module, qkv_names) and _is_within(name, spec.attention_module_name)
+        ]
+        mlp_anchors = [
+            (name, module)
+            for name, module in model.named_modules()
+            if any_mlp and _owns_any_child(module, mlp_names)
+        ]
+        if any_qkv and not qkv_anchors:
+            raise UnsupportedModelError(
+                f"MARS found no attention module owning any of {sorted(qkv_names)} under a "
+                f"{spec.attention_module_name!r} block in {spec.architecture}. The shared QKV adapter "
+                "would be a silent no-op; fix `projection_names`/`attention_module_name` for this "
+                "architecture in the registry instead."
+            )
+        logger.info(
+            "MARS shared adapters for %s: %d attention anchor(s), %d mlp anchor(s)",
+            spec.architecture,
+            len(qkv_anchors),
+            len(mlp_anchors),
+        )
 
-                    # TODO: Could have args or kwargs where hidden states are, this might depend on architecture
+        # --- shared QKV adapters, one per attention block -------------------------------------
+        for _name, module in qkv_anchors:
+            module.shared_qkv = SharedAttentionAdapter(
+                hidden_size=model.config.hidden_size,
+                rank=config.r,
+                shared_rank=config.shared_r,
+                alpha=config.alpha,
+                enabled=enabled_list,
+            )
+            module.register_forward_pre_hook(_compute_shared_qkv, with_kwargs=True)
 
-                    # Compute shared outputs only once
-                    qkv_outputs = module.shared_qkv(kwargs["hidden_states"])
-                    # Store them in the module for the projection layers to use
+            for role in _QKV_ROLES:
+                if role not in enabled_qkv:
+                    continue
+                proj_name = spec.module_name_for_role(role)
+                proj = getattr(module, proj_name, None) if proj_name else None
+                if proj is None:
+                    continue
+                proj.projection_type = role
+                proj.register_forward_pre_hook(_pass_qkv_inputs)
 
-                    module.shared_qkv._shared_outputs = qkv_outputs
-                    return None
+        # --- shared MLP adapters -----------------------------------------------------------------
+        for _name, module in mlp_anchors:
+            module.shared_mlp = SharedMLPAdapter(
+                hidden_size=model.config.hidden_size,
+                rank=config.r,
+                shared_rank=config.shared_r,
+                alpha=config.alpha,
+            )
+            module.register_forward_pre_hook(_compute_shared_mlp, with_kwargs=True)
 
-                # Register the hook on the attention layer to compute shared outputs once
-                module.register_forward_pre_hook(compute_shared_qkv, with_kwargs=True)
-
-                def pass_qkv_inputs(module, args):
-                    if module is None or not hasattr(module, "shared_qkv"):
-                        return args
-
-                    shared_outputs = getattr(module.shared_qkv, "_shared_outputs", None)
-                    if shared_outputs is None:
-                        return args
-
-                    # Get the specific output for this projection type
-                    if module.projection_type not in shared_outputs:
-                        return args
-
-                    shared_output = shared_outputs[module.projection_type]
-
-                    # Delete the specific key to free memory
-                    del module.shared_qkv._shared_outputs[module.projection_type]
-
-                    # Optional: Clean up the entire dict when empty
-                    if not module.shared_qkv._shared_outputs:
-                        del module.shared_qkv._shared_outputs
-
-                    # Return original input paired with shared output
-                    return (shared_output,) + args
-
-                # Helper to assign proj attrs and register pre-hook if enabled
-                def register_proj_hook(proj_name, proj_type):
-                    proj = getattr(module, proj_name, None)
-                    if proj is None:
-                        return
-                    if proj_type not in enabled_qkv:
-                        return
-                    proj.projection_type = proj_type
-                    proj.register_forward_pre_hook(pass_qkv_inputs)
-
-                # Register hooks for projections only if enabled
-                register_proj_hook("q_proj", "q")
-                register_proj_hook("k_proj", "k")
-                register_proj_hook("v_proj", "v")
-
-            elif isinstance(module, type(model.model.layers[0].mlp)) and any_mlp:
-                module.shared_mlp = SharedMLPAdapter(
-                    hidden_size=model.config.hidden_size,
-                    rank=config.r,
-                    shared_rank=config.shared_r,
-                    alpha=config.alpha,
-                )
-
-                # Compute shared outputs once and store them
-                def compute_shared_mlp(module, args, kwargs):
-
-                    # TODO: Could have args or kwargs where hidden states are, this might depend on architecture
-
-                    # Compute shared outputs only once
-                    gate_out, up_out = module.shared_mlp(args[0])
-                    # Store them in the module for the projection layers to use
-                    module.shared_mlp._shared_outputs = {"gate": gate_out, "up": up_out}
-                    return None
-
-                # Register the hook on the attention layer to compute shared outputs once
-                module.register_forward_pre_hook(compute_shared_mlp, with_kwargs=True)
-
-                # Register forward pre-hooks for each projection to pass both inputs
-                def pass_mlp_inputs(module, args):
-
-                    # Get the appropriate shared output based on the projection type
-                    if module.projection_type == "gate":
-                        shared_output = module.shared_mlp._shared_outputs["gate"]
-                        del module.shared_mlp._shared_outputs["gate"]
-                    elif module.projection_type == "up":
-                        shared_output = module.shared_mlp._shared_outputs["up"]
-                        del module.shared_mlp._shared_outputs["up"]
-                    else:
-                        return args
-
-                    # Return modified args and kwargs
-                    return (shared_output,) + args
-
-                # Register the pre-hooks on the projection layers
-                module.gate_proj.register_forward_pre_hook(pass_mlp_inputs)
-                module.up_proj.register_forward_pre_hook(pass_mlp_inputs)
+            for role in _MLP_ROLES:
+                proj_name = spec.module_name_for_role(role)
+                proj = getattr(module, proj_name, None) if proj_name else None
+                if proj is None:
+                    continue
+                proj.projection_type = role
+                proj.register_forward_pre_hook(_pass_mlp_inputs)
 
     def _create_and_replace(
         self, mars_config, adapter_name, target, target_name, parent, current_key, **kwargs
@@ -183,25 +255,15 @@ class MarsModel(BaseTuner):
         r = mars_config.r
         alpha = mars_config.alpha
 
-        projection_type = None
         quantize_base = False
         preserve_errors = False
         is_standalone = True
 
-        if "q_proj" in target_name:
-            projection_type = "q"
-        elif "k_proj" in target_name:
-            projection_type = "k"
-        elif "v_proj" in target_name:
-            projection_type = "v"
-        elif "gate_proj" in target_name:
-            projection_type = "gate"
-        elif "up_proj" in target_name:
-            projection_type = "up"
-        elif "o_proj" in target_name:
-            projection_type = "o"
-        elif "down_proj" in target_name:
-            projection_type = "down"
+        # Registry data, not a literal ladder: `query` -> "q" on BERT, `q_proj` -> "q" on Llama.
+        # When this returns None the module gets a standalone adapter — which is correct for a target
+        # that genuinely has no shared role, and used to happen to EVERY encoder module because the
+        # ladder tested decoder names only.
+        projection_type = self._arch_spec.role_for_module(target_name)
 
         self.validate_preserve_errors(mars_config)
 
@@ -254,14 +316,16 @@ class MarsModel(BaseTuner):
 
             self._replace_module(parent, target_name, new_module, target)
 
-    @staticmethod
-    def _replace_module(parent, child_name, new_module, child):
+    def _replace_module(self, parent, child_name, new_module, child):
 
+        # Was a @staticmethod with the decoder module names inlined; it is only ever called from
+        # `_create_and_replace` above, so binding it to the instance is what gives it access to the
+        # architecture spec. Grouping is now by ROLE.
+        role = self._arch_spec.role_for_module(child_name)
         projection_type = None
-
-        if any(proj in child_name for proj in ["q_proj", "k_proj", "v_proj"]):
+        if role in _QKV_ROLES:
             projection_type = "qkv"
-        elif any(proj in child_name for proj in ["gate_proj", "up_proj"]):
+        elif role in _MLP_ROLES:
             projection_type = "mlp"
 
         forward_hooks = {}

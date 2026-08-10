@@ -106,10 +106,22 @@ def test_variant_keyed_architectures_resolve_per_variant():
 
 
 def test_gemma_generations_bind_their_own_onnx_configs():
-    """Gemma2/Gemma3 are distinct architectures; the generic GemmaOnnxConfig describes neither."""
+    """Gemma2/Gemma3 are distinct architectures; the generic GemmaOnnxConfig describes neither.
+
+    **Corrected 2026-08-09.** This asserted `Gemma3ForCausalLM -> Gemma3OnnxConfig`, which is wrong
+    and made the test complicit in the defect: Gemma-3 ships as two model types, and optimum maps
+    `gemma3` (multimodal, `Gemma3ForConditionalGeneration`) to `Gemma3OnnxConfig` but `gemma3_text`
+    (text-only, `Gemma3ForCausalLM` — what `google/gemma-3-270m` is) to `Gemma3TextOnnxConfig`.
+    `Gemma3OnnxConfig.__init__` reads `config.text_config`, which a text-only config does not have,
+    so the binding could not even construct. It went unnoticed because the dotted paths resolve
+    lazily and nothing had exercised the row.
+
+    The generalizing guard is `tests/export/test_registry_matches_optimum.py`, which checks EVERY row
+    against optimum's own TasksManager mapping instead of restating expectations by hand here.
+    """
     for arch, expected in (
         ("Gemma2ForCausalLM", "Gemma2OnnxConfig"),
-        ("Gemma3ForCausalLM", "Gemma3OnnxConfig"),
+        ("Gemma3ForCausalLM", "Gemma3TextOnnxConfig"),
     ):
         spec = resolve_architecture(SimpleNamespace(architectures=[arch]))
         assert spec.onnx_config_class.endswith(expected)
@@ -234,3 +246,79 @@ def test_peft_target_table_is_wider_than_the_architecture_registry():
 
     # Different coverage: PEFT wraps encoders and seq2seq models the export registry does not build.
     assert {"t5", "bart"} <= set(PEFT_TARGET_MODULES_BY_MODEL_TYPE)
+
+
+# --- projection-role map (#33 B1) ------------------------------------------------------------
+#
+# MARS locates its shared adapters by projection ROLE; the module NAMES are per-architecture data.
+# Before this existed, `peft/mars/model.py` hardcoded the Llama naming in five places, so on an
+# encoder every lookup missed, `projection_type` stayed None and MARS silently degraded to unshared
+# adapters. These tests pin the data half; the transfer itself is proven against a real model in
+# `tests/integration/test_mars_encoder_transfer.py`.
+
+
+@pytest.mark.parametrize(
+    ("arch", "expected"),
+    [
+        ("LlamaForCausalLM", {"q": "q_proj", "k": "k_proj", "v": "v_proj"}),
+        ("Qwen2ForCausalLM", {"q": "q_proj", "k": "k_proj", "v": "v_proj"}),
+        ("BertForSequenceClassification", {"q": "query", "k": "key", "v": "value"}),
+        ("RobertaForSequenceClassification", {"q": "query", "k": "key", "v": "value"}),
+        ("BertModel", {"q": "query", "k": "key", "v": "value"}),
+        ("DistilBertForSequenceClassification", {"q": "q_lin", "k": "k_lin", "v": "v_lin"}),
+    ],
+)
+def test_projection_names_are_per_architecture_data(arch, expected):
+    spec = ARCHITECTURE_REGISTRY[arch]
+    for role, name in expected.items():
+        assert spec.module_name_for_role(role) == name
+        assert spec.role_for_module(name) == role
+
+
+def test_every_target_module_resolves_to_a_role_or_is_deliberately_unmapped():
+    """A target module with no role gets a standalone adapter — that must be a decision, not a typo.
+
+    Every row's `target_modules` are the LoRA-convention Wq/Wv pair (or the fused/older equivalents),
+    so each one either maps to a role or is a documented fused/unsupported projection.
+    """
+    fused_or_unmapped = {
+        "qkv_proj",  # Phi3: one fused projection, not separable into q/k/v
+        "query_key_value",  # Phi3Small / ChatGLM: same, fused
+        "dense",  # Phi3Small / ChatGLM output projection
+        "out_proj",  # OPT output projection
+        "fc1",
+        "fc2",  # OPT MLP, not the gate/up shape MARS's shared MLP adapter describes
+    }
+    for arch, spec in ARCHITECTURE_REGISTRY.items():
+        for target in spec.target_modules:
+            role = spec.role_for_module(target)
+            assert role is not None or target in fused_or_unmapped, (
+                f"{arch}: target module {target!r} maps to no projection role and is not a known "
+                "fused/unsupported projection — MARS would silently give it a standalone adapter"
+            )
+
+
+def test_role_lookup_matches_the_leaf_exactly_not_as_a_substring():
+    """`attention_probs` must not read as `attention`; `q_proj_extra` must not read as `q_proj`."""
+    spec = ARCHITECTURE_REGISTRY["LlamaForCausalLM"]
+    assert spec.role_for_module("model.layers.0.self_attn.q_proj") == "q"
+    assert spec.role_for_module("q_proj_extra") is None
+    assert spec.role_for_module("query") is None  # decoder row must not answer to encoder naming
+
+
+def test_encoder_rows_do_not_claim_unverified_mlp_or_output_projections():
+    """BERT's MLP is `intermediate`/`output` — shapes MARS's shared MLP adapter does not describe.
+
+    Declaring a name here would claim a transfer nobody has verified, so the encoder rows map q/k/v
+    only, and `any_mlp` is therefore False for them by construction.
+    """
+    for arch in (
+        "BertForSequenceClassification",
+        "RobertaForSequenceClassification",
+        "DistilBertForSequenceClassification",
+        "BertModel",
+    ):
+        spec = ARCHITECTURE_REGISTRY[arch]
+        assert set(spec.projection_names) == {"q", "k", "v"}
+        assert spec.module_name_for_role("gate") is None
+        assert spec.module_name_for_role("up") is None

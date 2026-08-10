@@ -320,7 +320,10 @@ def export_inference_package(
     if not peft_mapping:
         raise ExportError("training_config has no peft_mapping; nothing to hand off to the merger")
 
-    arch_spec = resolve_architecture(model_config)
+    # Resolve from the class the TRAINING half loaded (recorded in training_config), falling back to
+    # the config only for packages exported before that was written. Re-deriving from
+    # `config.architectures` alone resolves an encoder fine-tune to its un-headed row.
+    arch_spec = resolve_architecture(model_config, architecture=training_config.get("architecture"))
     peft_spec = get_peft_spec(peft_method)
 
     model = onnx.load(str(model_path), load_external_data=True)
@@ -349,6 +352,9 @@ def export_inference_package(
         observed_inference_inits=observed,
         peft_spec=peft_spec,
         arch_spec=arch_spec,
+        # Written by `gen_artifacts` from the training graph's initializers; lets the map describe the
+        # adapter factors (#35 rank-r). Absent for a caller that did not run the training stage.
+        trainable_tensor_specs=training_config.get("trainable_tensor_specs") or {},
     )
 
     frozen_base, trainable_bins = _split_external_data(model, output_dir, trainable_names)

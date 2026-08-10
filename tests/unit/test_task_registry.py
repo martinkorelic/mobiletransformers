@@ -126,3 +126,66 @@ def test_each_trainable_task_declares_a_wrapper_and_a_label_shape():
             continue
         assert spec.trainer_wrapper_class, f"{task} declares no trainer wrapper"
         assert spec.label_shape, f"{task} is trainable but supervises no labels"
+
+
+# --- #33: package shape is declared per task, not decoder-assumed -------------------------------
+
+
+def test_only_a_trainable_task_claims_a_train_stage() -> None:
+    """`plan_export` used to claim `train` for every model, including tasks that cannot produce one.
+
+    `feature-extraction` has no head and therefore no loss, so a training graph is impossible; the
+    package advertised a stage that could never be built.
+    """
+    assert get_task_spec(TaskType.TEXT_GENERATION).stages == ("inference", "train")
+    assert get_task_spec(TaskType.SEQUENCE_CLASSIFICATION).stages == ("inference", "train")
+    assert get_task_spec(TaskType.FEATURE_EXTRACTION).stages == ("inference",)
+
+
+def test_only_cached_tasks_emit_a_genai_decoder_block_or_kv_metadata() -> None:
+    """Both side-cars describe a KV cache. An encoder has none, and claiming one is worse than silence.
+
+    `_stamp_runtime_metadata` writes head_dim/num_kv_heads/num_layers, which the Native engine sizes
+    its cache from; `_emit_genai_config` writes a `model.decoder` block naming `past_key_values.N`
+    inputs. Both ran unconditionally, so an encoder package advertised a cache it does not have.
+    """
+    decoder = get_task_spec(TaskType.TEXT_GENERATION)
+    assert decoder.emits_genai_config and decoder.stamps_kv_metadata
+
+    for task in (TaskType.FEATURE_EXTRACTION, TaskType.SEQUENCE_CLASSIFICATION):
+        spec = get_task_spec(task)
+        assert not spec.emits_genai_config, f"{task} must not claim a GenAI decoder block"
+        assert not spec.stamps_kv_metadata, f"{task} must not stamp KV-cache geometry"
+
+
+def test_the_parity_gate_is_task_data_and_its_absence_is_explicit() -> None:
+    """The causal checker shifts logits[:, :-1] vs input_ids[:, 1:] and needs rank-3 logits.
+
+    A per-sequence objective emits [batch, labels], so running it there raises rather than measures.
+    `None` records "this gate does not apply" — distinct from "the package is broken".
+    """
+    assert get_task_spec(TaskType.TEXT_GENERATION).parity_check is not None
+    assert get_task_spec(TaskType.SEQUENCE_CLASSIFICATION).parity_check is None
+    assert get_task_spec(TaskType.FEATURE_EXTRACTION).parity_check is None
+
+
+def test_kv_cache_facts_agree_within_each_row() -> None:
+    """A task that emits a decoder block or cache geometry must actually have a cache.
+
+    Declared as three fields rather than derived from one because they answer different questions (how
+    the ONNX config is CONSTRUCTED vs what the packager WRITES). This pins that they stay consistent,
+    so the split cannot silently rot into a contradiction.
+    """
+    for task, spec in TASK_REGISTRY.items():
+        if spec.emits_genai_config or spec.stamps_kv_metadata:
+            assert spec.uses_kv_cache, f"{task} claims cache side-cars without a KV cache"
+
+
+def test_every_declared_parity_check_and_stage_is_resolvable() -> None:
+    """Dotted paths are lazy, so a typo stays invisible until an export runs. Resolve them here."""
+    from mobiletransformers.config.registry.architecture import import_from_path
+
+    for task, spec in TASK_REGISTRY.items():
+        if spec.parity_check is not None:
+            assert callable(import_from_path(spec.parity_check)), f"{task}: parity_check not callable"
+        assert spec.stages[0] == "inference", f"{task}: every package ships an inference graph"

@@ -13,6 +13,7 @@ import com.martinkorelic.mobiletransformers.repository.LLMRepository
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
 import com.martinkorelic.mobiletransformers.runtime.RuntimeCapabilities
 import java.io.File
+import com.martinkorelic.mobiletransformers.packages.PackagePaths
 
 /**
  * Stable, HF-style entry point to the MobileTransformers SDK (#17). [fromPretrained] returns a
@@ -111,6 +112,9 @@ object MobileTransformers {
                 supportsMerge = repo.isTrainingAvailable,
                 supportsRag = repo.isRagAvailable,
                 supportsEmbedding = repo.isRagAvailable,
+                // #34: scheduled training is exactly as available as training is — the scheduler is
+                // a WorkManager wrapper over the same TrainingJob, with no extra package requirement.
+                supportsScheduledTraining = repo.isTrainingAvailable,
                 availableFeatures = detectFeatures(repo),
             )
 
@@ -119,7 +123,7 @@ object MobileTransformers {
                 repo = repo,
                 capabilities = capabilities,
                 modelDir = modelDir,
-                inferencePackagePath = File(modelDir, "inference").absolutePath,
+                inferencePackagePath = PackagePaths.forCache(modelDir.parentFile, modelDir.name).inference.absolutePath,
             )
         return MobileTransformerModel(session, capabilities, repoId)
     }

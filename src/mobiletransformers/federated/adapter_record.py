@@ -54,10 +54,40 @@ def _np_dtype(dtype: str) -> str:
 
 
 def codec_tensor_specs(handoff: HandoffMap) -> list[TensorSpec]:
-    """The deterministic, codec-derived list of federatable tensor specs (order == serialization order)."""
+    """The deterministic, codec-derived list of federatable tensor specs (order == serialization order).
+
+    **These are the rank-r ADAPTER FACTORS, not the merged weights (#35, decided 2026-08-09).**
+
+    The two vocabularies are genuinely different objects, and conflating them is what stopped the
+    simulation dead: `HandoffEntry.tensor_specs()` describes ONE merged inference initializer per
+    adapted layer (60 tensors at full weight shape on SmolLM2-135M), while the ORT checkpoint holds
+    `lora_A` + `lora_B` per adapted layer (120 tensors at rank-r shape). Federation now exchanges the
+    factors:
+
+    * per-round traffic drops by roughly ``d_in * d_out / (r * (d_in + d_out))`` — about 36x at r=8 on
+      this model, and the ratio grows with ``d/r``;
+    * it matches the tier doc's "do not aggregate merged base weights";
+    * a client no longer has to merge locally before it can send anything.
+
+    Fails closed on a map that cannot describe its factors (any package exported before handoff-map
+    schema 1.1). Falling back to the merged specs would silently resurrect the exact ambiguity this
+    decision removed, and the failure would surface as a shape mismatch several layers away.
+    """
     specs: list[TensorSpec] = []
+    missing: list[str] = []
     for entry in handoff._sorted_entries():
-        specs.extend(entry.tensor_specs())
+        entry_specs = entry.adapter_tensor_specs()
+        if not entry_specs:
+            missing.append(entry.training_base_layer_name)
+        specs.extend(entry_specs)
+
+    if missing:
+        raise HandoffError(
+            f"{len(missing)} handoff entries carry no adapter dtype/shape (e.g. {missing[0]}), so the "
+            "rank-r factors cannot be described. This package predates weight_handoff_map schema 1.1 "
+            "— re-export it with the training stage. (Federation exchanges adapter factors as of #35; "
+            "it does not fall back to merged weights.)"
+        )
     return specs
 
 
@@ -72,7 +102,22 @@ SUPPORTED_AGGREGATIONS = frozenset({"weighted_average"})
 
 #: The tensor roles the record carries — `TrainableTensorCodec`'s vocabulary (#8), which #35 ratified
 #: as normative over the tier doc's never-implemented `{adapter, trainable_weight, head}`.
-SUPPORTED_ROLES = frozenset({"weight", "weight_quantized", "scale", "zero_point"})
+SUPPORTED_ROLES = frozenset(
+    {
+        # Adapter factors — what v1 exchanges as of the #35 rank-r decision.
+        "shared_A",
+        "intermediate",
+        "adapter_A",
+        "adapter_B",
+        # Merged-weight roles. Still accepted on READ so records written under the previous
+        # merged-weight vocabulary deserialize rather than failing as "unknown role"; nothing
+        # produces them any more.
+        "weight",
+        "weight_quantized",
+        "scale",
+        "zero_point",
+    }
+)
 
 
 @dataclass

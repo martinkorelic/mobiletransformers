@@ -1,4 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+      #34 scheduled training. Declared in the LIBRARY, not left to the consuming app to discover:
+      a foreground WorkManager worker cannot start without these, and a consumer that only calls
+      TrainingScheduler.schedule() has no way to know that.
+
+      * FOREGROUND_SERVICE          — required for any foreground service.
+      * FOREGROUND_SERVICE_DATA_SYNC — API 34+ requires the permission matching the service TYPE the
+                                       worker declares (ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC).
+      * POST_NOTIFICATIONS          — API 33+; the persistent progress notification is mandatory for a
+                                       foreground worker, and this feature is deliberately visible.
+      * WAKE_LOCK                   — held by WorkManager for the duration of a chunk.
+
+      The dataSync service type is also declared on WorkManager's own SystemForegroundService so the
+      merged manifest carries the type for the worker that calls setForeground().
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application>
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge"
+            xmlns:tools="http://schemas.android.com/tools" />
+    </application>
+
 </manifest>

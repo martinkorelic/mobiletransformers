@@ -2,12 +2,14 @@ package com.martinkorelic.mobiletransformers
 
 import android.util.Log
 import com.martinkorelic.mobiletransformers.constants.SamplingMethod
+import com.martinkorelic.mobiletransformers.internal.runtime.GenerationInputs
 import com.martinkorelic.mobiletransformers.internal.runtime.HandoffPrecondition
 import com.martinkorelic.mobiletransformers.repository.GenerationCallback
 import com.martinkorelic.mobiletransformers.runtime.EngineCapabilities
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
 import com.martinkorelic.mobiletransformers.runtime.ModelRuntime
 import java.io.File
+import com.martinkorelic.mobiletransformers.packages.PackagePaths
 
 class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokenizerNative, var _generationConfig : ORTGenerationConfig) : ModelRuntime {
 
@@ -32,7 +34,7 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
             maxContextLength = _generationConfig.maxSequenceLength,
         )
 
-    private fun inferenceDir(): File = File("${cacheDir}/${_generationConfig.repoName}/inference")
+    private fun inferenceDir(): File = PackagePaths.forCache(cacheDir, _generationConfig.repoName).inference
 
     /** #11 [ModelRuntime.load]: open the Native session over `<cacheDir>/<repoName>/inference`. */
     override suspend fun load(cacheDir: String, config: ORTGenerationConfig) {
@@ -93,7 +95,7 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
 
         // Create the inference session
         inferenceModel = createInferenceSession(
-            "${cacheDir}/${generationConfig.repoName}/inference",
+            PackagePaths.forCache(cacheDir, generationConfig.repoName).inference.absolutePath,
             generationConfig.onnxName,
             cacheDir,
             generationConfig.loadMergedWeights,
@@ -314,6 +316,82 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
     fun resetConversation() {
         conversationState?.resetForNewConversation()
         pastAttentionMaskLength = 0
+        // Reset the NATIVE cache too. Clearing only the Kotlin counter left the session still holding
+        // the previous conversation's keys and values, so the two halves disagreed about how many
+        // tokens were cached — the same disagreement that surfaces as a short attention mask.
+        if (inferenceModel != 0L) {
+            nativeResetKvCache(inferenceModel)
+        }
+    }
+
+    /**
+     * The KV-cache length according to the SESSION, which is the only authority on it.
+     *
+     * `pastAttentionMaskLength` is kept as a mirror for logging and for the `prependBos` decision, but
+     * the mask is built from this. Two independent counts of the same thing is what allowed a mask of
+     * `past + new - 1` to be sent, and on a transformers >= 4.57 graph that fails inside ORT at
+     * `/model/Gather_5` with a message naming neither the mask nor the cache.
+     */
+    private fun cachedTokenCount(): Int =
+        if (inferenceModel != 0L) nativePastSequenceLength(inferenceModel) else 0
+
+    /**
+     * Numbers off one prefill pass over [tokens], for conformance assertions.
+     *
+     * The device mirror of the host's `train_inference_parity` gate: same causal shift, so
+     * [InferenceMetrics.crossEntropyNats] is directly comparable to the number the exporter checks.
+     * Nothing else on device could see logits at all — `performInferenceStep` samples internally and
+     * returns a token id — which is why post-merge numerical correctness went unasserted.
+     *
+     * Runs as a single pass against an EMPTY cache (it resets first, and the native side resets after),
+     * so repeated calls are independent and the conversation is not advanced.
+     */
+    fun inferenceMetrics(tokens: IntArray, vocabSize: Int): InferenceMetrics {
+        check(inferenceModel != 0L) { "inference session is not open" }
+        require(tokens.size >= 2) {
+            "need at least 2 tokens to score one (prediction, target) pair, got ${tokens.size}"
+        }
+        nativeResetKvCache(inferenceModel)
+        val plan = GenerationInputs.plan(tokens, pastLength = 0)
+        val raw = nativeInferenceMetrics(
+            inferenceModel,
+            plan.inputIds.toLongArray(),
+            plan.attentionMask.toLongArray(),
+            plan.positionIds.toLongArray(),
+            1,
+            plan.attentionMask.size,
+            tokens.size,
+            vocabSize,
+        ) ?: error("native inference metrics returned no result")
+        pastAttentionMaskLength = 0
+        return InferenceMetrics(
+            argmax = raw[0].toInt(),
+            maxLogit = raw[1],
+            sum = raw[2],
+            sumOfSquares = raw[3],
+            crossEntropyNats = raw[4],
+        )
+    }
+
+    /** @see inferenceMetrics */
+    data class InferenceMetrics(
+        val argmax: Int,
+        val maxLogit: Double,
+        val sum: Double,
+        val sumOfSquares: Double,
+        val crossEntropyNats: Double,
+    ) {
+        /**
+         * True when this reduction differs from [other] beyond float noise.
+         *
+         * Four statistics rather than one: a constant shift leaves `argmax` alone, a redistribution
+         * leaves `sum` alone. Used to assert a merge actually changed the computation.
+         */
+        fun differsFrom(other: InferenceMetrics, tolerance: Double = 1e-6): Boolean =
+            argmax != other.argmax ||
+                kotlin.math.abs(maxLogit - other.maxLogit) > tolerance ||
+                kotlin.math.abs(sum - other.sum) > tolerance ||
+                kotlin.math.abs(sumOfSquares - other.sumOfSquares) > tolerance
     }
 
     fun destroySession() {
@@ -323,11 +401,29 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
         modelLoadTimeMs = 0L
     }
 
+    /**
+     * The step inputs for [inputIds], continuing from whatever is already in the KV cache.
+     *
+     * The planning itself lives in [GenerationInputs] so it is host-testable — the position-ids/mask
+     * disagreement this used to carry was only reachable on a second turn, i.e. only on a phone. See
+     * that object for the invariant and the defect it now pins.
+     *
+     * Within a turn the decode loop continues the positions itself (`positionIds.last() + 1`), and
+     * `trimModelInputs` drops from the FRONT, so a trimmed sequence stays contiguous.
+     */
     fun createModelInputs(inputIds: IntArray): Triple<MutableList<Long>, MutableList<Long>, MutableList<Long>> {
-        val inputIdsList = inputIds.map { it.toLong() }.toMutableList()
-        val attentionMaskList = MutableList(pastAttentionMaskLength + inputIds.size) { 1L }
-        val positionIdsList = MutableList(inputIds.size) { it.toLong() }
-        return Triple(inputIdsList, attentionMaskList, positionIdsList)
+        // Ask the session, do not trust the counter — see [cachedTokenCount].
+        val cached = cachedTokenCount()
+        if (cached != pastAttentionMaskLength) {
+            Log.w(
+                LOG_TAG,
+                "KV cache length $cached disagrees with the tracked $pastAttentionMaskLength; " +
+                    "using the session's value.",
+            )
+            pastAttentionMaskLength = cached
+        }
+        val plan = GenerationInputs.plan(inputIds, cached)
+        return Triple(plan.inputIds, plan.attentionMask, plan.positionIds)
     }
 
     fun updateSamplingOptions(args : SamplingOptions) {
@@ -345,5 +441,26 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
     external fun releaseInferenceSession(session: Long)
 
     external fun setSamplingConfig(session: Long, samplingMethod : Int, temperature : Float, topK : Int, topP : Float, seed : Int)
+
+    /** Tokens currently in the session's KV cache — the single authority on the cache length. */
+    external fun nativePastSequenceLength(session: Long) : Int
+
+    /**
+     * One forward pass reduced to `[argmax, maxLogit, sum, sumOfSquares, causalCrossEntropyNats]`.
+     * A probe: it resets the KV cache afterwards and advances nothing. See [inferenceMetrics].
+     */
+    external fun nativeInferenceMetrics(
+        session: Long,
+        input_ids: LongArray,
+        attention_mask: LongArray,
+        position_ids: LongArray,
+        batchSize: Int,
+        sequenceLength: Int,
+        newTokenCount: Int,
+        vocabSize: Int,
+    ) : DoubleArray?
+
+    /** Drops the KV cache back to zero-length past for a new conversation. */
+    external fun nativeResetKvCache(session: Long)
 
 }

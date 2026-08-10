@@ -19,6 +19,7 @@ from typing import Any
 from mobiletransformers.adapter.convert import materialize_peft_weights, to_peft_layout
 from mobiletransformers.adapter.export import AdapterPackage, export_adapter_from_cache
 from mobiletransformers.adapter.model_card import assert_required_sections, render_adapter_card
+from mobiletransformers.artifacts.package_paths import PackagePaths
 from mobiletransformers.exceptions import ExportError, MobileTransformersError
 
 
@@ -106,7 +107,8 @@ def run(args: argparse.Namespace, *, uploader: Callable[..., Any] | None = None)
 def _build_native_subtree(pkg: AdapterPackage, out: Path) -> None:
     """Mode 2: merged per-tensor .bin(s) + weight_handoff_map.json + training_config.json + header."""
     cache = Path(pkg.cache_repo_dir)
-    inference = cache / "inference"
+    paths = PackagePaths.for_cache(cache.parent, cache.name)
+    inference = paths.inference
     for t in pkg.tensors:
         src = inference / t.external_data_location
         if src.is_file():
@@ -115,10 +117,10 @@ def _build_native_subtree(pkg: AdapterPackage, out: Path) -> None:
             if sha.is_file():
                 shutil.copy2(sha, out / sha.name)
     for name in ("weight_handoff_map.json",):
-        src = cache / "train" / name
+        src = paths.train / name
         if src.is_file():
             shutil.copy2(src, out / name)
-    tc = cache / "train" / "training_config.json"
+    tc = paths.train / "training_config.json"
     if tc.is_file():
         shutil.copy2(tc, out / "training_config.json")
     (out / "mobiletransformers_adapter.json").write_text(

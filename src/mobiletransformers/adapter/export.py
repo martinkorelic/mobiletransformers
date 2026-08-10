@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from mobiletransformers.artifacts.handoff_map import HandoffMap
+from mobiletransformers.artifacts.package_paths import PackagePaths
 from mobiletransformers.config.constants import PEFTMethod
 from mobiletransformers.exceptions import ExportError
 
@@ -46,8 +47,10 @@ class AdapterPackage:
 def export_adapter_from_cache(cache_repo_dir: str | Path) -> AdapterPackage:
     """Build an :class:`AdapterPackage` from a materialized cache repo dir (``train/`` + ``inference/``)."""
     root = Path(cache_repo_dir)
-    train_cfg_path = root / "train" / "training_config.json"
-    handoff_path = root / "train" / "weight_handoff_map.json"
+    # `cache_repo_dir` is already `<cacheDir>/<repoId>`, so resolve relative to its parent.
+    paths = PackagePaths.for_cache(root.parent, root.name)
+    train_cfg_path = paths.train / "training_config.json"
+    handoff_path = paths.train / "weight_handoff_map.json"
     if not train_cfg_path.is_file():
         raise ExportError(f"no train/training_config.json under {root}")
     if not handoff_path.is_file():
@@ -56,7 +59,7 @@ def export_adapter_from_cache(cache_repo_dir: str | Path) -> AdapterPackage:
     cfg = json.loads(train_cfg_path.read_text(encoding="utf-8"))
     handoff = HandoffMap.load(handoff_path)
 
-    inference_dir = root / "inference"
+    inference_dir = paths.inference
     tensors: list[AdapterTensor] = []
     component_roles: set[str] = set()
     for entry in handoff.entries:

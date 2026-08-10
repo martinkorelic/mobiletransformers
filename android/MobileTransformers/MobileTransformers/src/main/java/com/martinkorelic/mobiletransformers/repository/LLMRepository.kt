@@ -29,6 +29,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.martinkorelic.mobiletransformers.packages.PackagePaths
 
 enum class LLMState {
     NotInitialized,
@@ -104,10 +105,10 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         }
 
     // Configuration paths
-    private var tokenizerConfigPath : String = "$cacheDir/$_modelName/tokenizer"
-    private var trainingConfigPath = "$cacheDir/$_modelName/train/training_config.json"
-    private var generationConfigPath = "$cacheDir/$_modelName/inference/generation_config.json"
-    private var embeddingConfigPath = "$cacheDir/$_modelName/inference/rag_config.json"
+    private var tokenizerConfigPath : String = PackagePaths.forCache(cacheDir, _modelName).tokenizer.absolutePath
+    private var trainingConfigPath = File(PackagePaths.forCache(cacheDir, _modelName).train, "training_config.json").absolutePath
+    private var generationConfigPath = File(PackagePaths.forCache(cacheDir, _modelName).inference, "generation_config.json").absolutePath
+    private var embeddingConfigPath = File(PackagePaths.forCache(cacheDir, _modelName).inference, "rag_config.json").absolutePath
 
     // Training, generation and RAG config
     private var _trainingConfig = ORTTrainingConfig()
@@ -230,10 +231,10 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
     }
 
     private fun updatePaths() {
-        tokenizerConfigPath = "$cacheDir/$_modelName/tokenizer"
-        trainingConfigPath = "$cacheDir/$_modelName/train/training_config.json"
-        generationConfigPath = "$cacheDir/$_modelName/inference/generation_config.json"
-        embeddingConfigPath = "$cacheDir/$_modelName/embedding/rag_config.json"
+        tokenizerConfigPath = PackagePaths.forCache(cacheDir, _modelName).tokenizer.absolutePath
+        trainingConfigPath = File(PackagePaths.forCache(cacheDir, _modelName).train, "training_config.json").absolutePath
+        generationConfigPath = File(PackagePaths.forCache(cacheDir, _modelName).inference, "generation_config.json").absolutePath
+        embeddingConfigPath = File(PackagePaths.forCache(cacheDir, _modelName).embedding, "rag_config.json").absolutePath
 
         // Check if training config exists before parsing
         if (File(trainingConfigPath).exists()) {
@@ -255,7 +256,7 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
             // `<cacheDir>/model/inference/.onnx`, which cannot exist. Pin both to what is on disk.
             generationConfig = parseGenerationArguments(generationConfigPath).copy(
                 repoName = _modelName,
-                onnxName = resolveInferenceGraphName("$cacheDir/$_modelName/inference"),
+                onnxName = resolveInferenceGraphName(PackagePaths.forCache(cacheDir, _modelName).inference.absolutePath),
             )
             Log.d(LOG_TAG, "Generation config loaded from: $generationConfigPath")
             isGenerationAvailable = true

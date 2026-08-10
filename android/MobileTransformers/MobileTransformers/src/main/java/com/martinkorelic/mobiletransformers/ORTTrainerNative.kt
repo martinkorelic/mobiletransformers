@@ -9,6 +9,7 @@ import com.google.gson.GsonBuilder
 import com.martinkorelic.mobiletransformers.repository.TrainingCallback
 import java.io.File
 import java.io.IOException
+import com.martinkorelic.mobiletransformers.packages.PackagePaths
 
 data class TrainingState(
     val schedulerState: SchedulerState,
@@ -29,12 +30,16 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
     var model : Long = 0;
     var scheduler : LearningRateScheduler? = null
 
-    val trainingModelPath = "$cacheDirPath/${trainingConfig.repoName}/train/training_model.onnx"
-    val evalModelPath = "$cacheDirPath/${trainingConfig.repoName}/train/eval_model.onnx"
-    val checkpointPath = "$cacheDirPath/${trainingConfig.repoName}/train/checkpoint"
-    val optimizerPath = "$cacheDirPath/${trainingConfig.repoName}/train/optimizer_model.onnx"
+    // G2: one resolver for this package's stages; nothing below appends a stage name to a string.
+    private val pkgPaths = PackagePaths.forCache(cacheDirPath, trainingConfig.repoName)
+    private val trainDir = pkgPaths.train.absolutePath
 
-    val dataCurator = ORTDataCurator(tokenizer, "$cacheDirPath/${trainingConfig.repoName}/train/${trainingConfig.datasetOptions.trainFile}", trainingConfig.batchSize, trainingConfig.datasetOptions.maxSequenceLength, trainingConfig.datasetOptions.removeLongSamples, trainingConfig.datasetOptions.maxDatasetLength, trainingConfig.datasetOptions.datasetBatchSize, getPreprocessFunctionForTask(trainingConfig.taskName, trainingConfig.customPreprocess))
+    val trainingModelPath = "$trainDir/training_model.onnx"
+    val evalModelPath = "$trainDir/eval_model.onnx"
+    val checkpointPath = "$trainDir/checkpoint"
+    val optimizerPath = "$trainDir/optimizer_model.onnx"
+
+    val dataCurator = ORTDataCurator(tokenizer, "$trainDir/${trainingConfig.datasetOptions.trainFile}", trainingConfig.batchSize, trainingConfig.datasetOptions.maxSequenceLength, trainingConfig.datasetOptions.removeLongSamples, trainingConfig.datasetOptions.maxDatasetLength, trainingConfig.datasetOptions.datasetBatchSize, getPreprocessFunctionForTask(trainingConfig.taskName, trainingConfig.customPreprocess))
     private val dataCollator = DataCollatorForSupervisedDataset(tokenizer)
 
     // Training state
@@ -101,7 +106,7 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
         private set
 
     init {
-        val requiresGrad = loadTrainableLayerNamesJSON("$cacheDirPath/${trainingConfig.repoName}/train/training_config.json")
+        val requiresGrad = loadTrainableLayerNamesJSON("$trainDir/training_config.json")
 
         if (requiresGrad == null) {
             Log.e(LOG_TAG, "No training config provided. Model cannot be initialized.")
@@ -113,7 +118,7 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
 
         // Load training state if available
         if (trainingConfig.loadFromState)
-            trainingState = loadTrainingState("$cacheDirPath/${trainingConfig.repoName}/train/training_state.json")
+            trainingState = loadTrainingState("$trainDir/training_state.json")
     }
 
     private fun loadTrainingState(trainingStatePath: String): TrainingState? {
@@ -145,7 +150,7 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
 
     private fun saveTrainingState(globalStep: Int, epoch: Int, scheduler: LearningRateScheduler): Boolean {
         return try {
-            val trainingStatePath = "$cacheDirPath/${trainingConfig.repoName}/train/training_state.json"
+            val trainingStatePath = "$trainDir/training_state.json"
             val trainingStateFile = File(trainingStatePath)
 
             // Ensure the directory exists
@@ -609,7 +614,7 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
             val jsonString = gson.toJson(trainingLog)
 
             // Save to internal storage
-            val file = File("$cacheDirPath/${trainingConfig.repoName}/train/training_logs.json")
+            val file = File("$trainDir/training_logs.json")
             file.writeText(jsonString)
 
             Log.i(LOG_TAG, "Training logs saved to: ${file.absolutePath}")
@@ -653,10 +658,10 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
         // #23: the native LOAD side (ORTGeneratorNative + session_cache.h) now consumes the handoff map
         // (map present + every externalDataLocation .bin exists + checksum valid), so these in-place
         // merges are seen fail-closed at load time.
-        val inferenceDir = "$cacheDirPath/${trainingConfig.repoName}/inference"
+        val inferenceDir = pkgPaths.inference.absolutePath
         val merged = mergeExportWeights(
             model,
-            "$cacheDirPath/${trainingConfig.repoName}/train/training_config.json",
+            "$trainDir/training_config.json",
             inferenceDir,
             inferenceDir,
         )
@@ -692,4 +697,18 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
         outputDirectory: String?
     ): Boolean
 
+    /**
+     * #36: raw little-endian bytes of one ORT checkpoint parameter, or `null` if absent.
+     *
+     * Moves BYTES only — the federated record's format is owned by `federated/AdapterTensorCodec`,
+     * which is pinned byte-for-byte against the cross-language golden. See the C++ docstring for why
+     * the record is not assembled natively.
+     */
+    external fun nativeExportCheckpointTensor(session: Long, name: String): ByteArray?
+
+    /** #36: writes raw little-endian bytes back into one checkpoint parameter, by name. */
+    external fun nativeImportCheckpointTensor(session: Long, name: String, data: ByteArray): Boolean
+
+    /** The live training session handle, for the federated round to read/write checkpoint tensors. */
+    internal fun trainingSessionHandle(): Long = model
 }

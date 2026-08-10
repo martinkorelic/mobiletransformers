@@ -11,6 +11,7 @@
 #include "utils.h"
 #include "sampling.h"
 #include "mem_probe.h"
+#include "logits_metrics.h"
 #include <android/log.h>
 
 #define LOG_TAG "MobileTransformers"
@@ -72,7 +73,14 @@ extern "C"
 JNIEXPORT float JNICALL
 /**
  * Performs the training step with the gradient update and optimizer step.
- * Attention mask, position ids and labels are created from the given input ids.
+ *
+ * Inputs are bound BY NAME inside `training::train_step`, from the names the training graph itself
+ * declares — so the same entry point serves a decoder (which asks for `position_ids`) and an encoder
+ * classifier (which asks for `token_type_ids` and per-sequence `labels`). `position_ids` and
+ * `token_type_ids` are synthesized there, and only if the graph asks for them.
+ *
+ * The label RANK is derived from how many label elements the caller actually supplied, which is why
+ * the array length is read here and passed down.
  *
  * @param env
  * @param session
@@ -93,41 +101,33 @@ Java_com_martinkorelic_mobiletransformers_ORTTrainerNative_performTraining(
     jlong* label_elements = env->GetLongArrayElements(labels, nullptr);
     jlong* attention_elements = env->GetLongArrayElements(attention_mask, nullptr);
 
-    // Calculate the total size for the input data based on batch_size and sequence_length
-    size_t total_size = batch_size * sequence_length;
+    // What the caller actually supplied — the ground truth for the label rank, rather than a
+    // declared constant that can drift away from the data.
+    const jsize labels_count = env->GetArrayLength(labels);
 
-    // Allocate memory for attention mask, position ids, and labels (assuming labels are provided here)
-    //std::vector<int64_t> attention_mask(total_size, 1);  // Initialized with 1s
-    std::vector<int64_t> position_ids(total_size);
-    //std::vector<int64_t> labels(total_size, 0);
-
-    // Populate position ids (0 to sequence_length - 1 for each batch element)
-    for (int64_t i = 0; i < batch_size; ++i) {
-        for (int64_t j = 0; j < sequence_length; ++j) {
-            position_ids[i * sequence_length + j] = j;
-        }
+    float loss = 0.0f;
+    std::string error;
+    try {
+        // Update the model parameters using this batch of inputs.
+        loss = training::train_step(session_cache, input_ids_elements, attention_elements,
+                                    label_elements, batch_size, sequence_length, labels_count);
+    } catch (const std::exception& e) {
+        error = e.what();
     }
-
-    // Prepare attention_mask and position_ids as jlongArrays to return to Java if needed
-    //jlongArray attention_mask_array = env->NewLongArray(total_size);
-    //jlongArray position_ids_array = env->NewLongArray(total_size);
-    //jlongArray labels_array = env->NewLongArray(total_size);
-
-    // Copy the vectors to the Java arrays
-    //env->SetLongArrayRegion(attention_mask_array, 0, total_size, attention_mask.data());
-    //env->SetLongArrayRegion(position_ids_array, 0, total_size, position_ids.data());
-    //env->SetLongArrayRegion(labels_array, 0, total_size, labels.data());
-
-    // If need be prepare labels
-    //utils::initialize_labels(input_ids_elements, labels.data(), batch_size, sequence_length);
-
-    // Update the model parameters using this batch of inputs.
-    float loss = training::train_step(session_cache, input_ids_elements,
-                                attention_elements, position_ids.data(), label_elements, batch_size, sequence_length);
 
     env->ReleaseLongArrayElements(input_ids, input_ids_elements, JNI_ABORT);
     env->ReleaseLongArrayElements(labels, label_elements, JNI_ABORT);
     env->ReleaseLongArrayElements(attention_mask, attention_elements, JNI_ABORT);
+
+    if (!error.empty()) {
+        // A C++ exception crossing JNI calls std::terminate and kills the WHOLE instrumentation run,
+        // so later tests never report. Convert it, after releasing the arrays.
+        jclass runtime_exception = env->FindClass("java/lang/RuntimeException");
+        if (runtime_exception != nullptr) {
+            env->ThrowNew(runtime_exception, (std::string("training step failed: ") + error).c_str());
+        }
+        return 0.0f;
+    }
 
     return loss;
 }
@@ -253,11 +253,156 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_martinkorelic_mobiletransformers_ORTGeneratorNative_releaseInferenceSession(
         JNIEnv *env, jobject /* this */,
         jlong session) {
+    // A 0 handle means the session was never created — `createInferenceSession` returns 0 on failure,
+    // and `destroySession()` is still reached through the normal `finally`/`release()` path. Without
+    // this guard that path dereferenced a null pointer (`SIGSEGV`, fault addr 0x8 — the offset of
+    // `inference_session`), which kills the ENTIRE instrumentation run rather than failing one test.
+    // That is the same class of hazard as the C++ exception that used to cross JNI and call
+    // std::terminate: a recoverable error taking the process with it.
+    if (session == 0) {
+        return;
+    }
     auto *session_cache = reinterpret_cast<InferenceSessionCache *>(session);
 
     delete session_cache->inference_session;
     delete session_cache;
     session_cache = nullptr;
+}
+
+extern "C"
+JNIEXPORT jdoubleArray JNICALL
+/**
+ * One forward pass, reduced to numbers a test can assert on. A PROBE: it leaves no state behind.
+ *
+ * Exists because nothing checked post-merge numerical correctness on device. The export pipeline gates
+ * a package on `train_inference_parity.py` (same tokens, both graphs, one bounded delta), but the
+ * device only ever hashed the merged `.bin` files — `TrainMergeGenerateTest` says so itself, and a
+ * merge that wrote plausible bytes with corrupted values passed every gate the project had.
+ *
+ * `performInferenceStep` cannot serve this: it samples internally and returns only a token id, so the
+ * logits never reach Kotlin. Rather than marshal a vocab-sized float array across JNI on every call,
+ * this returns the reduction.
+ *
+ * @return `[argmax, maxLogit, sum, sumOfSquares, causalCrossEntropyNats]` for a single prefill pass.
+ *   The cross-entropy uses the SAME causal shift as the host gate, so the two numbers are comparable;
+ *   computing it under a different convention would make the measurement decorative.
+ *
+ * The KV cache is reset afterwards because `generateWithKVCache` updates it — a measurement that
+ * silently advanced the conversation would corrupt whatever ran next, which is exactly the
+ * package-mutation hazard the device suite already has to work around.
+ */
+Java_com_martinkorelic_mobiletransformers_ORTGeneratorNative_nativeInferenceMetrics(
+        JNIEnv *env, jobject /* this */,
+        jlong session,
+        jlongArray input_ids,
+        jlongArray attention_mask,
+        jlongArray position_ids,
+        jint batch_size,
+        jint sequence_length,
+        jint new_token_count,
+        jint vocab_size) {
+    auto *session_cache = reinterpret_cast<InferenceSessionCache *>(session);
+
+    jlong *input_ids_elements = env->GetLongArrayElements(input_ids, nullptr);
+    jlong *attention_mask_elements = env->GetLongArrayElements(attention_mask, nullptr);
+    jlong *position_ids_elements = env->GetLongArrayElements(position_ids, nullptr);
+
+    auto release = [&]() {
+        env->ReleaseLongArrayElements(input_ids, input_ids_elements, JNI_ABORT);
+        env->ReleaseLongArrayElements(attention_mask, attention_mask_elements, JNI_ABORT);
+        env->ReleaseLongArrayElements(position_ids, position_ids_elements, JNI_ABORT);
+    };
+
+    try {
+        float *logits = inference::generateWithKVCache(session_cache,
+                                                       input_ids_elements,
+                                                       attention_mask_elements,
+                                                       position_ids_elements,
+                                                       batch_size,
+                                                       sequence_length,
+                                                       new_token_count);
+
+        const auto fp = logits_metrics::fingerprint_last_position(logits, new_token_count, vocab_size);
+        const double loss = logits_metrics::causal_cross_entropy(
+                logits, input_ids_elements, new_token_count, vocab_size);
+
+        // A probe must not advance the conversation.
+        session_cache->initializeKVCache(batch_size);
+
+        release();
+
+        jdouble values[5] = {
+                static_cast<jdouble>(fp.argmax),
+                fp.max_logit,
+                fp.sum,
+                fp.sum_of_squares,
+                loss,
+        };
+        jdoubleArray out = env->NewDoubleArray(5);
+        if (out != nullptr) {
+            env->SetDoubleArrayRegion(out, 0, 5, values);
+        }
+        return out;
+    } catch (const std::exception &e) {
+        release();
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "nativeInferenceMetrics failed: %s", e.what());
+        jclass runtime_exception = env->FindClass("java/lang/RuntimeException");
+        if (runtime_exception != nullptr) {
+            env->ThrowNew(runtime_exception,
+                          (std::string("inference metrics failed: ") + e.what()).c_str());
+        }
+        return nullptr;
+    }
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+/**
+ * How many tokens the session's KV cache actually holds.
+ *
+ * The session is the single authority on this. Kotlin previously kept its own counter
+ * (`pastAttentionMaskLength = attentionMask.size - 1`) and built the next turn's attention mask from
+ * it; the two could drift, and a mask shorter than `cache + new` fails inside ORT on a transformers
+ * >= 4.57 graph with a message naming neither. Reading it back removes the second source of truth.
+ */
+Java_com_martinkorelic_mobiletransformers_ORTGeneratorNative_nativePastSequenceLength(
+        JNIEnv *env, jobject /* this */,
+        jlong session) {
+    if (session == 0) {
+        return 0;
+    }
+    auto *session_cache = reinterpret_cast<InferenceSessionCache *>(session);
+    return static_cast<jint>(session_cache->pastSequenceLength());
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+/**
+ * Drops the KV cache back to an empty (zero-length past) state for a new conversation.
+ *
+ * Re-initialises rather than merely clearing: `generateWithKVCache` binds one value per graph input,
+ * so an EMPTY `past_key_values` vector would under-bind and read past the end. `initializeKVCache`
+ * recreates the zero-length tensors a `*-with-past` graph expects on a first pass.
+ *
+ * Before this existed, `resetConversation()` reset only Kotlin's counter and history — the native
+ * cache survived, so "reset" left the two halves disagreeing about how many tokens were cached.
+ */
+Java_com_martinkorelic_mobiletransformers_ORTGeneratorNative_nativeResetKvCache(
+        JNIEnv *env, jobject /* this */,
+        jlong session) {
+    if (session == 0) {
+        return;
+    }
+    auto *session_cache = reinterpret_cast<InferenceSessionCache *>(session);
+    try {
+        session_cache->initializeKVCache(1);
+    } catch (const std::exception &e) {
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "nativeResetKvCache failed: %s", e.what());
+        jclass runtime_exception = env->FindClass("java/lang/RuntimeException");
+        if (runtime_exception != nullptr) {
+            env->ThrowNew(runtime_exception, (std::string("kv cache reset failed: ") + e.what()).c_str());
+        }
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -292,6 +437,143 @@ Java_com_martinkorelic_mobiletransformers_ORTTrainerNative_inspectWeights(JNIEnv
     }
 }
 
+
+extern "C"
+JNIEXPORT jbyteArray JNICALL
+/**
+ * Raw little-endian bytes of ONE checkpoint parameter, or null when the checkpoint has no such name.
+ *
+ * ## Why this, and not `exportTrainableTensors(session, handoffMapPath) -> ByteArray`
+ *
+ * `04_code_plans/04` names that wider signature — the whole record built in C++. This deliberately
+ * does less, for one reason: the record's byte layout is **already owned** by
+ * `federated/AdapterTensorCodec.kt`, which is pinned byte-for-byte against
+ * `tests/federated/fixtures/federated_record.golden.bin`. Building the record here would be a SECOND
+ * implementation of the exact format that golden exists to keep from drifting, and it would need
+ * `handoff_io.h` extended to model the adapter fields plus a JSON writer reproducing Python's
+ * `sort_keys` separators. Two implementations of one wire format is the failure this project keeps
+ * paying for.
+ *
+ * So C++ moves tensor bytes and Kotlin owns the format: `AdapterTensorCodec.build(payloadFor = ...)`
+ * composes them, and the order/naming/dtype all still come from `weight_handoff_map.json`.
+ *
+ * Returns **null** rather than throwing on a missing name: the caller (the codec) already fails closed
+ * with a message naming the tensor and explaining that the package and checkpoint disagree, and that
+ * message is better than one from here.
+ */
+Java_com_martinkorelic_mobiletransformers_ORTTrainerNative_nativeExportCheckpointTensor(
+        JNIEnv *env, jobject /* this */,
+        jlong session, jstring name) {
+    if (session == 0) {
+        return nullptr;
+    }
+    auto *session_cache = reinterpret_cast<TrainingSessionCache *>(session);
+    const std::string parameter_name = utils::JString2String(env, name);
+
+    try {
+        Ort::Value parameter = session_cache->checkpoint_state.GetParameter(parameter_name);
+        auto tensor_info = parameter.GetTypeInfo().GetTensorTypeAndShapeInfo();
+
+        const size_t element_count = tensor_info.GetElementCount();
+        const ONNXTensorElementDataType dtype = tensor_info.GetElementType();
+        size_t element_size;
+        switch (dtype) {
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:   element_size = 4; break;
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: element_size = 2; break;
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:  element_size = 8; break;
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:   element_size = 4; break;
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:
+            case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:   element_size = 1; break;
+            default:
+                // An unsupported dtype must not be silently re-interpreted as bytes — the receiver
+                // would decode a plausible-looking tensor of the wrong type.
+                __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
+                                    "nativeExportCheckpointTensor: '%s' has unsupported dtype %u",
+                                    parameter_name.c_str(), dtype);
+                return nullptr;
+        }
+
+        const size_t byte_length = element_count * element_size;
+        jbyteArray out = env->NewByteArray(static_cast<jsize>(byte_length));
+        if (out == nullptr) {
+            return nullptr;
+        }
+        env->SetByteArrayRegion(out, 0, static_cast<jsize>(byte_length),
+                                reinterpret_cast<const jbyte *>(parameter.GetTensorRawData()));
+        return out;
+    } catch (const std::exception &e) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                            "nativeExportCheckpointTensor('%s'): %s", parameter_name.c_str(), e.what());
+        return nullptr;
+    }
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+/**
+ * Writes raw little-endian bytes back into ONE checkpoint parameter.
+ *
+ * The import half of the federated round: the aggregated factors arrive as a record, the Kotlin codec
+ * decodes it, and each tensor is written back **by name**. Matching by name rather than by iteration
+ * order is not a preference — the Python simulation had exactly that defect, pairing tensors by
+ * checkpoint iteration order, which would write one layer's `lora_A` over another's and was caught
+ * only "mostly", by differing shapes.
+ *
+ * Fails (returns false) rather than truncating or padding when the incoming byte count does not match
+ * the parameter's own element count and dtype: a size mismatch means the sender and this checkpoint
+ * disagree about the adapter geometry, and writing anyway would corrupt training silently.
+ */
+Java_com_martinkorelic_mobiletransformers_ORTTrainerNative_nativeImportCheckpointTensor(
+        JNIEnv *env, jobject /* this */,
+        jlong session, jstring name, jbyteArray data) {
+    if (session == 0 || data == nullptr) {
+        return JNI_FALSE;
+    }
+    auto *session_cache = reinterpret_cast<TrainingSessionCache *>(session);
+    const std::string parameter_name = utils::JString2String(env, name);
+
+    try {
+        // Read the EXISTING parameter to learn the shape and dtype the checkpoint expects. The record
+        // carries a declared shape too, but the checkpoint is the authority on its own storage, and
+        // trusting the sender's description would let a malformed record reshape local state.
+        Ort::Value existing = session_cache->checkpoint_state.GetParameter(parameter_name);
+        auto tensor_info = existing.GetTypeInfo().GetTensorTypeAndShapeInfo();
+        const std::vector<int64_t> shape = tensor_info.GetShape();
+        const size_t element_count = tensor_info.GetElementCount();
+        const ONNXTensorElementDataType dtype = tensor_info.GetElementType();
+
+        if (dtype != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+            // Adapter factors are float32 by construction: the trainable-tensor gate guarantees a
+            // declared-trainable tensor is never quantized, so anything else here is a real mismatch.
+            __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
+                                "nativeImportCheckpointTensor: '%s' is dtype %u, expected float32",
+                                parameter_name.c_str(), dtype);
+            return JNI_FALSE;
+        }
+
+        const jsize incoming = env->GetArrayLength(data);
+        const size_t expected = element_count * sizeof(float);
+        if (static_cast<size_t>(incoming) != expected) {
+            __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
+                                "nativeImportCheckpointTensor: '%s' got %d bytes, checkpoint needs %zu",
+                                parameter_name.c_str(), incoming, expected);
+            return JNI_FALSE;
+        }
+
+        std::vector<float> values(element_count);
+        env->GetByteArrayRegion(data, 0, incoming, reinterpret_cast<jbyte *>(values.data()));
+
+        Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        Ort::Value updated = Ort::Value::CreateTensor<float>(
+                memory_info, values.data(), element_count, shape.data(), shape.size());
+        session_cache->checkpoint_state.UpdateParameter(parameter_name, updated);
+        return JNI_TRUE;
+    } catch (const std::exception &e) {
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
+                            "nativeImportCheckpointTensor('%s'): %s", parameter_name.c_str(), e.what());
+        return JNI_FALSE;
+    }
+}
 
 extern "C"
 JNIEXPORT jstring JNICALL

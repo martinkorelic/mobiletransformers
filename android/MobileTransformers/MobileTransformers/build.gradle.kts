@@ -21,6 +21,9 @@ android {
         // #22: on-device Hub adapter upload is disabled by default (privacy-gated); flip only behind a
         // security review. Product path is device -> desktop sync -> Python `push-adapter`.
         buildConfigField("boolean", "ADAPTER_UPLOAD_ENABLED", "false")
+        // #36: federated participation is OFF unless the app shipping this turns it on. Adapter
+        // factors are derived from the user's own data, so the default must be "do not send".
+        buildConfigField("boolean", "FEDERATION_ENABLED", "false")
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
@@ -121,6 +124,7 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.androidx.work.testing)
 }
 // --- Maven publication (#30) ----------------------------------------------------------------------
 // Coordinates: com.martinkorelic.mobiletransformers:mobiletransformers-android:<version>

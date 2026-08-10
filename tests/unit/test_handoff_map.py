@@ -44,8 +44,16 @@ def test_check_compat_matches_shared_fixture(case: dict) -> None:
             check_compat(case["doc"], case["minReader"], case["reader"])
 
 
-def test_reader_version_is_one_zero() -> None:
-    assert HANDOFF_MAP_READER_VERSION == "1.0"
+def test_reader_version_tracks_the_schema_minor() -> None:
+    """1.1 added `adapterDtypes`/`adapterShapes`, which is ADDITIVE.
+
+    `minReaderVersion` deliberately stays 1.0: a 1.0 reader ignores unknown fields by the canonical
+    rule and keeps working, and maps written at 1.0 still load (they simply cannot describe their
+    adapter factors, which `codec_tensor_specs` reports as a fail-closed error rather than a guess).
+    """
+    assert HANDOFF_MAP_READER_VERSION == "1.1"
+    assert HandoffMap().schema_version == "1.1"
+    assert HandoffMap().min_reader_version == "1.0"
 
 
 # --- validate() invariants ------------------------------------------------------------------------

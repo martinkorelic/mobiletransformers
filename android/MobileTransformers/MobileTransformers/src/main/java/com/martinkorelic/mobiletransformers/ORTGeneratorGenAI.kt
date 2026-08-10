@@ -8,6 +8,7 @@ import com.martinkorelic.mobiletransformers.runtime.EngineCapabilities
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
 import com.martinkorelic.mobiletransformers.runtime.ModelRuntime
 import java.io.File
+import com.martinkorelic.mobiletransformers.packages.PackagePaths
 
 /**
  * GenAI [ModelRuntime] engine (#11) — the ONNX Runtime GenAI implementation over the SAME `inference/`
@@ -53,14 +54,14 @@ class ORTGeneratorGenAI(
             // same fail-closed gate — hardcoding `true` would have loaded base weights after a merge
             // with no warning, the exact silent downgrade #23 forbids on the Native side.
             supportsLoadMergedWeights =
-                HandoffPrecondition.mergedWeightsPresent(File("$cacheDir/${_generationConfig.repoName}/inference")),
+                HandoffPrecondition.mergedWeightsPresent(PackagePaths.forCache(cacheDir, _generationConfig.repoName).inference),
             maxContextLength = _generationConfig.maxSequenceLength,
         )
 
     override suspend fun load(cacheDir: String, config: ORTGenerationConfig) {
         _generationConfig = config
         val start = System.currentTimeMillis()
-        val dir = "$cacheDir/${config.repoName}/inference"
+        val dir = PackagePaths.forCache(cacheDir, config.repoName).inference.absolutePath
         // #23 parity: same map-driven precondition the Native engine runs. An absent map means
         // nothing was merged (fall back to base); a present-but-broken one throws.
         if (config.loadMergedWeights && !HandoffPrecondition.loadMergedWeightsReady(File(dir))) {

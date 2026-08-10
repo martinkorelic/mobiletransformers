@@ -8,6 +8,9 @@
 #   * handoff_io.h              — weight_handoff_map.json reader + the check_compat semver mirror
 #   * constants/merger_variant.h — the typed MergerVariant that replaced string dispatch (#6)
 #   * mem_probe.h               — parse_vmrss_kb, explicitly labelled "unit-testable without /proc"
+#   * training_inputs.h         — which training-graph inputs get bound, in what order, at what rank
+#   * logits_metrics.h          — the cross-entropy/fingerprint the device reads off a forward pass,
+#                                 mirroring artifacts/train_inference_parity.py's shift convention
 #
 # Build + run (host toolchain, NOT the NDK):
 #   cmake -S src/main/cpp/tests -B build/cpp-tests && cmake --build build/cpp-tests && ctest --test-dir build/cpp-tests --output-on-failure
@@ -43,7 +46,9 @@ add_executable(host_tests
         test_handoff_io.cpp
         test_merger_variant.cpp
         test_mem_probe.cpp
-        test_layer_name.cpp)
+        test_layer_name.cpp
+        test_training_inputs.cpp
+        test_logits_metrics.cpp)
 
 target_include_directories(host_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/shims   # <android/log.h> stand-in

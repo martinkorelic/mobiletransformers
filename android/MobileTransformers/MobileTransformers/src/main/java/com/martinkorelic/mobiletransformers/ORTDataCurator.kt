@@ -259,6 +259,16 @@ class ORTDataCurator(
         try {
             val json = JSONObject(line)
 
+            // #33: a sequence-classification objective supervises ONE label per example, not one per
+            // token. The preprocessor declares which it is by whether `classLabel` returns a value —
+            // the shape comes from data, not from branching on the task name here (the curator's
+            // `taskName` namespace is dataset-shaped: `cola`, `boolq`, ... and is disjoint from
+            // `TaskType` entirely).
+            val perSequenceLabel = customPreprocess?.classLabel(json)
+            if (perSequenceLabel != null) {
+                return sequenceClassificationSample(json, perSequenceLabel)
+            }
+
             // Step 1: Get input and label text (e.g. prompt + response)
             val (inputText, labelText) = customPreprocess?.preprocess(json)
                 ?: return null
@@ -294,9 +304,37 @@ class ORTDataCurator(
         }
     }
 
+    /**
+     * A classification example: the text is the whole input, and the label is one class index.
+     *
+     * No prompt/answer split and no -100 masking — both are causal-LM constructs. The whole sequence
+     * is attended to and the single label supervises the pooled representation.
+     */
+    private fun sequenceClassificationSample(json: JSONObject, label: Int): TrainingSample? {
+        val (inputText, _) = customPreprocess?.preprocess(json) ?: return null
+        if (inputText.isBlank()) return null
+
+        val inputIds = tokenizer.tokenize(inputText).toMutableList()
+        if (inputIds.isEmpty()) return null
+        if (removeLongSamples && maxContextLength != null && inputIds.size >= maxContextLength) {
+            return null
+        }
+
+        return TrainingSample(inputIds = inputIds, labels = listOf(label), perSequenceLabel = true)
+    }
+
+    /**
+     * One example: the input tokens, and either one label per token or one per sequence.
+     *
+     * Which of the two is recorded explicitly rather than inferred from `labels.size`, because at
+     * `sequenceLength == 1` the two are indistinguishable by count — the same ambiguity
+     * `training_inputs.h::labels_shape` resolves in favour of `[batch, seq]` so the decoder keeps its
+     * shipped shape.
+     */
     data class TrainingSample(
         val inputIds: List<Int>,
-        val labels: List<Int>
+        val labels: List<Int>,
+        val perSequenceLabel: Boolean = false,
     )
 
     data class DatasetProgress(

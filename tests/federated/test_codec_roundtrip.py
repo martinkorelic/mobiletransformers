@@ -11,11 +11,16 @@ from tests.federated._helpers import make_arrays, make_handoff
 def test_tensor_order_is_codec_derived():
     handoff = make_handoff()
     specs = codec_tensor_specs(handoff)
-    # Order comes from HandoffMap._sorted_entries() (canonical weight name), not the record.
+    # Order is (entries sorted by canonical weight name) x (HandoffEntry.ADAPTER_ROLE_ORDER).
+    # Rank-r factors as of #35, so two per adapted layer rather than one merged weight.
     assert [s.name for s in specs] == [
-        "model.layers.0.attn.q_proj.MatMul.weight",
-        "model.layers.1.attn.v_proj.MatMul.weight",
+        "l0.lora_A.lora.weight",
+        "l0.lora_B.lora.weight",
+        "l1.lora_A.lora.weight",
+        "l1.lora_B.lora.weight",
     ]
+    assert [s.role for s in specs] == ["adapter_A", "adapter_B", "adapter_A", "adapter_B"]
+    assert {s.aggregation_role for s in specs} == {"adapter_only"}
 
 
 def test_record_roundtrip_byte_identical():

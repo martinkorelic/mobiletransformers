@@ -8,6 +8,7 @@ import warnings
 import pytest
 
 from mobiletransformers.config import resolve
+from mobiletransformers.config import settings as settings_module
 from mobiletransformers.config.settings import Settings, get_settings
 
 
@@ -55,6 +56,25 @@ def test_get_settings_is_cached(monkeypatch):
     second = get_settings()
     assert first is second
     assert second.hf_token == "first"
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_dotenv(monkeypatch):
+    """Neutralize a real `.env` for every test in this module.
+
+    `get_settings()` calls `load_dotenv()`, which writes `.env` into `os.environ` — so a
+    `monkeypatch.delenv("HF_TOKEN")` is silently undone, and these tests measured the developer's
+    machine rather than the precedence rules they are named after. Since `.env` is the DOCUMENTED
+    place to put `HF_TOKEN` (`config/settings.py` says so in its own error message), the suite went
+    red for anyone who followed the documentation.
+
+    Patched at the settings module rather than deleting the file, so nothing touches the developer's
+    real secrets.
+    """
+    monkeypatch.setattr(settings_module, "load_dotenv", lambda *a, **k: False)
+    get_settings.cache_clear()
+    yield
     get_settings.cache_clear()
 
 

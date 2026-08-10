@@ -2,7 +2,8 @@
 # W6 (#1-29 device-test provisioning): export a real package, reshape it into the on-device cache layout,
 # and `adb push` it so the instrumented suites (which assumeTrue-skip without it) can run.
 #
-#   MODEL=<hf-id> [VARIANT=cpu-int4] [TRAIN=1] [RAG=1] [EMBEDDING_MODEL=<hf-id>] scripts/device_package.sh
+#   MODEL=<hf-id> [VARIANT=cpu-int4] [TRAIN=1] [RAG=1] [TASK=<optimum-task>] [EMBEDDING_MODEL=<hf-id>] \
+#     scripts/device_package.sh
 #
 # Steps: (1) inference+genai export under the `export` profile; (1b) optional training stage under
 # `ort-training-local` (TRAIN=1) for a train-capable package; (2) reshape build/pkg (#14 variants/ tree)
@@ -18,6 +19,10 @@ set -euo pipefail
 MODEL="${MODEL:?set MODEL=<hf-id>, e.g. HuggingFaceTB/SmolLM2-135M-Instruct}"
 VARIANT="${VARIANT:-cpu-int4}"
 TRAIN="${TRAIN:-0}"
+# #33: the export auto-selects a task from TASK_PREFERENCE, which does not include
+# `text-classification` — a sentence-transformers encoder otherwise resolves to `feature-extraction`,
+# which is declared trainable=False. An encoder fine-tune must name its task explicitly.
+TASK="${TASK:-}"
 RAG="${RAG:-1}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-}"
 PKG="build/pkg"
@@ -62,6 +67,19 @@ fi
 echo ">> device $(adb shell getprop ro.product.model | tr -d '\r') ($ABI, API $(adb shell getprop ro.build.version.sdk | tr -d '\r'), ${FREE_MB:-?}MB free)"
 
 # --- 1. inference + genai export (export profile) --------------------------------------------------
+TASK_ARGS=()
+if [[ -n "$TASK" ]]; then
+  TASK_ARGS+=(--task "$TASK")
+fi
+
+# GenAI is a DECODER engine: its config declares a `model.decoder` block with `past_key_values.N`
+# inputs. Requesting it for a task with no KV cache asks the packager for a side-car that describes a
+# cache the graph does not have (the export now refuses to write it — see TaskSpec.emits_genai_config).
+GENAI_ARGS=(--genai)
+case "$TASK" in
+  text-classification|feature-extraction) GENAI_ARGS=() ;;
+esac
+
 RAG_ARGS=()
 if [[ "$RAG" == "1" ]]; then
   RAG_ARGS+=(--include-rag)
@@ -72,7 +90,7 @@ echo ">> [1/4] inference+genai export ($MODEL) under the export profile"
 # --validate re-reads the written package against the #13 manifest contract, so a broken export fails
 # here rather than as an unexplained skip on device.
 uv run --extra export --python 3.12 mobiletransformers export \
-  --model "$MODEL" --output "$PKG" --genai --validate "${RAG_ARGS[@]}"
+  --model "$MODEL" --output "$PKG" "${GENAI_ARGS[@]}" --validate "${TASK_ARGS[@]}" "${RAG_ARGS[@]}"
 
 if [[ "$TRAIN" == "1" ]]; then
   echo ">> [1b] training stage under ort-training-local (train-capable package)"
@@ -84,7 +102,7 @@ if [[ "$TRAIN" == "1" ]]; then
   # the training stage on its own works, which is why this only shows up on the TRAIN=1 path.
   uv sync --python 3.12 --group ort-training-local --no-default-groups --reinstall-package onnxruntime-training
   uv run --no-sync --python 3.12 \
-    mobiletransformers export --model "$MODEL" --output "$PKG" --stages training
+    mobiletransformers export --model "$MODEL" --output "$PKG" --stages training "${TASK_ARGS[@]}"
 fi
 
 # --- 2. reshape into the on-device cache layout ----------------------------------------------------

@@ -96,8 +96,19 @@ def aggregate_round(
     aggregated = federated_average(updates)
     tensor_specs = list(specs) if specs is not None else codec_tensor_specs(handoff)
     if len(tensor_specs) != len(aggregated):
+        # Naming the counts is not enough here: the two numbers come from two different tensor
+        # VOCABULARIES, and the next person needs to know which. The codec describes the inference
+        # initializers (one merged weight per adapted layer); an ORT training checkpoint holds the
+        # rank-r factors (lora_A + lora_B per adapted layer), i.e. exactly twice as many, of a
+        # different shape. See the `merged_base_plus_adapter` note in `04_code_plans/03`.
         raise HandoffError(
-            f"codec declares {len(tensor_specs)} tensors but the round aggregated {len(aggregated)}"
+            f"codec declares {len(tensor_specs)} tensors but the round aggregated {len(aggregated)}. "
+            "The codec's vocabulary is MERGED inference initializers (one per adapted layer, full "
+            "weight shape); a client returning raw ORT checkpoint trainables sends rank-r LoRA "
+            "factors (lora_A + lora_B per layer) instead. v1 declares the merged shape "
+            "(aggregation_role='merged_base_plus_adapter'), so a client must merge locally before "
+            "exchanging — switching the record to rank-r adapters is the open v2 decision and would "
+            "break the cross-language byte golden."
         )
 
     survivors = [u for u in updates if u is not None]
@@ -125,6 +136,8 @@ def run_simulation(
     rounds: int,
     local_max_steps: int,
     output_dir: str | Path,
+    train_dir: str | Path,
+    tokenizer_dir: str | Path,
     strategy: str = "fedavg",
     **backend_config: Any,
 ) -> Path:  # pragma: no cover - manual workflow leg (needs flwr + ORT-training)
@@ -146,7 +159,17 @@ def run_simulation(
 
     client_app = build_client_app(handoff, base_model_id=base_model_id, local_max_steps=local_max_steps)
     server_app = build_server_app(
-        handoff, base_model_id=base_model_id, peft_method=peft_method, rounds=rounds, output_dir=output_dir
+        handoff,
+        base_model_id=base_model_id,
+        peft_method=peft_method,
+        rounds=rounds,
+        output_dir=output_dir,
+        # The clients need this and `run_simulation` has no node_config to carry it, so the server
+        # puts it in each round's message. ABSOLUTE: each client runs inside its own Ray actor with
+        # its own working directory, so a relative path resolves somewhere else entirely — which
+        # surfaces as ORT's opaque `Invalid fd was supplied: -1`, naming nothing.
+        train_dir=Path(train_dir).resolve(),
+        tokenizer_dir=Path(tokenizer_dir).resolve(),
     )
     flwr_run_simulation(
         server_app=server_app,

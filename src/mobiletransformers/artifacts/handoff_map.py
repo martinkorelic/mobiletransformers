@@ -24,13 +24,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from mobiletransformers.artifacts.checkpoint_names import to_checkpoint_name
 from mobiletransformers.artifacts.versioning import check_compat
 from mobiletransformers.config.constants import HandoffMode
+from mobiletransformers.config.registry.architecture import DEFAULT_ATTENTION_MODULE_NAME
 from mobiletransformers.exceptions import HandoffError
 
 #: Reader schema version for this contract (see ``check_compat``). Bump only when the reader learns a
 #: new schema.
-HANDOFF_MAP_READER_VERSION = "1.0"
+#: What THIS reader understands. Must be >= any map's `minReaderVersion`; a map at a higher
+#: MINOR version than this still loads (additive fields are ignored).
+HANDOFF_MAP_READER_VERSION = "1.1"
 
 #: Deterministic role order within an entry (JSON is additionally sort_keys=True for byte-stability).
 ROLE_ORDER = ("weight", "weight_quantized", "scale", "zero_point")
@@ -91,6 +95,16 @@ class HandoffEntry:
     tensor_dtypes: dict[str, str] = field(default_factory=dict)
     tensor_shapes: dict[str, tuple[int, ...]] = field(default_factory=dict)
     checkpoint_names: dict[str, str] = field(default_factory=dict)
+    #: Per-adapter-role dtype/shape of the TRAINING-side factors (`adapter_A`, `adapter_B`,
+    #: `shared_A`, `intermediate`), read from the training graph's initializers at artifact time.
+    #:
+    #: `checkpoint_names` already NAMED these; nothing described them, so the map was the single
+    #: source of tensor identity for the merged inference initializers only. A consumer exchanging the
+    #: factors themselves (#35 rank-r federation, #36's Kotlin codec) had to infer shapes from the
+    #: rank. ADDITIVE: absent on packages exported before this, and readers tolerate unknown fields by
+    #: the canonical rule, so this is a minor `schemaVersion` bump rather than a breaking one.
+    adapter_dtypes: dict[str, str] = field(default_factory=dict)
+    adapter_shapes: dict[str, tuple[int, ...]] = field(default_factory=dict)
     merger_output_names: dict[str, str] = field(default_factory=dict)
     merged_tensor_names: dict[str, str] = field(default_factory=dict)
     inference_initializer_names: dict[str, str] = field(default_factory=dict)
@@ -137,10 +151,47 @@ class HandoffEntry:
             )
         return specs
 
+    #: Adapter roles in a canonical, deterministic order. Federated exchange serializes in this order
+    #: within each entry, exactly as the merged path serializes in `ROLE_ORDER`.
+    ADAPTER_ROLE_ORDER: tuple[str, ...] = ("shared_A", "intermediate", "adapter_A", "adapter_B")
+
+    def adapter_tensor_specs(self) -> list[TensorSpec]:
+        """One :class:`TensorSpec` per ADAPTER factor, in canonical adapter-role order.
+
+        The rank-r counterpart of :meth:`tensor_specs`. That one describes the MERGED inference
+        initializer (one full-size weight per adapted layer); this one describes the factors the
+        optimizer actually updates (`lora_A` + `lora_B`, or MARS's shared pair), which is what
+        federation exchanges as of #35's vocabulary decision.
+
+        Empty when the map predates the adapter-identity fields — the caller decides whether that is
+        fatal, because silently falling back to the merged specs is precisely the ambiguity that made
+        the two vocabularies collide in the first place.
+        """
+        specs = []
+        for role in self.ADAPTER_ROLE_ORDER:
+            if role not in self.adapter_dtypes or role not in self.adapter_shapes:
+                continue
+            specs.append(
+                TensorSpec(
+                    # The ORT CHECKPOINT PARAMETER name, not the raw PEFT module path: this is the
+                    # identity a client looks the tensor up by, and #36's Kotlin codec mirrors it.
+                    # `to_checkpoint_name` is the existing normalizer (twin of `cpp/layer_name.h`).
+                    name=f"{to_checkpoint_name(self.checkpoint_names[role])}.weight",
+                    dtype=self.adapter_dtypes[role],
+                    shape=self.adapter_shapes[role],
+                    role=role,
+                    transpose_policy=self.transpose_policy,
+                    aggregation_role="adapter_only",
+                )
+            )
+        return specs
+
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
             "trainingBaseLayerName": self.training_base_layer_name,
             "checkpointNames": dict(self.checkpoint_names),
+            "adapterDtypes": dict(self.adapter_dtypes),
+            "adapterShapes": {r: list(sh) for r, sh in self.adapter_shapes.items()},
             "mergerOutputNames": dict(self.merger_output_names),
             "mergedTensorNames": dict(self.merged_tensor_names),
             "inferenceInitializerNames": dict(self.inference_initializer_names),
@@ -166,6 +217,10 @@ class HandoffEntry:
             tensor_dtypes=dict(data.get("tensorDtypes", {})),
             tensor_shapes={role: tuple(shape) for role, shape in data.get("tensorShapes", {}).items()},
             checkpoint_names=dict(data.get("checkpointNames", {})),
+            # Absent on packages exported before the adapter-identity fields existed; an empty dict
+            # simply means "this map cannot describe the factors", which readers must handle.
+            adapter_dtypes=dict(data.get("adapterDtypes", {})),
+            adapter_shapes={role: tuple(shape) for role, shape in data.get("adapterShapes", {}).items()},
             merger_output_names=dict(data.get("mergerOutputNames", {})),
             merged_tensor_names=dict(data.get("mergedTensorNames", {})),
             inference_initializer_names=dict(data.get("inferenceInitializerNames", {})),
@@ -183,7 +238,10 @@ class HandoffMap:
 
     entries: list[HandoffEntry] = field(default_factory=list)
     handoff_mode: HandoffMode = HandoffMode.EXTERNAL_INITIALIZER
-    schema_version: str = "1.0"
+    #: 1.1 adds `adapterDtypes`/`adapterShapes` per entry — purely ADDITIVE, so this is a MINOR bump
+    #: and `min_reader_version` deliberately stays 1.0: a 1.0 reader ignores the new fields by the
+    #: canonical unknown-fields rule and keeps working, and packages written at 1.0 still load.
+    schema_version: str = "1.1"
     min_reader_version: str = "1.0"
     engines: tuple[str, ...] = _DEFAULT_ENGINES
     external_data_layout: str = "one_file_per_tensor"
@@ -381,7 +439,9 @@ class TrainableTensorCodec:
         name = _strip_wrapper_prefixes(base_layer_name)
         name = name.replace(".base_layer", ".MatMul")
 
-        attn = getattr(arch_spec, "attention_module_name", "self_attn")
+        # Falls back to the registry's declared default rather than a literal spelled here —
+        # `arch_spec` is `Any` and legacy callers pass None.
+        attn = getattr(arch_spec, "attention_module_name", None) or DEFAULT_ATTENTION_MODULE_NAME
         candidates = []
         if attn and attn != "attn":
             candidates.append(name.replace(f".{attn}.", ".attn."))
@@ -397,6 +457,7 @@ class TrainableTensorCodec:
         observed_inference_inits: Iterable[ObservedInit],
         peft_spec: Any,
         arch_spec: Any,
+        trainable_tensor_specs: dict[str, dict[str, Any]] | None = None,
     ) -> list[HandoffEntry]:
         """Join training-side (``peft_mapping`` + ``requires_grad``) with inference-side observed
         initializers, one :class:`HandoffEntry` per trainable MatMul.
@@ -437,6 +498,26 @@ class TrainableTensorCodec:
             }
             checkpoint_names.setdefault("weight", f"{training_base}.weight")
 
+            # Describe the adapter factors, not just name them. `trainable_tensor_specs` is keyed by
+            # the TRAINING GRAPH's initializer name (`backbone.model...lora_A.lora.weight`), while
+            # `checkpoint_names` holds the PEFT module path (`base_model.model.model...lora_A.lora`) —
+            # two of the five spellings of one layer. `to_checkpoint_name` is the existing normalizer
+            # (twin of `cpp/layer_name.h`); re-deriving the rewrite here is what the layer-identity
+            # work exists to prevent. A role whose tensor is not found is simply left undescribed
+            # rather than guessed.
+            adapter_dtypes: dict[str, str] = {}
+            adapter_shapes: dict[str, tuple[int, ...]] = {}
+            if trainable_tensor_specs:
+                for role, module_path in checkpoint_names.items():
+                    if role == "weight":
+                        continue  # the frozen base, described by tensor_dtypes/tensor_shapes already
+                    initializer = f"{to_checkpoint_name(module_path)}.weight"
+                    spec = trainable_tensor_specs.get(initializer)
+                    if spec is None:
+                        continue
+                    adapter_dtypes[role] = str(spec["dtype"])
+                    adapter_shapes[role] = tuple(int(d) for d in spec["shape"])
+
             quantization = None
             if any(o.role in _QUANTIZED_ROLES for o in group):
                 quantization = {
@@ -456,6 +537,8 @@ class TrainableTensorCodec:
                     tensor_dtypes={obs.role: obs.dtype for obs in group},
                     tensor_shapes={obs.role: obs.shape for obs in group},
                     checkpoint_names=checkpoint_names,
+                    adapter_dtypes=adapter_dtypes,
+                    adapter_shapes=adapter_shapes,
                     merger_output_names={role: f"merged_{role}" for role in inference_names},
                     merged_tensor_names=dict(inference_names),
                     inference_initializer_names=dict(inference_names),

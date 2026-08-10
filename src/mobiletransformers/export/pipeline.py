@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from mobiletransformers.config.constants import PEFTMethod
+from mobiletransformers.config.registry.architecture import import_from_path
+from mobiletransformers.config.registry.task import get_task_spec
 from mobiletransformers.exceptions import ConfigValidationError
 
 #: --quant value -> effective precision/weight-type knobs (consumed by the legacy builders).
@@ -120,7 +122,11 @@ def plan_export(
     quant_spec(quant)  # validate early
     resolved_task = task or _discover_task(model, discover)
     variant_id = variant or f"cpu-{quant}"
-    features = ["core", "inference", "train"] + (["rag"] if include_rag else [])
+    # The task decides whether a training stage is even possible: `feature-extraction` has no head and
+    # therefore no loss, so claiming `train` produced a package advertising a stage that could never be
+    # built. `_effective_features` still demotes it afterwards based on what actually landed on disk.
+    task_spec = get_task_spec(resolved_task)
+    features = ["core", *task_spec.stages] + (["rag"] if include_rag else [])
     if "genai" in engines:
         features.append("genai")
     return ExportPlan(
@@ -311,17 +317,28 @@ def _pkg_version(dist: str) -> str | None:
 
 
 def _training_available() -> bool:
-    """True iff the ORT-training stack is importable (the ``ort-training-local`` profile is active).
+    """True iff the ORT-training stack is actually **usable** (``ort-training-local`` profile active).
 
-    ``find_spec`` on a submodule imports the parent, which raises (not returns None) when ``onnxruntime``
-    is absent — so guard it and treat any import failure as "not available".
+    This performs the real import rather than probing for the module, because *present* and *usable*
+    are different things here and the difference is not hypothetical: the **public** ``onnxruntime``
+    wheel ships an ``onnxruntime/training/`` directory too, so ``find_spec`` returns a spec under the
+    export profile — but importing it dies with
+
+        ImportError: cannot import name 'PropagateCastOpsStrategy' from 'onnxruntime.capi._pybind_state'
+
+    because the public build has no training pybind state. `_select_stages` then selected the training
+    stage under a profile that cannot build one, and the export crashed inside ``artifacts/builder.py``
+    with a traceback naming a symbol rather than the profile.
+
+    Importing costs a second and happens once per export, against a failure mode that costs a full
+    export cycle. The symbols are the ones ``artifacts/builder.py`` imports at module scope, so this
+    answers the question that is actually being asked: *will that import succeed?*
     """
-    import importlib.util
-
     try:
-        return importlib.util.find_spec("onnxruntime.training") is not None
-    except (ImportError, ValueError):
+        from onnxruntime.training import artifacts, onnxblock  # noqa: F401
+    except Exception:  # noqa: BLE001 - any failure means the stage cannot be built
         return False
+    return True
 
 
 def _select_stages(plan: ExportPlan, stages: set[str] | None) -> set[str]:
@@ -407,6 +424,9 @@ def _build_inference_stage(
     from mobiletransformers.utils.logging import get_logger
 
     log = get_logger(__name__)
+    # What this stage writes beyond the graph — cache metadata, a GenAI decoder block — is a property
+    # of the TASK, not something every package gets.
+    task_spec = get_task_spec(plan.task)
     dest = Path(dest)
     inf = dest / "inference"
     tok = dest / "tokenizer"
@@ -424,10 +444,14 @@ def _build_inference_stage(
 
     # The Native engine reads its KV-cache geometry from the graph's own metadata, so this is required,
     # not best-effort — see _stamp_runtime_metadata.
-    _stamp_runtime_metadata(plan, inf / "model.onnx", result, token=token)
+    # Only for tasks that HAVE a cache. The Native engine fails closed when this metadata is missing,
+    # but an encoder has no cache to size, and stamping a decoder's geometry onto one is worse than
+    # omitting it.
+    if task_spec.stamps_kv_metadata:
+        _stamp_runtime_metadata(plan, inf / "model.onnx", result, token=token)
 
     # Best-effort GenAI config so both engines read one dir; dropped from features if it can't be emitted.
-    if "genai" in plan.supported_engines:
+    if task_spec.emits_genai_config and "genai" in plan.supported_engines:
         try:
             _emit_genai_config(plan, inf, result, token=token)
         except Exception as exc:  # noqa: BLE001 - never fail the whole export on the GenAI side-car
@@ -724,8 +748,11 @@ def _build_training_stage(
     from mobiletransformers.export.training_export import optimum_hf_export
 
     quantized = plan.quant != "fp16"
-    # optimum_hf_export picks AutoModelForCausalLM for text-generation; strip the KV-cache suffix.
-    task_type = "text-generation" if plan.task.startswith("text-generation") else plan.task
+    # `get_task_spec` already strips the `-with-past` suffix (the suffix selects graph shape, not task
+    # identity), so this is the registry lookup the old `plan.task.startswith("text-generation")`
+    # string test was standing in for.
+    task_spec = get_task_spec(plan.task)
+    task_type = task_spec.task.value
 
     # 1) Producer of peft_mapping/requires_grad + the training graph (quant_model.onnx + training_config).
     log.info("training stage: optimum_hf_export(%s) -> %s", plan.model_id, train_export)
@@ -808,11 +835,18 @@ def _build_training_stage(
     # inference half ships, by running identical tokens through both and bounding the loss gap. It is
     # what supplies a reference for any later "the training loss looks high" question — the absence of
     # one is how a quantization-sized gap was once read as missing weights.
-    from mobiletransformers.artifacts.train_inference_parity import verify_train_inference_parity
-
     parity = None
-    if training_model_path.exists() and inference_onnx.exists():
-        parity = verify_train_inference_parity(inference_onnx, train_stage)
+    if task_spec.parity_check is None:
+        # Recorded, not skipped silently. The causal checker shifts logits[:, :-1] against
+        # input_ids[:, 1:] and needs rank-3 logits; a per-sequence objective emits [batch, labels], so
+        # running it there would raise and read as "the package is broken".
+        log.warning(
+            "no train/inference parity gate for task %r — this package ships without that check",
+            task_spec.task.value,
+        )
+    elif training_model_path.exists() and inference_onnx.exists():
+        verify_parity = import_from_path(task_spec.parity_check)
+        parity = verify_parity(inference_onnx, train_stage)
 
     # #15 DoD: name the trainable tensors in the package itself. The count alone (in the manifest)
     # says how many; this says WHICH, so an adapter push or a federated round can be checked against

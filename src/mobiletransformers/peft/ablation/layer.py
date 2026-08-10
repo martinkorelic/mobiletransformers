@@ -722,9 +722,24 @@ class Linear(nn.Module, AblationLayer):
         Args:
             adapter (str):
                 The name of the adapter for which the delta weight should be computed.
+
+        Raises:
+            NotImplementedError: always. Merging is genuinely unimplemented for ablation PEFT — the
+                adapter's contribution is a zip-merge into a latent space, which has no closed-form
+                delta the way LoRA's ``B @ A`` does.
+
+        This used to ``pass``, i.e. return ``None``. PEFT's ``merge()`` adds the returned delta to the
+        base weight, so the whole merge completed "successfully" and wrote **nothing** — the caller got
+        an untrained model reported as merged. That is the recurring failure shape in this project
+        (a merge that happened without being correct), and it is worth an exception rather than a
+        silent no-op even though this method is only reachable on an unsupported path.
         """
-        # TODO: Implement merging (zip merging to a certain latent space)
-        pass
+        raise NotImplementedError(
+            f"merging is not implemented for ablation PEFT (adapter {adapter!r}). The ablation "
+            "adapter's contribution is a zip-merge into a latent space with no closed-form delta "
+            "weight. Use LoRA or MARS if you need an on-device merge; ablation is a research method "
+            "for measuring adapter contributions, not a shipping handoff path."
+        )
 
     def __repr__(self) -> str:
         rep = super().__repr__()

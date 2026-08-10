@@ -50,6 +50,37 @@ LEGACY_ROOTS: tuple[str, ...] = ()
 #: dispatch in a legacy root now fails.
 DISPATCH_ALLOWLIST: dict[str, int] = {}
 
+# --- #33/#6: architecture-name literals -------------------------------------------------------
+
+#: Decoder module names spelled as string literals. These belong in `config/registry/architecture.py`
+#: as data (`ArchitectureSpec.projection_names` / `attention_module_name`) and nowhere else.
+#:
+#: This guard exists because #33 found **six** of them in `peft/mars/model.py` alone — the attention
+#: lookup, the hidden-states hook, three `register_proj_hook` calls and the `projection_type` ladder —
+#: plus a seventh in `peft/mapping.py`. Every one of them was invisible on a decoder and wrong on an
+#: encoder, and the failure mode was a SILENT no-op: MARS degraded to unshared adapters with no error.
+#: A grep guard is the cheap way to keep them from creeping back, and it immediately found a live
+#: defect the first time it ran (`training_export.py`'s `--lora_target` still defaulted to the
+#: decoder-specific `["q_proj", "k_proj"]` the registry had replaced, silently overriding it).
+#:
+#: Deliberately NOT included: `query`/`key`/`value`. They are BERT's projection names but also
+#: ordinary English used throughout the RAG and hub code, so they would drown the signal.
+ARCHITECTURE_LITERAL_PATTERNS = (
+    r"[\"']self_attn[\"']",
+    r"[\"'][qkvo]_proj[\"']",
+    r"[\"'](gate|up|down)_proj[\"']",
+    r"[\"'][qkv]_lin[\"']",
+)
+
+#: Files allowed to spell them, and why.
+ARCHITECTURE_LITERAL_ALLOWLIST: dict[str, int] = {
+    # The vendored ONNX Runtime GenAI builder. Upstream code, treated as upstream (see #6/#7).
+    "src/mobiletransformers/inference/builder.py": 10_000,
+    # `artifacts/validation.py` is GONE from this list as of 2026-08-10: the spec is threaded in
+    # (`ONNXModelGenerator(architecture_spec=...)` -> `_attention_module_name()`), which is the fix the
+    # note here asked for rather than a wider allowance. Do not re-add it.
+}
+
 # --- #4: secrets ------------------------------------------------------------------------------
 
 #: Direct environment reads of credential-shaped names. Settings must come from `config/settings.py`
@@ -167,3 +198,110 @@ def test_allowlist_entries_still_exist() -> None:
         assert (REPO_ROOT / path).is_file(), (
             f"DISPATCH_ALLOWLIST names {path}, which no longer exists — drop the entry"
         )
+
+
+def test_no_architecture_literals_outside_the_registry() -> None:
+    """Per-architecture module names are registry DATA; a literal elsewhere is a latent encoder bug.
+
+    Ratchet, like the dispatch guard: an allow-list entry may only shrink. The registry itself is
+    excluded because it is where these names are supposed to live.
+    """
+    src = REPO_ROOT / "src"
+    registry = "src/mobiletransformers/config/registry/"
+
+    counts: dict[str, int] = {}
+    for hit in _grep(ARCHITECTURE_LITERAL_PATTERNS, [src], ("*.py",)):
+        rel = _relative(hit)
+        if rel.startswith(registry):
+            continue
+        counts[rel] = counts.get(rel, 0) + 1
+
+    unlisted = {p: n for p, n in counts.items() if p not in ARCHITECTURE_LITERAL_ALLOWLIST}
+    assert not unlisted, (
+        "hardcoded architecture module names outside config/registry/ — put them on the "
+        f"ArchitectureSpec row instead (projection_names / attention_module_name):\n{unlisted}"
+    )
+
+    for path, allowed in ARCHITECTURE_LITERAL_ALLOWLIST.items():
+        actual = counts.get(path, 0)
+        assert actual <= allowed, f"{path}: architecture literals grew from {allowed} to {actual}"
+
+
+# --- G2: stage-path concatenation ---------------------------------------------------------------
+
+#: Building a package STAGE path by appending its name to a string.
+#:
+#: A package has two on-disk layouts — the hub's `variants/<id>/train` and the flat device cache's
+#: `<cacheDir>/<repoId>/train` — and the manifest declares the first in `variant.paths`. Before G2,
+#: exactly ONE consumer in the repo read those declarations (`cli/federated.py`); every other site
+#: spelled the join by hand, in Python and Kotlin, and the two layouts were routinely confused.
+#:
+#: That confusion is not hypothetical: the #35 simulation looked for `<package>/train/` — the CACHE
+#: layout — inside a hub package, and ORT reported `INVALID_ARGUMENT : Invalid fd was supplied: -1`,
+#: naming no file. It cost a cycle.
+#:
+#: Resolve through `artifacts/package_paths.py::PackagePaths` (Python) or `packages/PackagePaths.kt`
+#: (Kotlin) instead. **C++ is deliberately NOT scanned**: it never resolves a stage — Kotlin hands it
+#: an already-resolved directory over JNI, and its joins (`inference_dir + "/weight_handoff_map.json"`)
+#: append a FILENAME to a resolved dir, which is not this defect.
+STAGE_PATH_PATTERNS = (
+    # Python: `something / "train"`, `something / "inference"`, `something / "embedding"`
+    r'/\s*"(train|inference|embedding)"',
+    # Kotlin: `File(x, "train")`, `"$cacheDir/$repoId/train"`, `"…/inference"`
+    r'File\([^)]*,\s*"(train|inference|embedding|tokenizer)"\s*\)',
+    r'"\$[A-Za-z_{][^"]*/(train|inference|embedding)(/|")',
+)
+
+#: repo-relative path -> hits currently tolerated. ENTRIES MAY ONLY SHRINK.
+#:
+#: `export/pipeline.py` is the package PRODUCER: it creates `variants/<id>/<stage>` on disk, so it is
+#: the one place that legitimately writes the layout rather than reading it. It is listed rather than
+#: exempted by rule so that any growth still has to be argued for.
+#: The two PRODUCERS are listed rather than exempted by rule, so growth still has to be argued for:
+#: `export/pipeline.py` creates `variants/<id>/<stage>` on disk, and `ModelPackageInstaller.kt` is the
+#: function that CONVERTS the hub layout into the flat cache layout. Something has to write each
+#: layout down once; everything else reads it through PackagePaths.
+#:
+#: The two RAG sites resolve the embedding store (`embedding/database/`), which lives INSIDE the
+#: embedding stage and is created at ingest time rather than shipped — a sub-path of a stage, not a
+#: stage. They are listed as debt rather than exempted because threading `PackagePaths` into the
+#: retriever is the right fix and should shrink these to zero.
+_SDK = "android/MobileTransformers/MobileTransformers/src/main/java/com/martinkorelic/mobiletransformers"
+
+STAGE_PATH_ALLOWLIST: dict[str, int] = {
+    "src/mobiletransformers/export/pipeline.py": 8,
+    f"{_SDK}/packages/ModelPackageInstaller.kt": 1,
+    f"{_SDK}/ORTVectorDatabase.kt": 1,
+    f"{_SDK}/ORTRetriever.kt": 2,
+}
+
+#: Files that necessarily spell a layout: the resolvers themselves and their tests.
+_RESOLVER_FILES = ("package_paths.py", "PackagePaths.kt", "PackagePathsTest.kt", "test_package_paths.py")
+
+
+def test_no_stage_path_concatenation() -> None:
+    """Stage directories come from PackagePaths, not from appending a stage name to a string.
+
+    Covers Kotlin as well as Python — the guards historically included only `*.py`/`*.cpp`/`*.h`, and
+    Kotlin is where most of these sites lived.
+    """
+    scan = [REPO_ROOT / "src", REPO_ROOT / "android"]
+    counts: dict[str, int] = {}
+    for hit in _grep(STAGE_PATH_PATTERNS, scan, ("*.py", "*.kt")):
+        rel = _relative(hit)
+        if rel.endswith(_RESOLVER_FILES):
+            continue
+        # Test fixtures build synthetic packages on purpose.
+        if rel.startswith("tests/") or "/androidTest/" in rel or "/src/test/" in rel:
+            continue
+        counts[rel] = counts.get(rel, 0) + 1
+
+    unlisted = {p: n for p, n in counts.items() if p not in STAGE_PATH_ALLOWLIST}
+    assert not unlisted, (
+        "stage paths built by string concatenation — resolve them through PackagePaths "
+        f"(artifacts/package_paths.py / packages/PackagePaths.kt) instead:\n{unlisted}"
+    )
+
+    for path, allowed in STAGE_PATH_ALLOWLIST.items():
+        actual = counts.get(path, 0)
+        assert actual <= allowed, f"{path}: stage-path concatenation grew from {allowed} to {actual}"

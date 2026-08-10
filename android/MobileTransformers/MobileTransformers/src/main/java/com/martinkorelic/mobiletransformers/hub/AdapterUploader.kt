@@ -7,6 +7,7 @@ import com.martinkorelic.mobiletransformers.MobileTransformersException
 import com.martinkorelic.mobiletransformers.packages.PackageFormat
 import com.martinkorelic.mobiletransformers.packages.WeightHandoffMap
 import java.io.File
+import com.martinkorelic.mobiletransformers.packages.PackagePaths
 
 /**
  * #22: on-device adapter push-back — the Kotlin mirror of the Python `adapter/{export,convert,model_card}`
@@ -44,7 +45,7 @@ object AdapterPackageBuilder {
     /** Read `train/training_config.json` + `train/weight_handoff_map.json` from the installed package. */
     fun build(cacheDir: File, repoId: String): AdapterMetadata {
         val sanitized = PackageFormat.sanitizeRepoId(repoId)
-        val trainDir = File(cacheDir, "$sanitized/train")
+        val trainDir = PackagePaths.forCache(cacheDir, sanitized).train
         val cfgFile = File(trainDir, "training_config.json")
         if (!cfgFile.isFile) {
             throw MissingArtifactException("adapter export: $cfgFile not found (train the model first)")

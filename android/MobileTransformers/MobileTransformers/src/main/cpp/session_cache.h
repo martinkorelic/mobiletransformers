@@ -501,6 +501,18 @@ struct InferenceSessionCache {
     // KV cache
     std::vector<std::unique_ptr<Ort::Value>> past_key_values;
 
+    // Owns the logits of the most recent forward pass.
+    //
+    // `generateWithKVCache` returns a raw `float*` into the output tensor. That tensor used to be a
+    // LOCAL `unique_ptr`, destroyed at the `return` statement — so every caller received a dangling
+    // pointer into freed memory. The sampling path survived it by reading a single row immediately
+    // after the call, before the allocator reused the pages; reading the whole `[seq, vocab]` block
+    // (8 x 49152 floats for SmolLM2) crashes the process reliably, which is how it was found.
+    //
+    // Holding it here keeps the data valid until the next forward pass replaces it, which is exactly
+    // the lifetime every caller already assumed.
+    std::unique_ptr<Ort::Value> last_output;
+
     // Merged weight cache
     std::unique_ptr<WeightSessionCache> weight_session;
     bool load_external_weights;
@@ -642,6 +654,33 @@ struct InferenceSessionCache {
         if (seed != 0) {
             random_generator.setSeed(seed);
         }
+    }
+
+    /**
+     * How many tokens the KV cache actually holds, read off the cached tensors themselves.
+     *
+     * This is the ONE authority on the cache length. Kotlin used to track it independently in
+     * `ORTGeneratorNative.pastAttentionMaskLength` and derive the next turn's attention mask from that
+     * counter; the two could drift, and when they did the graph got a mask shorter than `past + new`.
+     * Under transformers 4.57.6 that surfaces as an opaque
+     *
+     *   "Gather node. Name:'/model/Gather_5' indices element out of data bounds, idx=5 ... [-5,4]"
+     *
+     * because the newer exported graph gathers the flattened attention mask at absolute positions
+     * derived from the cache length. The 4.46.2 graph had no such node and tolerated the short mask.
+     *
+     * Layout is `[batch, num_kv_heads, sequence, head_dim]`, so the sequence extent is dimension 2.
+     * Returns 0 when the cache is empty (a fresh conversation), which is the correct past length.
+     */
+    int64_t pastSequenceLength() const {
+        if (past_key_values.empty() || !past_key_values[0]) {
+            return 0;
+        }
+        const auto shape = past_key_values[0]->GetTensorTypeAndShapeInfo().GetShape();
+        if (shape.size() < 3) {
+            return 0;
+        }
+        return shape[2];
     }
 
 private:
@@ -926,7 +965,6 @@ private:
     void clearPastKeyValues() {
         past_key_values.clear();
     }
-
 
 };
 

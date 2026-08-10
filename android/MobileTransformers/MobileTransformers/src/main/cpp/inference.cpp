@@ -109,6 +109,35 @@ namespace inference {
 
         Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
+        // The attention mask MUST cover every token the model can attend to: the cached prefix plus the
+        // new tokens in this pass. (`sequence_length` is the mask extent; `past_sequence_length` is the
+        // number of NEW tokens — the parameter names are historical and do not mean what they say.)
+        //
+        // A mask one entry short used to fail deep inside ORT with a message naming neither the mask nor
+        // the cache:
+        //
+        //   "Gather node. Name:'/model/Gather_5' indices element out of data bounds, idx=5 ... [-5,4]"
+        //
+        // That node exists only in graphs exported by transformers >= 4.57 (verified by exporting the
+        // same model under 4.46.2 and 4.57.6 and diffing: `/model/Gather_4` and `/model/Gather_5` are
+        // present only in the newer graph, and they index the FLATTENED attention mask at absolute
+        // positions derived from the cache length). The older graph tolerated a short mask silently,
+        // which means the bookkeeping was already wrong and simply unobserved.
+        //
+        // Checking it here converts "some ONNX node is unhappy" into a statement of the actual
+        // disagreement, which is the difference between a five-minute fix and an export→push→run cycle.
+        const int64_t cached_tokens = session_cache->pastSequenceLength();
+        const int64_t required_mask = cached_tokens + past_sequence_length;
+        if (sequence_length < required_mask) {
+            throw std::runtime_error(
+                    "attention mask is too short for the KV cache: mask covers " +
+                    std::to_string(sequence_length) + " tokens but the cache holds " +
+                    std::to_string(cached_tokens) + " and this pass adds " +
+                    std::to_string(past_sequence_length) + " (need at least " +
+                    std::to_string(required_mask) + "). The caller's idea of the cache length has "
+                    "drifted from the session's — derive the mask from the session, not from a counter.");
+        }
+
         std::vector<const char *> input_names = session_cache->input_names;
         size_t input_count = input_names.size();
 
@@ -180,7 +209,9 @@ namespace inference {
         session_cache->inference_session->Run(session_run_opts, input_names.data(), input_values.data(),
                                               input_count, output_names.data(), output_values.data(), output_count);
 
-        std::unique_ptr<Ort::Value> output = std::make_unique<Ort::Value>(std::move(output_values.front()));
+        // Owned by the session, NOT by a local: a local unique_ptr dies at the `return` below and the
+        // returned pointer would dangle. See InferenceSessionCache::last_output.
+        session_cache->last_output = std::make_unique<Ort::Value>(std::move(output_values.front()));
 
         if (!output_values.empty()) {
             output_values.erase(output_values.begin());
@@ -198,7 +229,7 @@ namespace inference {
         input_values.clear();
         output_values.clear();
 
-        return output->GetTensorMutableData<float>();
+        return session_cache->last_output->GetTensorMutableData<float>();
     }
 
     float* generateEmbedding(EmbeddingSessionCache* session_cache,

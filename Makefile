@@ -19,6 +19,9 @@ CONFIG  ?=
 VARIANT ?= cpu-int4
 TRAIN   ?= 0
 RAG     ?= 1
+# #33: explicit Optimum task. Empty means auto-select, which never picks `text-classification` —
+# an encoder fine-tune must name it (e.g. TASK=text-classification).
+TASK    ?=
 # Gradle 8.7 / AGP 8.5.1 need JDK 17. The system `java` is often 11, so fall back to Android Studio's
 # bundled JBR the same way scripts/{android_build_aar,publish_local_maven}.sh do. An explicit JAVA_HOME
 # in the environment always wins.
@@ -94,8 +97,8 @@ package-model:  ## Validate + assemble an existing build dir into a Hub package 
 android-build:  ## gradle assembleDebug (SDK + sample app).
 	$(GRADLE) :MobileTransformers:assembleDebug :MobileTransformersApp:assembleDebug
 
-device-package:  ## MODEL=<hf-id> [VARIANT= TRAIN=1 RAG=1] -> export + adb push a real package for device tests (#1-29 W6).
-	MODEL=$(MODEL) VARIANT=$(VARIANT) TRAIN=$(TRAIN) RAG=$(RAG) scripts/device_package.sh
+device-package:  ## MODEL=<hf-id> [VARIANT= TRAIN=1 RAG=1 TASK=] -> export + adb push a real package for device tests (#1-29 W6).
+	MODEL=$(MODEL) VARIANT=$(VARIANT) TRAIN=$(TRAIN) RAG=$(RAG) TASK=$(TASK) scripts/device_package.sh
 
 device-test:  ## Run the instrumented device suites over the pushed package (skips w/o a device/package).
 	$(GRADLE) :MobileTransformers:connectedDebugAndroidTest

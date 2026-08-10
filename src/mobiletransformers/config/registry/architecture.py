@@ -33,6 +33,42 @@ def import_from_path(dotted: str) -> Any:
     return getattr(importlib.import_module(module_path), attr)
 
 
+#: The attention module name the decoder family uses. Declared here because this registry OWNS
+#: per-architecture naming: a consumer that needs a fallback must reference this rather than spell
+#: ``"self_attn"`` itself, or the literal spreads back out into the consumers #33 just cleaned.
+DEFAULT_ATTENTION_MODULE_NAME = "self_attn"
+
+#: Attention/MLP projection module names keyed by the PEFT projection ROLE.
+#:
+#: The roles (``q``/``k``/``v``/``o``/``gate``/``up``/``down``) are the vocabulary MARS's
+#: ``SharedAttentionAdapter``/``SharedMLPAdapter`` and ``MarsLayer.projection_type`` already speak;
+#: the *module names* are what differs per architecture. This default is the Llama-family naming that
+#: ``peft/mars/model.py`` used to hardcode in five places (attention-module lookup, three
+#: ``register_proj_hook`` calls, the ``projection_type`` ladder, and the ``qkv``/``mlp`` grouping in
+#: ``_replace_module``). Encoder rows override it — which is the whole reason MARS could not be
+#: transferred to an encoder (#33).
+DEFAULT_PROJECTION_NAMES: dict[str, str] = {
+    "q": "q_proj",
+    "k": "k_proj",
+    "v": "v_proj",
+    "o": "o_proj",
+    "gate": "gate_proj",
+    "up": "up_proj",
+    "down": "down_proj",
+}
+
+#: BERT/RoBERTa name their attention projections ``query``/``key``/``value``, nested one level deeper
+#: than a decoder's (``attention.self.query`` vs ``self_attn.q_proj``). Only q/k/v are mapped: BERT's
+#: output projection lives in a different subtree (``attention.output.dense``) and its MLP is
+#: ``intermediate``/``output``, neither of which MARS's shared-adapter shapes describe — declaring a
+#: name for them would claim a transfer that has not been verified.
+_BERT_PROJECTION_NAMES: dict[str, str] = {"q": "query", "k": "key", "v": "value"}
+
+#: DistilBERT names them ``q_lin``/``k_lin``/``v_lin`` — exactly the per-architecture difference this
+#: registry exists to hold as data.
+_DISTILBERT_PROJECTION_NAMES: dict[str, str] = {"q": "q_lin", "k": "k_lin", "v": "v_lin"}
+
+
 @dataclass(frozen=True)
 class ArchitectureSpec:
     architecture: str  # config.architectures[0], e.g. "LlamaForCausalLM"
@@ -46,7 +82,11 @@ class ArchitectureSpec:
     # config.model_type and covers the far wider set of PEFT-wrappable models (incl. encoders/seq2seq).
     target_modules: tuple[str, ...]
     inference_model_class: str | None = None  # dotted path to the genai inference builder; None = n/a
-    attention_module_name: str = "self_attn"
+    attention_module_name: str = DEFAULT_ATTENTION_MODULE_NAME
+    #: Projection ROLE -> module name (see :data:`DEFAULT_PROJECTION_NAMES`). Consumed by
+    #: ``peft/mars/model.py`` to locate the shared-adapter anchor and to classify a wrapped module,
+    #: replacing the decoder-only ``q_proj``/``gate_proj`` string tests it used to hardcode.
+    projection_names: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PROJECTION_NAMES))
     task: TaskType = TaskType.TEXT_GENERATION
     # Variant selection (e.g. Phi3 4K vs 128K keyed on config.max_position_embeddings).
     variant_key: str | None = None
@@ -72,6 +112,25 @@ class ArchitectureSpec:
     #: Operator-facing warnings the legacy branches `print`ed. Kept as data so a caller can log them
     #: through the normal logger rather than to stdout.
     warnings: tuple[str, ...] = ()
+
+    def module_name_for_role(self, role: str) -> str | None:
+        """``"q"`` -> ``"q_proj"`` (decoder) / ``"query"`` (BERT). ``None`` when the role is not mapped."""
+        return self.projection_names.get(role)
+
+    def role_for_module(self, module_name: str) -> str | None:
+        """Inverse of :meth:`module_name_for_role`: ``"query"`` -> ``"q"``.
+
+        Matches the **leaf** module name exactly. The code this replaces used substring tests
+        (``"q_proj" in target_name``), which silently matched nothing at all on an encoder — leaving
+        ``projection_type=None``, which in turn left ``is_standalone=True`` and degraded MARS to
+        unshared adapters without any error. Exact leaf matching makes that a lookup miss the caller
+        can see rather than a silent downgrade.
+        """
+        leaf = module_name.rsplit(".", 1)[-1]
+        for role, name in self.projection_names.items():
+            if name == leaf:
+                return role
+        return None
 
     def load_onnx_config_class(self) -> Any:
         if self.onnx_config_class is None:
@@ -113,9 +172,26 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
     "Gemma2ForCausalLM": ArchitectureSpec(
         "Gemma2ForCausalLM", f"{_OC}.Gemma2OnnxConfig", ("q_proj", "v_proj"), f"{_INF}.Gemma2Model"
     ),
-    # Gemma3 export is supported; inference is the FunctionGemma gate (#37).
+    # `Gemma3TextOnnxConfig`, NOT `Gemma3OnnxConfig`. Gemma-3 ships as two model types and optimum
+    # maps them to two different configs: `gemma3` (multimodal, class
+    # `Gemma3ForConditionalGeneration`) -> `Gemma3OnnxConfig`, whose `__init__` does
+    # `super().__init__(config.text_config, ...)`; and `gemma3_text` (text-only, class
+    # `Gemma3ForCausalLM` — what `google/gemma-3-270m` actually is) -> `Gemma3TextOnnxConfig`.
+    #
+    # This row bound the multimodal config, so the training export would have died with
+    # `AttributeError: 'Gemma3TextConfig' object has no attribute 'text_config'`. It was invisible
+    # because the dotted paths resolve lazily and nothing had ever exercised the row — precisely the
+    # caveat recorded beside it. `test_registry_matches_optimum_task_manager` now cross-checks every
+    # row against optimum's own mapping so a wrong binding cannot hide again.
+    #
+    # The multimodal `Gemma3ForConditionalGeneration` is deliberately NOT added: it is untested here,
+    # and failing closed on an unknown architecture is better than a second unexercised binding.
+    #
+    # `inference_model_class` stays None: that field is the vendored GenAI builder path, and the
+    # shipping inference export goes through optimum's `main_export` (#7), which resolves its own
+    # config via TasksManager. Gemma-3 inference export is PROVEN (2026-08-09, full package).
     "Gemma3ForCausalLM": ArchitectureSpec(
-        "Gemma3ForCausalLM", f"{_OC}.Gemma3OnnxConfig", ("q_proj", "v_proj"), None
+        "Gemma3ForCausalLM", f"{_OC}.Gemma3TextOnnxConfig", ("q_proj", "v_proj"), None
     ),
     "Phi3ForCausalLM": ArchitectureSpec(
         "Phi3ForCausalLM",
@@ -193,6 +269,7 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
         f"{_OC}.BertOnnxConfig",
         ("query", "value"),
         attention_module_name="attention",
+        projection_names=dict(_BERT_PROJECTION_NAMES),
         task=TaskType.FEATURE_EXTRACTION,
     ),
     # --- Encoder classification (#33) ---
@@ -209,6 +286,7 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
         f"{_OC}.BertOnnxConfig",
         ("query", "value"),
         attention_module_name="attention",
+        projection_names=dict(_BERT_PROJECTION_NAMES),
         task=TaskType.SEQUENCE_CLASSIFICATION,
     ),
     "RobertaForSequenceClassification": ArchitectureSpec(
@@ -216,6 +294,7 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
         f"{_OC}.RobertaOnnxConfig",
         ("query", "value"),
         attention_module_name="attention",
+        projection_names=dict(_BERT_PROJECTION_NAMES),
         task=TaskType.SEQUENCE_CLASSIFICATION,
     ),
     "DistilBertForSequenceClassification": ArchitectureSpec(
@@ -225,6 +304,7 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
         # difference this registry exists to hold as data.
         ("q_lin", "v_lin"),
         attention_module_name="attention",
+        projection_names=dict(_DISTILBERT_PROJECTION_NAMES),
         task=TaskType.SEQUENCE_CLASSIFICATION,
     ),
 }
@@ -256,4 +336,11 @@ def resolve_architecture(config: Any, *, architecture: str | None = None) -> Arc
     return spec
 
 
-__all__ = ["ArchitectureSpec", "ARCHITECTURE_REGISTRY", "resolve_architecture", "import_from_path"]
+__all__ = [
+    "ArchitectureSpec",
+    "ARCHITECTURE_REGISTRY",
+    "DEFAULT_ATTENTION_MODULE_NAME",
+    "DEFAULT_PROJECTION_NAMES",
+    "resolve_architecture",
+    "import_from_path",
+]

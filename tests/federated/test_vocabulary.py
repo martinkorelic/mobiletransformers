@@ -5,9 +5,11 @@ declared but unimplemented is therefore not harmless documentation — a peer ma
 and before this change `from_bytes` accepted it and carried on, so a tensor marked `server_only` would
 have been aggregated as a weighted average. Unknown values now fail closed.
 
-The decision was to make the DOC match the CODE (the codec's `{weight, weight_quantized, scale,
-zero_point}`), not the reverse, which is why `federated_record.golden.bin` is untouched — see
-`test_serialization_golden.py`, which still passes byte for byte.
+**Updated 2026-08-09 (#35 rank-r decision).** The exchanged vocabulary is now the ADAPTER FACTOR
+roles (`shared_A`/`intermediate`/`adapter_A`/`adapter_B`). The merged-weight roles stay in
+`SUPPORTED_ROLES` for READ compatibility — a peer may still hold a record written under the previous
+vocabulary, and rejecting it as "unknown role" would be worse than accepting and reporting it — but
+nothing produces them any more. The golden was regenerated for this change.
 """
 
 from __future__ import annotations
@@ -24,17 +26,12 @@ from mobiletransformers.federated.adapter_record import (
     SUPPORTED_ROLES,
     FederatedAdapterRecord,
 )
-from tests.federated._helpers import make_handoff
+from tests.federated._helpers import make_arrays, make_handoff
 
 
 def _record() -> FederatedAdapterRecord:
-    handoff = make_handoff()
-    arrays = [
-        np.arange(6, dtype=np.float32).reshape(2, 3),
-        np.arange(3, dtype=np.float32),
-    ]
     return FederatedAdapterRecord.from_handoff(
-        handoff, arrays, base_model_id="tiny/model", peft_method="lora"
+        make_handoff(), make_arrays(), base_model_id="tiny/model", peft_method="lora"
     )
 
 
@@ -49,8 +46,11 @@ def _rewrite_header(blob: bytes, mutate) -> bytes:
 
 
 def test_v1_vocabulary_is_the_codec_vocabulary():
-    assert SUPPORTED_ROLES == {"weight", "weight_quantized", "scale", "zero_point"}
-    # The tier doc's original set was never implemented by anything.
+    # What v1 PRODUCES: the adapter factors (#35 rank-r decision).
+    assert {"shared_A", "intermediate", "adapter_A", "adapter_B"} <= SUPPORTED_ROLES
+    # What it still ACCEPTS on read: the previous merged-weight roles.
+    assert {"weight", "weight_quantized", "scale", "zero_point"} <= SUPPORTED_ROLES
+    # The tier doc's original set was never implemented by anything, and still is not.
     assert not SUPPORTED_ROLES & {"adapter", "trainable_weight", "head"}
 
 

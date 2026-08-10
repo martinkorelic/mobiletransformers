@@ -33,6 +33,10 @@ from onnxruntime.training.api import CheckpointState, Module, Optimizer
 from transformers import AutoConfig, AutoTokenizer
 
 from mobiletransformers.artifacts.graph_prep import ensure_layernorm_grad_outputs
+from mobiletransformers.artifacts.trainable_gate import (
+    assert_every_requested_tensor_is_trainable,
+    is_quant_companion,
+)
 from mobiletransformers.config.constants import (
     ARTIFACT_CONFIG,
     INFERENCE_CONFIG,
@@ -50,24 +54,8 @@ from mobiletransformers.utils.paths import delete_directory, move_files_excludin
 
 logger = get_logger(__name__)
 
+
 #: Suffixes the quantizer appends beside a weight it packs. Same role vocabulary the handoff map uses
-#: (`artifacts/handoff_map.py`): the packed payload plus its dequantization parameters.
-_QUANT_COMPANION_SUFFIXES = ("_quantized", "_scale", "_zero_point")
-
-
-def _is_quant_companion(name: str) -> bool:
-    """True for a quantizer-produced companion of a weight (packed payload / scale / zero-point).
-
-    ``requires_grad`` is matched by **substring**, so a trainable ``…lora_B.lora.weight`` also matches
-    ``…lora_B.lora.weight_quantized`` and its ``_scale``/``_zero_point``. Those are not differentiable —
-    ORT rejects the whole artifact generation with *"Cannot compute the partial derivative for
-    '…weight_quantized' as it's unreachable from the output node(s)"*, so a quantized PEFT export could
-    not produce training artifacts at all. This is the same quantized-name hazard `HandoffMap.validate`
-    guards on the emit side.
-    """
-    return name.endswith(_QUANT_COMPANION_SUFFIXES)
-
-
 @contextlib.contextmanager
 def _onnx_external_data_overwrite():
     """Let ``onnx.save`` overwrite an existing external-data file, for the duration of the block.
@@ -128,11 +116,27 @@ def gen_artifacts(
     requires_grad = []
     frozen_params = []
 
+    # Adapter tensor IDENTITY, not just its name. The handoff map is declared as the single source of
+    # tensor identity, but it only ever described the MERGED inference initializers: it *names*
+    # `adapter_A`/`adapter_B` in `checkpointNames` and says nothing about their dtype or shape. A
+    # consumer that wants to exchange the factors themselves (#35 rank-r federation, and #36's Kotlin
+    # codec after it) would otherwise have to infer shapes from the rank — exactly the kind of
+    # re-derivation that produced the layer-identity defects. Captured here because this is the one
+    # place the training graph is already open and its initializers already being walked.
+    trainable_tensor_specs: dict[str, dict] = {}
+
     for param in onnx_model.graph.initializer:
-        trainable = any(rqp in param.name for rqp in params["requires_grad"]) and not _is_quant_companion(
+        trainable = any(rqp in param.name for rqp in params["requires_grad"]) and not is_quant_companion(
             param.name
         )
         (requires_grad if trainable else frozen_params).append(param.name)
+        if trainable:
+            trainable_tensor_specs[param.name] = {
+                "dtype": onnx.helper.tensor_dtype_to_np_dtype(param.data_type).name,
+                "shape": list(param.dims),
+            }
+
+    assert_every_requested_tensor_is_trainable(params["requires_grad"], requires_grad, frozen_params)
 
     del onnx_model
     gc.collect()
@@ -156,6 +160,10 @@ def gen_artifacts(
 
     extended_training_config = {
         "requires_grad": requires_grad,
+        # {initializer name -> {"dtype", "shape"}} for every realized trainable tensor. Consumed by
+        # `TrainableTensorCodec.from_peft_mapping` so the handoff map can DESCRIBE the adapter
+        # factors, not merely name them.
+        "trainable_tensor_specs": trainable_tensor_specs,
         "peft_mapping": params["peft_mapping"],
         "rank": params["rank"],
         "alpha": params["alpha"],

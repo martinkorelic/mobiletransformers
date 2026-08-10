@@ -13,7 +13,8 @@ data class RuntimeCapabilities(
     val supportsMerge: Boolean,
     val supportsRag: Boolean,
     val supportsEmbedding: Boolean,
-    val supportsScheduledTraining: Boolean = false, // future (#34)
+    /** #34: `TrainingScheduler.schedule()` can run charging-constrained chunks for this model. */
+    val supportsScheduledTraining: Boolean = false,
     val supportsAdapterTensorExport: Boolean = false, // future (#35/#36)
     val availableFeatures: Set<ModelFeature> = emptySet(),
 )

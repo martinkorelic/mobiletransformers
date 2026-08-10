@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from mobiletransformers.adapter.export import AdapterPackage
 from mobiletransformers.artifacts.handoff_map import HandoffMap
+from mobiletransformers.artifacts.package_paths import PackagePaths
 from mobiletransformers.config.constants import PEFTMethod
 from mobiletransformers.config.registry.peft import get_peft_spec
 from mobiletransformers.exceptions import ExportError
@@ -133,7 +134,8 @@ def materialize_peft_weights(
 
     # Reload the handoff map to recover each trainable layer's A/B factor checkpoint names (the merged
     # AdapterPackage.tensors carry only the fused inference weight, not the separate factors).
-    handoff = HandoffMap.load(pkg.cache_repo_dir / "train" / "weight_handoff_map.json")
+    cache_paths = PackagePaths.for_cache(pkg.cache_repo_dir.parent, pkg.cache_repo_dir.name)
+    handoff = HandoffMap.load(cache_paths.train / "weight_handoff_map.json")
 
     # checkpoint param name -> its target PEFT safetensors key.
     key_by_checkpoint_name: dict[str, str] = {}
@@ -150,7 +152,7 @@ def materialize_peft_weights(
         raise ExportError("no LoRA A/B factors found in the handoff map; package is not Mode-1 eligible")
 
     reader = factor_reader or _read_checkpoint_factors
-    arrays = reader(pkg.cache_repo_dir / "train" / "checkpoint", key_by_checkpoint_name.keys())
+    arrays = reader(cache_paths.train / "checkpoint", key_by_checkpoint_name.keys())
 
     missing = sorted(set(key_by_checkpoint_name) - set(arrays))
     if missing:
