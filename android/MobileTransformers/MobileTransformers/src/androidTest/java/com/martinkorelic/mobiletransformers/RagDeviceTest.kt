@@ -23,6 +23,8 @@ class RagDeviceTest {
     fun ingestThenGroundedGenerate() = runBlocking {
         val root = DeviceModel.requireCacheRoot()
         val repoId = DeviceModel.repoId(root)
+        // Grounded generation needs a token loop; the embedding gate below is about the retriever.
+        DeviceModel.requireDecoder(root, repoId)
         assumeTrue(
             "package is not RAG-capable (no embedding/)",
             File(root, "$repoId/embedding").isDirectory,

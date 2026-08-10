@@ -100,3 +100,78 @@ def test_unknown_stage_rejected(tmp_path):
     plan = _plan(tmp_path, engines=("native",))
     with pytest.raises(ConfigValidationError, match="unknown export stage"):
         _full_export(plan, token=None, embedding_model=None, stages={"bogus"})
+
+
+# --- provenance across the two-profile export (#15/#33 debt) ----------------
+
+
+def _fake_training(plan, dest, *, token, embedding_model):
+    """A training stage that reports what the real one reports: nothing about the inference graph."""
+    train = Path(dest) / "train"
+    train.mkdir(parents=True, exist_ok=True)
+    (train / "training_config.json").write_text("{}\n")
+    (train / "checkpoint").write_bytes(b"\x00")
+    return StageOutput(stage_dirs={"train": train}, report={"trainableTensorCount": 4})
+
+
+def test_training_only_reexport_keeps_the_inference_provenance(tmp_path):
+    """A `--stages training` run must not erase what the inference run recorded.
+
+    Producing a train-capable package REQUIRES two profile-scoped runs (the onnxruntime profiles cannot
+    co-install), and the second rebuilds the manifest. It used to rebuild it from a report that knows
+    nothing about the graph, so every pushed device package carried `transformersVersion: null` — the
+    field that attributes a package to a transformers line, which is exactly what diagnosing an export
+    regression needs.
+    """
+    plan = _plan(tmp_path, engines=("native",))
+    builders = {**_default_builders(), "inference": _fake_inference(with_genai=False)}
+    inference_pkg = _full_export(
+        plan, token=None, embedding_model=None, stages={"inference"}, builders=builders
+    )
+    # The real inference stage writes this side-car next to the graph it describes.
+    (inference_pkg.output_dir / "variants/cpu-int4/inference/optimum_config.json").write_text(
+        '{"modelId": "org/tiny", "task": "text-generation-with-past", "modelType": "llama",'
+        ' "optimumOnnxVersion": "0.1.0", "transformersVersion": "4.46.2", "trustRemoteCode": true}\n'
+    )
+
+    pkg = _full_export(
+        plan,
+        token=None,
+        embedding_model=None,
+        stages={"training"},
+        builders={**_default_builders(), "training": _fake_training},
+    )
+
+    manifest = MobileTransformersManifest.load(pkg.manifest_path)
+    assert manifest.data["transformersVersion"] == "4.46.2"
+    assert manifest.data["optimumOnnxVersion"] == "0.1.0"
+    assert manifest.data["architectures"] == ["llama"]
+    assert manifest.data["trustRemoteCode"] is True
+    # ... and the stage this run DID build is still there.
+    assert "train" in set(manifest.variants[0]["features"])
+
+
+def test_an_inference_run_wins_over_the_recorded_side_car(tmp_path):
+    """Carrying forward must never overwrite what THIS run's inference stage reported."""
+    plan = _plan(tmp_path, engines=("native",))
+    (tmp_path / "pkg/variants/cpu-int4/inference").mkdir(parents=True)
+    (tmp_path / "pkg/variants/cpu-int4/inference/optimum_config.json").write_text(
+        '{"modelType": "stale-arch", "transformersVersion": "0.0.1"}\n'
+    )
+
+    def inference_with_versions(plan, dest, *, token, embedding_model):
+        out = _fake_inference(with_genai=False)(plan, dest, token=token, embedding_model=embedding_model)
+        out.report.update({"architectures": ["LlamaForCausalLM"], "transformersVersion": "4.46.2"})
+        return out
+
+    pkg = _full_export(
+        plan,
+        token=None,
+        embedding_model=None,
+        stages={"inference"},
+        builders={**_default_builders(), "inference": inference_with_versions},
+    )
+
+    manifest = MobileTransformersManifest.load(pkg.manifest_path)
+    assert manifest.data["architectures"] == ["LlamaForCausalLM"]
+    assert manifest.data["transformersVersion"] == "4.46.2"

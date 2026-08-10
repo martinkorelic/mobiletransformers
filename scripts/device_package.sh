@@ -25,7 +25,10 @@ TRAIN="${TRAIN:-0}"
 TASK="${TASK:-}"
 RAG="${RAG:-1}"
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-}"
-PKG="build/pkg"
+# Overridable so a second model can be staged without overwriting the first package on the host — the
+# DEVICE cache holds one package at a time, but the host copy is what `federated serve` and any
+# re-push read, and re-exporting it costs a full export cycle.
+PKG="${PKG:-build/pkg}"
 DEVICE_CACHE="build/device_cache"
 TEST_PKG="${TEST_PKG:-com.martinkorelic.mobiletransformers.test}"
 DEVICE_DEST="${DEVICE_DEST:-/sdcard/Android/data/$TEST_PKG/files/mt_pkg}"

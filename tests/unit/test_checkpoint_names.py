@@ -121,3 +121,37 @@ def test_entry_without_a_training_name_is_reported(tmp_path):
 
     with pytest.raises(ExportError, match="no trainingBaseLayerName"):
         verify_handoff_names_resolve(path, ckpt)
+
+
+# --- the encoder namespace (#33) --------------------------------------------
+
+#: Real names, taken from an `all-MiniLM-L6-v2` LoRA export + its ORT checkpoint (2026-08-10).
+ENCODER_RAW = "base_model.model.bert.encoder.layer.0.attention.self.query"
+ENCODER_PARAM = "backbone.bert.encoder.layer.0.attention.self.query.base_layer.weight"
+
+
+def test_the_rule_is_the_wrapper_pair_not_a_decoders_module_path():
+    """`base_model.model.` -> `backbone.`, whatever the model's own first module is.
+
+    Written as `base_model.model.model.` -> `backbone.model.` it is the same rule with a DECODER's
+    `model.layers…` baked in: identical output for every decoder, and a no-op for an encoder. The #33
+    encoder export failed closed on exactly that — 12/12 handoff entries naming
+    `base_model.model.bert.…base_layer.weight` against a checkpoint holding `backbone.bert.…`.
+    """
+    assert to_checkpoint_name(ENCODER_RAW) == "backbone.bert.encoder.layer.0.attention.self.query"
+    assert checkpoint_weight_param(ENCODER_RAW) == ENCODER_PARAM
+    # ... and the decoder mapping is byte-identical to what the narrower rule produced.
+    assert to_checkpoint_name(RAW) == "backbone.model.layers.9.self_attn.q_proj"
+
+
+def test_encoder_names_resolve_end_to_end(tmp_path):
+    handoff = _write_map(tmp_path, [ENCODER_RAW])
+    ckpt = _write_checkpoint(tmp_path, [ENCODER_PARAM])
+
+    assert verify_handoff_names_resolve(handoff, ckpt) == [ENCODER_PARAM]
+
+
+def test_an_unwrapped_name_is_left_alone():
+    """Only the peft wrapper is rewritten; a name already in checkpoint space must not be re-prefixed."""
+    already = "backbone.bert.encoder.layer.0.attention.self.query"
+    assert to_checkpoint_name(already) == already

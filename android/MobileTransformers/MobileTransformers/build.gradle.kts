@@ -23,7 +23,17 @@ android {
         buildConfigField("boolean", "ADAPTER_UPLOAD_ENABLED", "false")
         // #36: federated participation is OFF unless the app shipping this turns it on. Adapter
         // factors are derived from the user's own data, so the default must be "do not send".
-        buildConfigField("boolean", "FEDERATION_ENABLED", "false")
+        //
+        // The device round-trip suite has to turn it on, and a test-only backdoor inside
+        // FederatedConfig would weaken the very gate it is testing. So the switch stays the build
+        // switch, flipped deliberately per invocation:
+        //   ./gradlew :MobileTransformers:connectedDebugAndroidTest -PmtFederationEnabled=true
+        // Absent property == false, so nothing published from this tree carries it on by accident.
+        buildConfigField(
+            "boolean",
+            "FEDERATION_ENABLED",
+            ((project.findProperty("mtFederationEnabled") as String?)?.toBoolean() ?: false).toString(),
+        )
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"

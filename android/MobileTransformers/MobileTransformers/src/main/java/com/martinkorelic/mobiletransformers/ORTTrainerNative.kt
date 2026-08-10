@@ -467,8 +467,10 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
                     )
                 )
 
-                // Destroy training session and save model
-                destroySession(true)
+                // Save the checkpoint, and release the session unless the caller asked to keep it.
+                // `destroySession(true)` does both; splitting them is what lets a caller read the
+                // checkpoint it just trained (see keepSessionAtEnd).
+                if (trainingConfig.keepSessionAtEnd) saveModel(model, true) else destroySession(true)
 
                 // Callbacks: onSaveModelEnd
                 callback?.onSaveModelEnd(
@@ -483,7 +485,7 @@ class ORTTrainerNative(private val context: Context, private val cacheDirPath: S
                         totalDurationMs = System.currentTimeMillis() - saveModelStart
                     )
                 )
-            } else {
+            } else if (!trainingConfig.keepSessionAtEnd) {
                 // Destroy training session without saving
                 destroySession(false)
             }

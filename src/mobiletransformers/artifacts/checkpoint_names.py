@@ -39,10 +39,23 @@ from mobiletransformers.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-#: Mirrors `cpp/layer_name.h` and `handoff_map._TRAINING_WRAPPER_PREFIXES`. One wire format, three
-#: implementations — if this set changes, change it in all three.
-RAW_PREFIX = "base_model.model.model."
-CHECKPOINT_PREFIX = "backbone.model."
+#: Mirrors `cpp/layer_name.h`, `packages/WeightHandoffMap.kt` and
+#: `handoff_map._TRAINING_WRAPPER_PREFIXES`. One wire format, four implementations — if this changes,
+#: change it in all four.
+#:
+#: **The rule is the WRAPPER pair, not a model's module path.** peft wraps the model as
+#: `base_model.model.<hf-path>` and the ORT training wrapper as `backbone.<hf-path>`, so converting one
+#: to the other strips `base_model.model.` and prepends `backbone.` — whatever `<hf-path>` starts with.
+#:
+#: These constants used to read `base_model.model.model.` / `backbone.model.`, which is that same rule
+#: with a decoder's own first module (`model.layers…`) baked in. It produced identical output for every
+#: decoder, and matched NOTHING for an encoder: BERT's path is `bert.encoder.layer…`, so all 12 handoff
+#: entries resolved to a parameter no checkpoint contains and the #33 encoder export failed closed
+#: (correctly — the check exists for exactly this) with
+#: `base_model.model.bert.…base_layer.weight` against a checkpoint holding
+#: `backbone.bert.…base_layer.weight`.
+RAW_PREFIX = "base_model.model."
+CHECKPOINT_PREFIX = "backbone."
 BASE_LAYER_SUFFIX = ".base_layer"
 
 #: The roles `WeightMerger::extract_base_layer_params` looks up. `weight` is required; the quantized
@@ -51,7 +64,11 @@ REQUIRED_ROLE = "weight"
 
 
 def to_checkpoint_name(name: str) -> str:
-    """`base_model.model.model.<layer>` -> `backbone.model.<layer>`; twin of `layer_name::to_checkpoint`."""
+    """`base_model.model.<path>` -> `backbone.<path>`; twin of `layer_name::to_checkpoint`.
+
+    Decoder: `base_model.model.model.layers.0…` -> `backbone.model.layers.0…` (unchanged from before).
+    Encoder: `base_model.model.bert.encoder.layer.0…` -> `backbone.bert.encoder.layer.0…`.
+    """
     if name.startswith(RAW_PREFIX):
         return CHECKPOINT_PREFIX + name[len(RAW_PREFIX) :]
     return name

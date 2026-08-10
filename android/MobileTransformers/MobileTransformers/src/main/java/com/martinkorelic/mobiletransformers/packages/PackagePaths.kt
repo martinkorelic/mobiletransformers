@@ -39,6 +39,9 @@ class PackagePaths private constructor(
 
         const val WEIGHT_HANDOFF_FILENAME = "weight_handoff_map.json"
 
+        /** The ObjectBox store's directory name, inside the embedding stage. */
+        const val EMBEDDING_DATABASE_DIRNAME = "database"
+
         /**
          * Resolve against a hub package using the variant's DECLARED paths.
          *
@@ -101,6 +104,23 @@ class PackagePaths private constructor(
 
     /** The handoff map, which lives inside the inference stage in both layouts. */
     val weightHandoff: File get() = File(inference, WEIGHT_HANDOFF_FILENAME)
+
+    /**
+     * The RAG vector store, INSIDE the embedding stage.
+     *
+     * Not shipped — ingestion creates it — which is why the two RAG sites that used to spell
+     * `"$cacheDir/$repoId/embedding/database"` were carried as guard debt rather than exempted. A
+     * sub-path of a stage still has to start from a resolved stage, or it drifts the same way a stage
+     * does: the retriever's own comment claimed `cacheDir/modelName/database/` while the code wrote
+     * `embedding/database/`.
+     */
+    val embeddingDatabase: File get() = File(embedding, EMBEDDING_DATABASE_DIRNAME)
+
+    /**
+     * The EMBEDDER's tokenizer, inside the embedding stage — a different tokenizer from
+     * [tokenizer], which belongs to the generation model.
+     */
+    val embeddingTokenizer: File get() = File(embedding, STAGE_TOKENIZER)
 
     /** Whether the layout declares [name] at all (says nothing about what is on disk). */
     fun has(name: String): Boolean = stages.containsKey(name)

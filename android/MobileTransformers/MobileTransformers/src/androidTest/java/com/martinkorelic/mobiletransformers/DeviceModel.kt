@@ -90,4 +90,40 @@ object DeviceModel {
     /** True iff the installed package carries a train-capable subtree (for the train→merge→generate legs). */
     fun hasTraining(root: File, repoId: String): Boolean =
         File(root, "$repoId/train/training_config.json").isFile
+
+    /**
+     * The task this package's inference graph was exported for, from the `optimum_config.json` the
+     * exporter writes beside the graph. Empty when the side-car is absent (a package from before it
+     * existed) — treated as "unknown", never guessed.
+     */
+    fun selectedTask(root: File, repoId: String): String {
+        val config = File(root, "$repoId/inference/optimum_config.json")
+        if (!config.isFile) return ""
+        return runCatching {
+            org.json.JSONObject(config.readText()).optString("task", "")
+        }.getOrDefault("")
+    }
+
+    /**
+     * True iff the package is a **decoder** — i.e. the generation suites can run against it.
+     *
+     * #33 put a second model shape on the device. A `text-classification` encoder package is
+     * train-capable and installs identically, so every generation suite would previously have run
+     * against it and failed at the first `generate()` on a graph with no token loop — failures that
+     * report a task mismatch as if it were a defect. The task is the honest discriminator: an unknown
+     * task counts as a decoder, so packages predating the side-car behave exactly as before.
+     */
+    fun isDecoder(root: File, repoId: String): Boolean {
+        val task = selectedTask(root, repoId)
+        return task.isEmpty() || task.startsWith("text-generation")
+    }
+
+    /** Skip the test unless the installed package is a decoder, naming the task that caused the skip. */
+    fun requireDecoder(root: File, repoId: String) {
+        assumeTrue(
+            "installed package '$repoId' was exported for task '${selectedTask(root, repoId)}', " +
+                "which has no token loop; this suite is decoder-only",
+            isDecoder(root, repoId),
+        )
+    }
 }

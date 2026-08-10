@@ -7,7 +7,7 @@
 
 .PHONY: help setup setup-export setup-train setup-genai \
         lint format typecheck parity guard test test-smoke test-train test-jvm test-cpp test-integration check consumer-app \
-        export-model package-model android-build device-package device-test device-rss build-aar publish-local docs clean-generated
+        export-model package-model android-build device-package device-test device-rss device-federated build-aar publish-local docs clean-generated
 
 # Overridable export knobs (used by `export-model`).
 MODEL   ?=
@@ -22,6 +22,9 @@ RAG     ?= 1
 # #33: explicit Optimum task. Empty means auto-select, which never picks `text-classification` —
 # an encoder fine-tune must name it (e.g. TASK=text-classification).
 TASK    ?=
+# #36: the host-side package the federated gateway aggregates against. It must be the SAME export the
+# device holds — `weight_handoff_map.json` is the authority on tensor names/shapes for both sides.
+FED_PKG ?= build/pkg
 # Gradle 8.7 / AGP 8.5.1 need JDK 17. The system `java` is often 11, so fall back to Android Studio's
 # bundled JBR the same way scripts/{android_build_aar,publish_local_maven}.sh do. An explicit JAVA_HOME
 # in the environment always wins.
@@ -105,6 +108,9 @@ device-test:  ## Run the instrumented device suites over the pushed package (ski
 
 device-rss:  ## Collect the four-point RSS table (copy vs mmap, both engines) and evaluate Gate 0.1 #4 / Gate 0.2.
 	scripts/device_rss.sh
+
+device-federated:  ## #36 round-trip: export factors on device -> `federated serve` on host -> import back.
+	PKG=$(FED_PKG) scripts/federated_round_device.sh
 
 consumer-app:  ## Build examples/consumer-app against the mavenLocal artifact (#30 proof).
 	cd examples/consumer-app && ./gradlew assembleDebug

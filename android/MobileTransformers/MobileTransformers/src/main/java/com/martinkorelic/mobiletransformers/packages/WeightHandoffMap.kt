@@ -133,11 +133,15 @@ data class WeightHandoffMap(
 
         /**
          * Kotlin twin of `artifacts/checkpoint_names.py::to_checkpoint_name` (and `layer_name.h`'s
-         * `to_checkpoint`): `base_model.model.model.` -> `backbone.model.`.
+         * `to_checkpoint`): `base_model.model.` -> `backbone.`.
+         *
+         * The two WRAPPERS, not a model's own module path. Spelling it
+         * `base_model.model.model.` -> `backbone.model.` bakes in a decoder's first module: identical
+         * output for every decoder, and no match at all for an encoder (`bert.encoder.layer…`).
          */
         fun toCheckpointName(name: String): String =
-            if (name.startsWith("base_model.model.model.")) {
-                "backbone.model." + name.removePrefix("base_model.model.model.")
+            if (name.startsWith("base_model.model.")) {
+                "backbone." + name.removePrefix("base_model.model.")
             } else {
                 name
             }

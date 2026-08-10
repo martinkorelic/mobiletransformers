@@ -82,11 +82,27 @@ TEST(LayerName, CandidateKeysAreDeduplicated) {
 }
 
 // Guards the cross-language contract: these literals must equal Python's in
-// artifacts/handoff_map.py. They describe one wire format (weight_handoff_map.json).
+// artifacts/checkpoint_names.py (and packages/WeightHandoffMap.kt). They describe one wire format
+// (weight_handoff_map.json).
 TEST(LayerName, WrapperVocabularyMatchesThePythonTwin) {
-    EXPECT_STREQ(layer_name::kRawPrefix, "base_model.model.model.");
-    EXPECT_STREQ(layer_name::kCheckpointPrefix, "backbone.model.");
+    EXPECT_STREQ(layer_name::kRawPrefix, "base_model.model.");
+    EXPECT_STREQ(layer_name::kCheckpointPrefix, "backbone.");
     EXPECT_STREQ(layer_name::kBaseLayerSuffix, ".base_layer");
+}
+
+// #33: the pair is the two WRAPPERS, not a decoder's own first module. Spelled
+// `base_model.model.model.` -> `backbone.model.` it is identical for every decoder (asserted above via
+// kRaw/kCheckpoint) and converts NOTHING for an encoder, whose path is `bert.encoder.layer…`.
+TEST(LayerName, ConvertsAnEncoderPathAsWellAsADecoderPath) {
+    const std::string encoder_raw = "base_model.model.bert.encoder.layer.0.attention.self.query";
+    const std::string encoder_ckpt = "backbone.bert.encoder.layer.0.attention.self.query";
+
+    EXPECT_EQ(layer_name::to_checkpoint(encoder_raw), encoder_ckpt);
+    EXPECT_EQ(layer_name::to_raw(encoder_ckpt), encoder_raw);
+    EXPECT_EQ(layer_name::to_checkpoint(kRaw), kCheckpoint);  // decoder mapping unchanged
+    // checkpoint_weight_param takes a name already in checkpoint space — it only adds the suffix.
+    EXPECT_EQ(layer_name::checkpoint_weight_param(layer_name::to_checkpoint(encoder_raw)),
+              "backbone.bert.encoder.layer.0.attention.self.query.base_layer.weight");
 }
 
 }  // namespace

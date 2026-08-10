@@ -30,8 +30,10 @@ class ConversationResetTest {
     @Test
     fun threeSequentialPromptsEachEmitTheRequestedTokens() = runBlocking {
         val root = DeviceModel.requireCacheRoot()
+        val repoId = DeviceModel.repoId(root)
+        DeviceModel.requireDecoder(root, repoId)
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
-        val model = MobileTransformers.fromPretrained(ctx, DeviceModel.repoId(root), cacheDir = root.absolutePath)
+        val model = MobileTransformers.fromPretrained(ctx, repoId, cacheDir = root.absolutePath)
         try {
             val cfg = GenerationConfig(maxNewTokens = MAX_NEW_TOKENS)
             val prompts = listOf("Name a color.", "Name an animal.", "Name a country.")
@@ -67,6 +69,7 @@ class ConversationResetTest {
         val root = DeviceModel.requireCacheRoot()
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         val repoId = DeviceModel.repoId(root)
+        DeviceModel.requireDecoder(root, repoId)
         // SamplingConfig defaults to GREEDY, so this is deterministic without spelling it out.
         val cfg = GenerationConfig(maxNewTokens = MAX_NEW_TOKENS)
 

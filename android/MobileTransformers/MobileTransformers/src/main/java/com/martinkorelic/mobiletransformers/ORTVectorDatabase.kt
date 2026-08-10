@@ -3,6 +3,7 @@ package com.martinkorelic.mobiletransformers
 import android.content.Context
 import android.util.Log
 import com.martinkorelic.mobiletransformers.entity.MyObjectBox
+import com.martinkorelic.mobiletransformers.packages.PackagePaths
 import com.martinkorelic.mobiletransformers.entity.VectorEntity1024
 import com.martinkorelic.mobiletransformers.entity.VectorEntity1024_
 import com.martinkorelic.mobiletransformers.entity.VectorEntity256
@@ -80,7 +81,8 @@ class ORTVectorDatabase private constructor(context: Context, cacheDir : String,
         // Initialize ObjectBox
         boxStore = MyObjectBox.builder()
             .androidContext(context)
-            .directory(File("$cacheDir/$modelName/embedding/database"))
+            // G2: the store lives INSIDE the embedding stage; resolve the stage, then the sub-path.
+            .directory(PackagePaths.forCache(cacheDir, modelName).embeddingDatabase)
             .build()
 
         // Initialize only the box we need based on dimensions

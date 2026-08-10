@@ -56,6 +56,7 @@ class MemoryRssTest {
     private fun runTable(engine: InferenceEngine): Unit = runBlocking {
         val root = DeviceModel.requireCacheRoot()
         val repoId = DeviceModel.repoId(root)
+        DeviceModel.requireDecoder(root, repoId)
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         assumeTrue("RSS probe unavailable (/proc/self/status unreadable)", MemoryProbe.currentRssKb() > 0)
 
@@ -123,6 +124,7 @@ class MemoryRssTest {
     fun genAiFourPointTable() {
         val root = DeviceModel.requireCacheRoot()
         val repoId = DeviceModel.repoId(root)
+        DeviceModel.requireDecoder(root, repoId)
         assumeTrue(
             "package has no genai_config.json",
             File(root, "$repoId/inference/genai_config.json").isFile,

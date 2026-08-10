@@ -8,6 +8,7 @@ import numpy as np
 import onnxruntime as ort
 import yaml
 
+from mobiletransformers.artifacts.checkpoint_names import to_checkpoint_name
 from mobiletransformers.config.constants import (
     ARTIFACT_CONFIG,
     ARTIFACT_VALIDATOR_CONFIG,
@@ -115,8 +116,11 @@ class PEFTMergeValidator:
         for base_layer_name in self.peft_mapping.keys():
             base_params = {}
 
-            if base_layer_name.startswith("base_model.model.model."):
-                base_layer_name = base_layer_name.replace("base_model.model.model.", "backbone.model.")
+            # One owner for the peft->ORT wrapper rewrite. Spelled inline it read
+            # `base_model.model.model.` -> `backbone.model.`, i.e. a DECODER's first module baked
+            # into a rule that is really about the two WRAPPERS — so it converted nothing for an
+            # encoder (`bert.encoder.layer…`) and every layer then read as missing.
+            base_layer_name = to_checkpoint_name(base_layer_name)
 
             # Look for quantized weight, scale, and zero_point parameters
             weight_quantized_name = f"{base_layer_name}.weight_quantized"
@@ -151,9 +155,7 @@ class PEFTMergeValidator:
 
         self.adapter_params = {}
         for base_layer_name, adapter_names in self.peft_mapping.items():
-            # Prefix renaming if needed
-            if base_layer_name.startswith("base_model.model.model."):
-                base_layer_name = base_layer_name.replace("base_model.model.model.", "backbone.model.")
+            base_layer_name = to_checkpoint_name(base_layer_name)
 
             if base_layer_name not in self.adapter_params:
                 self.adapter_params[base_layer_name] = {}
@@ -164,16 +166,12 @@ class PEFTMergeValidator:
                     self.adapter_params[base_layer_name][input_name] = adapter_name
                     continue
 
-                # Prefix renaming if needed
-                if adapter_name.startswith("base_model.model.model."):
-                    adapter_name = adapter_name.replace("base_model.model.model.", "backbone.model.")
+                adapter_name = to_checkpoint_name(adapter_name)
 
                 adapter_name = f"{adapter_name}.weight"
                 # Iterate through parameter tuples: (param_name, Parameter object)
                 for param_name, param_obj in checkpoint_params:
-                    # Prefix renaming if needed
-                    if param_name.startswith("base_model.model.model."):
-                        param_name = param_name.replace("base_model.model.model.", "backbone.model.")
+                    param_name = to_checkpoint_name(param_name)
 
                     if adapter_name == param_name:
                         self.adapter_params[base_layer_name][input_name] = param_obj.data

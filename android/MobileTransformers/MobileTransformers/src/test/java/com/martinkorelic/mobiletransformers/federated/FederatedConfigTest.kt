@@ -3,6 +3,7 @@ package com.martinkorelic.mobiletransformers.federated
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeFalse
 import org.junit.Test
 
 /**
@@ -28,6 +29,13 @@ class FederatedConfigTest {
     fun aRoundIsRefusedWhenTheBuildHasNotEnabledFederation() {
         // FEDERATION_ENABLED is false in this build, so EVERY configuration is refused here — which is
         // itself the point: participation is opt-in at build time, not merely at runtime.
+        //
+        // A run with `-PmtFederationEnabled=true` (the device round-trip's invocation) legitimately has
+        // it on; this assertion is about the DEFAULT build, so it skips rather than failing there.
+        assumeFalse(
+            "this build was invoked with -PmtFederationEnabled=true",
+            FederatedConfig.FEDERATION_ENABLED,
+        )
         val error = assertThrows(FederatedConsentException::class.java) {
             config().requireRoundIsPermitted()
         }

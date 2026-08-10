@@ -400,6 +400,74 @@ def _effective_features(plan: ExportPlan, stage_dirs: dict[str, str | Path]) -> 
     return tuple(feats)
 
 
+#: Manifest provenance whose ONLY producer is the inference stage: (report key, optimum_config key).
+#:
+#: A train-capable package is necessarily built by two profile-scoped runs into one output dir (the
+#: onnxruntime profiles cannot co-install), and the second run rebuilds the manifest from
+#: ``_base_report``, which knows none of these. So `--stages training` used to publish a manifest with
+#: ``transformersVersion: null`` and ``architectures: []`` — the fields that would have attributed a
+#: pushed package to a transformers line, which is exactly what was needed to diagnose the 4.57 export
+#: regression.
+_INFERENCE_PROVENANCE: tuple[tuple[str, str], ...] = (
+    ("transformersVersion", "transformersVersion"),
+    ("optimumOnnxVersion", "optimumOnnxVersion"),
+    ("architectures", "modelType"),
+    ("trustRemoteCode", "trustRemoteCode"),
+)
+
+
+def _carry_forward_inference_provenance(
+    plan: ExportPlan, report: dict[str, Any], stage_dirs: dict[str, str | Path]
+) -> None:
+    """Recover inference-stage provenance from disk when this run did not build that stage.
+
+    Read back from ``inference/optimum_config.json`` — which the inference stage wrote next to the graph
+    it describes — rather than re-derived from the current environment: the training profile pins a
+    *different* transformers than the export profile, so re-deriving would stamp the manifest with a
+    version that never touched the graph. That is worse than the null it replaces.
+
+    Only unset-shaped values are filled, so a run that DID export inference always wins.
+    """
+    if "inference" in stage_dirs:
+        return
+    config_path = plan.output_dir / "variants" / plan.variant_id / "inference" / "optimum_config.json"
+    if not config_path.is_file():
+        return
+
+    import json as _json
+
+    from mobiletransformers.utils.logging import get_logger
+
+    try:
+        recorded = _json.loads(config_path.read_text())
+    except (OSError, ValueError):  # a corrupt side-car must not fail an otherwise-good export
+        return
+
+    for report_key, config_key in _INFERENCE_PROVENANCE:
+        value = recorded.get(config_key)
+        if value in (None, "", [], {}):
+            continue
+        if report_key == "architectures":
+            value = [value]
+        current = report.get(report_key)
+        if current in (None, "", [], {}) or (report_key == "trustRemoteCode" and current is False):
+            report[report_key] = value
+
+    # The task is NOT carried over — this run built its own stage for `plan.task`, and silently
+    # relabelling the package as the recorded task would hide a genuine disagreement. Say so instead:
+    # the training and packaging halves resolving different rows for one model is a defect this
+    # project has already paid for once.
+    recorded_task = recorded.get("task")
+    if recorded_task and recorded_task != report.get("selectedTask"):
+        get_logger(__name__).warning(
+            "export: this run's task %r differs from the task the shipped inference graph was "
+            "exported for (%r, from %s). The package now describes two different tasks.",
+            report.get("selectedTask"),
+            recorded_task,
+            config_path,
+        )
+
+
 def _default_builders() -> dict[str, StageBuilder]:
     return {
         "inference": _build_inference_stage,
@@ -1080,6 +1148,10 @@ def _full_export(
             raise ExportError("no export stage produced any output")
 
         import dataclasses
+
+        # Same reasoning as _effective_features below: a stage this run did not build still exists on
+        # disk, and what it recorded about itself must survive the manifest rebuild.
+        _carry_forward_inference_provenance(plan, report, stage_dirs)
 
         eff_features = _effective_features(plan, stage_dirs)
         # Honesty: don't advertise an engine the package can't serve. genai stays only if a genai_config

@@ -2,6 +2,7 @@ package com.martinkorelic.mobiletransformers
 
 import android.content.Context
 import com.martinkorelic.mobiletransformers.constants.SearchType
+import com.martinkorelic.mobiletransformers.packages.PackagePaths
 import com.martinkorelic.mobiletransformers.rag.DimensionRegistry
 import com.martinkorelic.mobiletransformers.rag.IngestionPipeline
 import com.martinkorelic.mobiletransformers.rag.IngestionProgress
@@ -19,9 +20,10 @@ class ORTRetriever(val cacheDir : String, val applicationContext: Context, var _
 
     private val LOG_TAG = "ORTRetriever"
 
-    // Tokenizer should be saved under cacheDir/modelName/embedding/tokenizer/...
-    // Embedding model saved under cacheDir/modelName/embedding/
-    // Vector database should be located under cacheDir/modelName/database/
+    // G2: every path below comes from PackagePaths. The comments this replaces described the layout in
+    // prose — and got it wrong: the vector store is at `embedding/database/`, not `database/`.
+    private val pkgPaths get() = PackagePaths.forCache(cacheDir, ragConfig.repoName)
+
     var embeddingTokenizer : ORTTokenizerNative? = null
     private var embeddingModel : Long = 0L
 
@@ -39,7 +41,7 @@ class ORTRetriever(val cacheDir : String, val applicationContext: Context, var _
 
         // Create tokenizer session if not initialized
         if (embeddingTokenizer == null) {
-            embeddingTokenizer = ORTTokenizerNative("$cacheDir/${ragConfig.repoName}/embedding/tokenizer")
+            embeddingTokenizer = ORTTokenizerNative(pkgPaths.embeddingTokenizer.absolutePath)
             embeddingTokenizer?.createTokenizerModel()
         }
 
@@ -53,7 +55,7 @@ class ORTRetriever(val cacheDir : String, val applicationContext: Context, var _
 
             // Create the embedding model
             embeddingModel = createEmbeddingSession(
-                "$cacheDir/${ragConfig.repoName}/embedding",
+                pkgPaths.embedding.absolutePath,
                 ragConfig.onnxName,
                 cacheDir,
                 ragConfig.deviceOptions.memoryConfigId,

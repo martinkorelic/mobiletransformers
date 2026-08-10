@@ -64,6 +64,7 @@ class PostMergeNumericsTest {
     fun mergedWeightsChangeTheComputationAndStayNumericallySane(): Unit = runBlocking {
         val root = DeviceModel.requireCacheRoot()
         val repoId = DeviceModel.repoId(root)
+        DeviceModel.requireDecoder(root, repoId)
         assumeTrue("package is not train-capable (no train/ stage)", DeviceModel.hasTraining(root, repoId))
 
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext

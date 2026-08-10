@@ -46,6 +46,21 @@ data class ORTTrainingConfig(
 
     val mergeWeightsAtEnd : Boolean = true,
     val saveModelAtEnd : Boolean = true,
+
+    /**
+     * Keep the native training session OPEN when the run finishes (#36).
+     *
+     * `startTraining` releases the session on every exit path — with the checkpoint saved when
+     * [saveModelAtEnd], without it otherwise. That is why every post-training step in this library
+     * (the merge, the checkpoint cadence) happens *inside* `startTraining`: afterwards there is no
+     * session left to act on. A federated round has to read the checkpoint it just trained, and
+     * re-opening a session to do so would reload ~176 MB to look at the ~2 MB of adapter factors it
+     * had in memory a moment earlier.
+     *
+     * Default `false`, so every existing caller keeps the release-at-end behaviour it was written
+     * against. When true, the caller owns the session and MUST call [destroySession] itself.
+     */
+    val keepSessionAtEnd : Boolean = false,
     val loadFromState : Boolean = true,
     val profileMetrics : Boolean = false,
 

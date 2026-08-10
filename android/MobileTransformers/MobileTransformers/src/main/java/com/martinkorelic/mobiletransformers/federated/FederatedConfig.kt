@@ -103,14 +103,18 @@ data class FederatedConfig(
     /** True when this configuration adds local differential-privacy noise. Recorded, not assumed. */
     val usesLocalDp: Boolean get() = dpNoiseMultiplier > 0.0
 
-    private companion object {
+    internal companion object {
         /**
          * Off by default, mirroring `BuildConfig.ADAPTER_UPLOAD_ENABLED` (#22).
          *
          * Read reflectively so this class stays unit-testable and so the library does not fail to link
          * in a consumer whose BuildConfig predates the field. Absent means **false** — the safe value.
+         *
+         * `internal` rather than private so the test suites can *read* the build's answer and skip
+         * accordingly (the device round-trip needs it on, the refusal tests need it off). Reading it is
+         * not a way to change it: the value comes from `BuildConfig`, i.e. from the Gradle invocation.
          */
-        val FEDERATION_ENABLED: Boolean = runCatching {
+        internal val FEDERATION_ENABLED: Boolean = runCatching {
             Class.forName("com.martinkorelic.mobiletransformers.BuildConfig")
                 .getField("FEDERATION_ENABLED")
                 .getBoolean(null)

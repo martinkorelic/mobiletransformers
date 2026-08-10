@@ -16,10 +16,12 @@ class FacadeLoadGenerateTest {
     @Test
     fun fromPretrainedGeneratesAndReportsInferenceFeature() = runBlocking {
         val root = DeviceModel.requireCacheRoot()
+        val repoId = DeviceModel.repoId(root)
+        DeviceModel.requireDecoder(root, repoId)
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         val model = MobileTransformers.fromPretrained(
             context = ctx,
-            repoId = DeviceModel.repoId(root),
+            repoId = repoId,
             cacheDir = root.absolutePath,
         )
         try {

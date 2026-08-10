@@ -69,6 +69,11 @@ class ScheduledTrainingDeviceTest {
         val root = DeviceModel.requireCacheRoot()
         val repoId = DeviceModel.repoId(root)
         assumeTrue("package is not train-capable (no train/ stage)", DeviceModel.hasTraining(root, repoId))
+        // The chunk fixture is a decoder objective (`cola`, text-to-text) and TrainingWorker requests
+        // the Inference feature, which an encoder package does not declare — it ships no
+        // `generation_config.json` because it has nothing to generate. #34's evidence is the decoder
+        // package; this skips rather than reporting a task mismatch as a scheduler failure.
+        DeviceModel.requireDecoder(root, repoId)
 
         val trainDir = File(root, "$repoId/train")
         val stateFile = File(trainDir, "training_state.json")

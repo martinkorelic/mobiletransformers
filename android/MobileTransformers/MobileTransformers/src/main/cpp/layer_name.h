@@ -47,11 +47,18 @@
  */
 namespace layer_name {
 
-/** peft's module wrapper, as it appears in `training_config.json`'s `peft_mapping` keys. */
-inline constexpr const char* kRawPrefix = "base_model.model.model.";
+/**
+ * peft's module wrapper, as it appears in `training_config.json`'s `peft_mapping` keys.
+ *
+ * The WRAPPER only — not the model's own first module. This pair used to read
+ * `base_model.model.model.` / `backbone.model.`, i.e. the same rule with a decoder's `model.layers…`
+ * baked in; it is identical for every decoder and matches nothing for an encoder, whose path is
+ * `bert.encoder.layer…`.
+ */
+inline constexpr const char* kRawPrefix = "base_model.model.";
 
 /** ORT's training-graph wrapper, as parameters are named inside the CheckpointState. */
-inline constexpr const char* kCheckpointPrefix = "backbone.model.";
+inline constexpr const char* kCheckpointPrefix = "backbone.";
 
 /** peft wraps the original `Linear` as `base_layer`; the adapters sit beside it. */
 inline constexpr const char* kBaseLayerSuffix = ".base_layer";
@@ -74,6 +81,8 @@ inline bool has_suffix(const std::string& name, const std::string& suffix) {
 /**
  * raw (`peft_mapping` key) -> checkpoint/merger space.
  * `base_model.model.model.layers.9.self_attn.q_proj` -> `backbone.model.layers.9.self_attn.q_proj`
+ * `base_model.model.bert.encoder.layer.9.attention.self.query` ->
+ *     `backbone.bert.encoder.layer.9.attention.self.query`
  */
 inline std::string to_checkpoint(const std::string& raw_name) {
     return replace_prefix(raw_name, kRawPrefix, kCheckpointPrefix);

@@ -27,6 +27,7 @@ class DualEngineParityTest {
     fun nativeAndGenaiAgreeOnGreedyFirstToken() = runBlocking {
         val root = DeviceModel.requireCacheRoot()
         val repoId = DeviceModel.repoId(root)
+        DeviceModel.requireDecoder(root, repoId)
         assumeTrue(
             "package has no genai_config.json",
             File(root, "$repoId/inference/genai_config.json").isFile,
@@ -78,6 +79,7 @@ class DualEngineParityTest {
     fun bothEnginesEmitTheSameOrderedCallbackSequence(): Unit = runBlocking {
         val root = DeviceModel.requireCacheRoot()
         val repoId = DeviceModel.repoId(root)
+        DeviceModel.requireDecoder(root, repoId)
         assumeTrue(
             "package has no genai_config.json",
             File(root, "$repoId/inference/genai_config.json").isFile,

@@ -18,6 +18,28 @@ interface CheckpointTensorStore {
 }
 
 /**
+ * The two directions a federated round moves adapter factors in.
+ *
+ * An interface for the same reason [CheckpointTensorStore] is one: the *ordering* of a round
+ * (import → train → export) is a correctness property that must be pinned on the host, and the real
+ * implementation refuses to run at all in a build where `FEDERATION_ENABLED` is false — which is every
+ * unit-test build, deliberately. Substituting this seam tests the sequence without weakening the gate.
+ */
+interface AdapterExchange {
+    /** Builds the record this device would upload. */
+    fun exportUpdate(
+        baseModelId: String,
+        packageRevision: String,
+        peftMethod: String,
+        round: Int,
+        metrics: Map<String, Double> = emptyMap(),
+    ): ByteArray
+
+    /** Writes an aggregated record into the local checkpoint; returns the number of tensors written. */
+    fun importAggregate(blob: ByteArray): Int
+}
+
+/**
  * One federated round's device-side half: **export** the local adapter factors, and **import** the
  * aggregated ones.
  *
@@ -33,7 +55,7 @@ class FederatedRound(
     private val config: FederatedConfig,
     private val handoff: WeightHandoffMap,
     private val store: CheckpointTensorStore,
-) {
+) : AdapterExchange {
 
     /**
      * Builds the record this device would send, applying the configured clipping first.
@@ -42,12 +64,12 @@ class FederatedRound(
      *   gate runs first on purpose: a round that reads the user's adapters and only then discovers it
      *   lacks consent has already done the thing consent governs.
      */
-    fun exportUpdate(
+    override fun exportUpdate(
         baseModelId: String,
         packageRevision: String,
         peftMethod: String,
         round: Int,
-        metrics: Map<String, Double> = emptyMap(),
+        metrics: Map<String, Double>,
     ): ByteArray {
         config.requireRoundIsPermitted()
 
@@ -72,7 +94,7 @@ class FederatedRound(
      *   layers updated and half not is a model that is neither the local one nor the global one — so a
      *   failure is reported rather than swallowed per tensor.
      */
-    fun importAggregate(blob: ByteArray): Int {
+    override fun importAggregate(blob: ByteArray): Int {
         config.requireRoundIsPermitted()
 
         val record = AdapterTensorCodec.deserialize(blob)

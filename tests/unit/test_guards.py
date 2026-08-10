@@ -262,17 +262,16 @@ STAGE_PATH_PATTERNS = (
 #: function that CONVERTS the hub layout into the flat cache layout. Something has to write each
 #: layout down once; everything else reads it through PackagePaths.
 #:
-#: The two RAG sites resolve the embedding store (`embedding/database/`), which lives INSIDE the
-#: embedding stage and is created at ingest time rather than shipped — a sub-path of a stage, not a
-#: stage. They are listed as debt rather than exempted because threading `PackagePaths` into the
-#: retriever is the right fix and should shrink these to zero.
+#: The two RAG sites were the recorded debt here, and they are now ZERO: `PackagePaths` grew
+#: `embeddingDatabase`/`embeddingTokenizer` (sub-paths of the embedding stage, created at ingest time
+#: rather than shipped) and `ORTRetriever`/`ORTVectorDatabase` resolve through it. The prose comment
+#: they carried had already drifted from the code — it described the store as `<repo>/database/` while
+#: the code wrote `<repo>/embedding/database/` — which is precisely the drift this guard exists for.
 _SDK = "android/MobileTransformers/MobileTransformers/src/main/java/com/martinkorelic/mobiletransformers"
 
 STAGE_PATH_ALLOWLIST: dict[str, int] = {
     "src/mobiletransformers/export/pipeline.py": 8,
     f"{_SDK}/packages/ModelPackageInstaller.kt": 1,
-    f"{_SDK}/ORTVectorDatabase.kt": 1,
-    f"{_SDK}/ORTRetriever.kt": 2,
 }
 
 #: Files that necessarily spell a layout: the resolvers themselves and their tests.

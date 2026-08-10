@@ -137,10 +137,10 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 
 | Done | # | Plan | Why here | Prerequisites |
 | --- | --- | --- | --- | --- |
-| [ ] | 33 | `04_code_plans/01_encoder_model_support.md` | Cheapest reach; arch-registry entry + codec/manifest reuse | 13, 7, 9 |
-| [ ] | 34 | `04_code_plans/02_training_scheduler_workmanager.md` | Charging-cycle training; WorkManager scheduling (the `LinearLRScheduler` state-persistence gap it was written against was closed in the 2026-08-07 remediation pass; `ORTScheduler.kt:161-162` records the fix) *(checkpoint: scheduled train→resume)* | 18, 17 |
-| [ ] | 35 | `04_code_plans/03_federated_codec_and_python_simulation.md` | Python Flower sim (Option A first) *(checkpoint: N-client sim)* | 8, 9, 13 | *(code-complete 2026-07-15: `federated/` `FederatedAdapterRecord` (codec-derived, pinned byte serialization = #36 golden), `flower_sim.py` pure `federated_average` + `cli federated simulate`; `flower_client.py` lazy-flwr. Tests `tests/federated/` (roundtrip/format-version/comm-size/fedavg/dropout + byte golden) run in core env. flwr kept OUT of the universal lock (out-of-band, like the ORT wheel). Box open pending the manual N-client ORT-`fit` sim + aggregated-adapter logits smoke — runnable under the ORT-training profile.)* |
-| [ ] | 36 | `04_code_plans/04_federated_android_gateway.md` | Android client + gateway (Option B) | 35, 34, 18 |
+| [x] | 33 | `04_code_plans/01_encoder_model_support.md` | Cheapest reach; arch-registry entry + codec/manifest reuse | 13, 7, 9 | *(ticked 2026-08-10: all three self-checks hold. The last one — the Android smoke — needed the encoder TRAINING export to work past `gen_artifacts`, which exposed a decoder-shaped constant in the peft→ORT name rewrite; see "The #33 encoder legs".)*
+| [x] | 34 | `04_code_plans/02_training_scheduler_workmanager.md` | Charging-cycle training; WorkManager scheduling (the `LinearLRScheduler` state-persistence gap it was written against was closed in the 2026-08-07 remediation pass; `ORTScheduler.kt:161-162` records the fix) *(checkpoint: scheduled train→resume)* | 18, 17 | *(ticked 2026-08-10 by the Tracking rule: all three self-checks were already `[x]` with the 2026-08-09 device evidence — chunk/checkpoint/resume proven on the S21 FE, thermal/energy trace captured. NO new work; the column had simply drifted behind the self-checks, the same way #9/#12/#18/#19/#30 had. The multi-hour/Doze leg is a recorded DEBT, and the plan's own DoD does not require it.)*
+| [x] | 35 | `04_code_plans/03_federated_codec_and_python_simulation.md` | Python Flower sim (Option A first) *(checkpoint: N-client sim)* | 8, 9, 13 | *(code-complete 2026-07-15: `federated/` `FederatedAdapterRecord` (codec-derived, pinned byte serialization = #36 golden), `flower_sim.py` pure `federated_average` + `cli federated simulate`; `flower_client.py` lazy-flwr. Tests `tests/federated/` (roundtrip/format-version/comm-size/fedavg/dropout + byte golden) run in core env. flwr kept OUT of the universal lock (out-of-band, like the ORT wheel). Box open pending the manual N-client ORT-`fit` sim + aggregated-adapter logits smoke — runnable under the ORT-training profile.)* | *(ticked 2026-08-10 by the Tracking rule: all three self-checks were already `[x]` — the 4-client x 3-round simulation passes with the aggregated-adapter eval loss falling monotonically 8.7353 -> 8.5258 -> 8.2579. NO new work.)*
+| [x] | 36 | `04_code_plans/04_federated_android_gateway.md` | Android client + gateway (Option B) | 35, 34, 18 | *(ticked 2026-08-10: the device round-trip passes on the S21 FE — export from a live checkpoint → `federated serve` → import back → the checkpoint moved and survived a reload. See "The #36 device round-trip". Found two real defects doing it.)*
 | [ ] | 37 | `04_code_plans/05_functiongemma_architecture_gate_and_intents.md` | Gemma-3 inference-graph as arch-registry entry + intents *(checkpoint: train→tool-call→intent)* | 11, 7, 9 |
 
 ## Per-plan completion self-checks
@@ -474,7 +474,7 @@ not-yet), `docs/PUBLIC_API.md` (Python `__all__` + CLI; Kotlin facade pending #1
 - [ ] Does the **full release gate** (CI green + AAR + consumer smoke + docs + tag) pass?
 
 ### #33 — Encoder-model support (`04_code_plans/01`)
-- [ ] Did the spike prove export + a train step + Android smoke + a metric for one small encoder? *(**the native binding the Android smoke needs landed 2026-08-09 — see "Training-input binding" below — but no encoder package has been built or pushed, so the smoke has NOT run and nothing is ticked for it.** host legs ALL PASS 2026-08-09 — export → `generate_artifacts` → 30 real train steps → a metric, on `sentence-transformers/all-MiniLM-L6-v2`: loss **0.6950 → 0.5433** (21.8%, monotonic) and **accuracy 0.250 → 1.000** on a separable 8-example set. Pinned by `tests/integration/test_encoder_training_gate.py` (4 tests, `ort-training-local` profile). The encoder **inference/embedding** path was already shipping as the RAG embedder. **Box stays open on the Android smoke only**, which is device-gated.)*
+- [x] Did the spike prove export + a train step + Android smoke + a metric for one small encoder? *(**ALL LEGS PASS 2026-08-10** — see "The #33 encoder legs" below. The Android smoke is `EncoderTrainStepDeviceTest` on the S21 FE (`SM-G990B` / Android 15 / arm64-v8a): 2 real steps over a `text-classification` package, finite losses `[0.7222, 0.7224]`, **24/24 adapter factors moved** in the ORT checkpoint. Getting there needed the encoder TRAINING export to work past `gen_artifacts` for the first time — it did not, and the reason was the layer-identity problem in a second namespace (below). host legs ALL PASS 2026-08-09 — export → `generate_artifacts` → 30 real train steps → a metric, on `sentence-transformers/all-MiniLM-L6-v2`: loss **0.6950 → 0.5433** (21.8%, monotonic) and **accuracy 0.250 → 1.000** on a separable 8-example set. Pinned by `tests/integration/test_encoder_training_gate.py` (4 tests, `ort-training-local` profile). The encoder **inference/embedding** path was already shipping as the RAG embedder.)*
 - [x] Is encoder support a `TASK_REGISTRY`/architecture-registry entry (no new `if/elif`, no KV-cache) (F3)? *(2026-08-09: `config/registry/task.py` — `TASK_REGISTRY`/`TaskSpec`/`get_task_spec` — now owns the auto-model class, the KV-cache kwargs, PEFT's `task_type` and the training-wrapper class. The three task-shaped branches in `export/training_export.py` are gone. It fixed two real defects on the way: PEFT's `task_type` was **hardcoded `"CAUSAL_LM"` at both LoRA call sites**, which mis-wraps any encoder, and `OnnxTrainerWrapper`'s forward signature was decoder-only, which is what an encoder export actually failed on inside optimum. 10 unit tests; decoder export verified byte-unchanged in its ONNX input names.)*
 - [x] Was MARS-transfer-to-encoder-linear-layers **verified**, not assumed? *(**VERIFIED 2026-08-09**, `tests/integration/test_mars_encoder_transfer.py` — 9 tests, no network, no HF token. See "MARS on encoder" below for what was actually wrong and how the assertions catch it.)*
 
@@ -1096,9 +1096,124 @@ its allowlist and dry-run default, and the differentiation gate. The architectur
 blocks them.
 
 ### #36 — Federated Android client & gateway (`04_code_plans/04`)
-- [ ] Are `exportTrainableTensors`/`importTrainableTensors` JNI added, and is the codec byte-identical to Python (golden test)? *(**Codec half DONE 2026-08-10; JNI half NOT started.** `federated/AdapterTensorCodec.kt` is byte-identical to `tests/federated/fixtures/federated_record.golden.bin` - asserted directly, and it passed on the first run. 11 codec tests. `packages/WeightHandoffMap.kt` was the concrete blocker: it modelled only the merged/load-side fields, so it could not describe the rank-r factors at all; it now reads schema **1.1** (`checkpointNames`, `adapterDtypes`, `adapterShapes`), carries the `ADAPTER_ROLE_ORDER` constant and a `toCheckpointName` twin of `checkpoint_names.py`, and `adapterTensorSpecs()` fails closed on a pre-1.1 package naming the re-export rather than falling back to merged weights. **The header is built by hand, not via Gson** - Python's `json.dumps(sort_keys=True)` uses `", "`/`": "` separators WITH spaces and sorts recursively, so a Gson-serialized header decodes fine and fails the golden. **JNI landed 2026-08-10** as `nativeExportCheckpointTensor` / `nativeImportCheckpointTensor` (first use of `Ort::CheckpointState::UpdateParameter` in this project), plus `federated/FederatedRound.kt` composing them with the codec and the consent gate. **Deviation from the plan doc, deliberate:** it names `exportTrainableTensors(session, handoffMapPath) -> ByteArray`, i.e. the whole record assembled in C++. These move BYTES only. Assembling the record natively would be a SECOND implementation of the exact format the cross-language golden exists to keep from drifting, and would need `handoff_io.h` extended plus a C++ JSON writer reproducing Python's `sort_keys` separators — two implementations of one wire format is the failure this project keeps paying for. So C++ moves tensor bytes, Kotlin owns the format, and order/naming/dtype still come from `weight_handoff_map.json`. Import reads the EXISTING parameter to learn shape/dtype rather than trusting the sender's description, and refuses on a byte-count mismatch instead of truncating. `CheckpointTensorStore` is an interface so clipping and name-matching are host-testable; 6 round tests. **`gateway.py` + `federated serve` landed 2026-08-10**, verified on the REAL `TRAIN=1` SmolLM2 package: two client records over its 120 declared adapter tensors, weights 1 and 3, aggregate to exactly `(1*1 + 3*3)/4 = 2.5` in every tensor; 1,868,857 B global record. 8 tests. It is the round STATE MACHINE, not a web server - blobs in, validated, averaged via the existing `federated_average`, global record out; transport stays the transport's problem, which is what lets the aggregation be tested without a socket. Enforced: tensors matched **by name, never by position** (a record serialized in reversed order still aggregates correctly - the #35 defect), a client whose record disagrees with the package is **dropped rather than coerced**, dropout completes the round over survivors, and `min_clients` makes it FAIL rather than publish an aggregate two devices decided. **Still missing: the device round-trip** (export on hardware -> gateway -> import back).)*
+- [x] Are `exportTrainableTensors`/`importTrainableTensors` JNI added, and is the codec byte-identical to Python (golden test)? *(**Codec half DONE 2026-08-10; JNI half NOT started.** `federated/AdapterTensorCodec.kt` is byte-identical to `tests/federated/fixtures/federated_record.golden.bin` - asserted directly, and it passed on the first run. 11 codec tests. `packages/WeightHandoffMap.kt` was the concrete blocker: it modelled only the merged/load-side fields, so it could not describe the rank-r factors at all; it now reads schema **1.1** (`checkpointNames`, `adapterDtypes`, `adapterShapes`), carries the `ADAPTER_ROLE_ORDER` constant and a `toCheckpointName` twin of `checkpoint_names.py`, and `adapterTensorSpecs()` fails closed on a pre-1.1 package naming the re-export rather than falling back to merged weights. **The header is built by hand, not via Gson** - Python's `json.dumps(sort_keys=True)` uses `", "`/`": "` separators WITH spaces and sorts recursively, so a Gson-serialized header decodes fine and fails the golden. **JNI landed 2026-08-10** as `nativeExportCheckpointTensor` / `nativeImportCheckpointTensor` (first use of `Ort::CheckpointState::UpdateParameter` in this project), plus `federated/FederatedRound.kt` composing them with the codec and the consent gate. **Deviation from the plan doc, deliberate:** it names `exportTrainableTensors(session, handoffMapPath) -> ByteArray`, i.e. the whole record assembled in C++. These move BYTES only. Assembling the record natively would be a SECOND implementation of the exact format the cross-language golden exists to keep from drifting, and would need `handoff_io.h` extended plus a C++ JSON writer reproducing Python's `sort_keys` separators — two implementations of one wire format is the failure this project keeps paying for. So C++ moves tensor bytes, Kotlin owns the format, and order/naming/dtype still come from `weight_handoff_map.json`. Import reads the EXISTING parameter to learn shape/dtype rather than trusting the sender's description, and refuses on a byte-count mismatch instead of truncating. `CheckpointTensorStore` is an interface so clipping and name-matching are host-testable; 6 round tests. **`gateway.py` + `federated serve` landed 2026-08-10**, verified on the REAL `TRAIN=1` SmolLM2 package: two client records over its 120 declared adapter tensors, weights 1 and 3, aggregate to exactly `(1*1 + 3*3)/4 = 2.5` in every tensor; 1,868,857 B global record. 8 tests. It is the round STATE MACHINE, not a web server - blobs in, validated, averaged via the existing `federated_average`, global record out; transport stays the transport's problem, which is what lets the aggregation be tested without a socket. Enforced: tensors matched **by name, never by position** (a record serialized in reversed order still aggregates correctly - the #35 defect), a client whose record disagrees with the package is **dropped rather than coerced**, dropout completes the round over survivors, and `min_clients` makes it FAIL rather than publish an aggregate two devices decided. **The device round-trip PASSES 2026-08-10** (S21 FE `SM-G990B` / Android 15 / arm64-v8a) — see "The #36 device round-trip" below.)*
 - [x] Are the privacy/security gates (consent, TLS, auth, clipping/DP) addressed before any real-user run? *(**2026-08-10**: `federated/FederatedConfig.kt` + `FederatedConsent`, 5 tests asserting the REFUSALS - a test that only checked the happy path would pass against a gate that did nothing. `requireRoundIsPermitted()` refuses: a build without `BuildConfig.FEDERATION_ENABLED` (off by default, mirroring #22's `ADAPTER_UPLOAD_ENABLED`), absent consent, a non-https gateway, a blank client-auth token, and a non-positive clip norm. Consent is a **record with a policy version and a timestamp, not a boolean**: consent given for an older policy does not carry over, because what is shared having changed means the user never saw it. `dpNoiseMultiplier = 0` is legitimate for a closed cohort but must be stated rather than defaulted, and `usesLocalDp` makes it visible. Before this a grep for "consent" across the repo returned nothing.)*
 - [x] Is it hard-gated on #35 passing first? *(**CORRECTION: #35 passed on 2026-08-09, so this gate is OPEN** - the rank-r vocabulary decision is settled and the byte golden is final, which is exactly what unblocked the codec above. The original note below was written mid-cycle when #35 had not yet passed; it is kept for its reasoning about WHY the gate existed, not for its verdict.)* *(original: **yes, and the gate is CLOSED as of 2026-08-09: #35 did not pass.** No #36 code was written this cycle, deliberately. The simulation now runs real client training but stops at the merged-vs-rank-r tensor-vocabulary conflict, and that conflict decides #36's wire format: if the record ever switches to rank-r adapters the checked-in `tests/fixtures/federated_record.golden.bin` — the whole point of which is to prove Kotlin/Python byte-identity — is regenerated. Building the Kotlin codec against a format that may change would be building the wrong thing.)*
+
+### The #33 encoder legs — ALL PASS 2026-08-10
+
+The 2026-08-09 pass proved the host training chain and 2026-08-10 made the *package* task-driven, but
+nothing had ever run the encoder TRAINING export past `gen_artifacts`: `test_encoder_training_gate.py`
+stops there and never calls `export_inference_package`. The first real attempt
+(`make device-package MODEL=sentence-transformers/all-MiniLM-L6-v2 TASK=text-classification TRAIN=1 RAG=0`)
+failed closed:
+
+```
+12 of 12 handoff entries name a checkpoint parameter that does not exist in checkpoint.
+  base_model.model.bert.encoder.layer.0.attention.self.query.base_layer.weight
+```
+
+**It is the layer-identity problem in a second namespace, and the check caught it exactly as designed.**
+The peft→ORT rewrite was spelled `base_model.model.model.` → `backbone.model.` in **four** places
+(`artifacts/checkpoint_names.py`, `cpp/layer_name.h`, `packages/WeightHandoffMap.kt`, and open-coded
+eight more times across `training/validators.py`, `training/merge_validators.py`). That is the real rule —
+strip peft's `base_model.model.` wrapper, prepend ORT's `backbone.` wrapper — with a **decoder's own
+first module (`model.layers…`) baked into it**. Identical output for every decoder; a silent no-op for
+BERT, whose path is `bert.encoder.layer…`. Ground truth from a real MiniLM export + its checkpoint:
+
+| space | spelling |
+| --- | --- |
+| `peft_mapping` key | `base_model.model.bert.encoder.layer.0.attention.self.query` |
+| ORT checkpoint | `backbone.bert.encoder.layer.0.attention.self.query.base_layer.weight` |
+
+Fixed by making the constants the **wrapper pair** (`base_model.model.` → `backbone.`), which is
+byte-identical for decoders (pinned by the existing tests, plus new encoder cases in
+`test_checkpoint_names.py`, `test_layer_name.cpp` and `CheckpointNameTest.kt`), and by routing the eight
+open-coded copies through `to_checkpoint_name` — the Python half of what `layer_name.h` already did for
+C++.
+
+**Results after the fix** (S21 FE `SM-G990B` / Android 15 / arm64-v8a, 2026-08-10):
+
+* the encoder exports end to end to a valid package — `features: [core, inference, train]`, 12 base
+  layers, 24 trainable factors, 73,728 trainable parameters, `architectures: ["bert"]`;
+* `EncoderTrainStepDeviceTest` runs 2 real steps on device through the per-sequence-label path
+  (`cola_cls` → `TaskPreprocessor.classLabel` → `perSequenceLabel` → unpadded collation), finite losses
+  `[0.72216845, 0.7223699]`, and **24/24 adapter factors moved** in the checkpoint — read back by name,
+  because a run that computes a loss and applies nothing is indistinguishable from outside;
+* device suite over the encoder package: **19 tests, 0 failures, 16 skipped**.
+
+**Those 16 skips are the second thing this leg needed.** A `text-classification` package is
+train-capable and installs identically to a decoder one, so every generation suite ran against it and
+failed at the first `generate()` on a graph with no token loop — a task mismatch reported as a defect.
+`DeviceModel.selectedTask` / `requireDecoder` read the task from the `optimum_config.json` the exporter
+writes beside the graph, and the decoder-only suites now skip naming it. An unknown task counts as a
+decoder, so packages predating that side-car behave exactly as before.
+
+**Worth knowing:** an encoder package reports **`Training` only** to the facade — no `ModelFeature.Inference`.
+That is correct rather than a gap: `isGenerationAvailable` keys off `generation_config.json`, which the
+task-driven packaging deliberately does not emit for a task with nothing to generate. An encoder's
+inference path is the embedding one (`generateEmbedding` / the RAG embedder), which already ships. It
+does mean `TrainingWorker` cannot run on an encoder package, which is why `ScheduledTrainingDeviceTest`
+skips there too.
+
+**The device cache holds one package at a time**, and it currently holds the ENCODER. The 15/15 decoder
+suite result below is from the SmolLM2 package; reproduce it with
+`make device-package MODEL=HuggingFaceTB/SmolLM2-135M-Instruct TRAIN=1`. `scripts/device_package.sh` now
+takes `PKG=` so the two host packages (`build/pkg`, `build/pkg-encoder`) can coexist — the gateway needs
+the host copy of whichever package the device holds.
+
+### The #36 device round-trip — PASSES 2026-08-10
+
+Export adapter factors from a **live ORT checkpoint on hardware** → aggregate on the host → import the
+aggregate back → prove the checkpoint moved. S21 FE `SM-G990B` / Android 15 / arm64-v8a, driven by
+`scripts/federated_round_device.sh` (`make device-federated`).
+
+The middle of a round is a host process, so the seam cannot be crossed inside one instrumentation run.
+The script drives both halves and the step between them; `FederatedRoundDeviceTest` is two phases, each
+`assumeTrue`-skipping without its input so an ordinary `make device-test` reports them as skipped:
+
+| leg | measured |
+| --- | --- |
+| round 0 — export from the live checkpoint | 120 factors, **1,868,879 B** (1.78 MiB) upload payload |
+| host — synthetic peer (×3) + `federated serve`, weights 1:3 | **1,868,857 B** global record |
+| round 1 — import | **120/120** tensors written, **120/120 changed value**, and every one byte-equal to the aggregate |
+| round 2 — import → bounded local train → export | **120/120** factors moved by training |
+| reload after `destroySession(save=true)` | **120/120** factors present — the checkpoint on DISK moved |
+
+`BuildConfig.FEDERATION_ENABLED` stays false by default; the runs pass `-PmtFederationEnabled=true`.
+A test-only bypass inside `FederatedConfig` would have weakened the gate it is testing, so the switch
+stays the build switch and the JVM refusal test `assumeFalse`s when the property is set.
+
+**Two real defects, both invisible to either half alone:**
+
+1. **`startTraining` released the session on every exit path** — with the checkpoint saved
+   (`saveModelAtEnd`) or without, but always. That is why every post-training step in this library (the
+   merge, the checkpoint cadence) happens *inside* `startTraining`: afterwards there is nothing left to
+   act on. The federated export reads the checkpoint it just trained, so the first device run failed
+   with "no live ORT training session". Fixed with `ORTTrainingConfig.keepSessionAtEnd` (default
+   `false`, so every existing caller is unchanged); when set, the save happens via `saveModel` and the
+   caller owns the teardown.
+2. **A bounded round applied no update at all.** `optimizerStep` fires only on
+   `globalStep % gradAccumSteps == 0` (and never at step 0), and `gradAccumSteps` defaults to **4** — so
+   a `maxSteps = 1` round accumulates gradients, never applies them, and uploads the global adapter back
+   **unchanged** while every callback reports a successful training run.
+
+The second was hidden by a *weak assertion* first, which is the more useful lesson: comparing round 2's
+export against the **aggregate** reported "60/120 factors moved" and passed. That 60 was **clipping**,
+not training — `exportUpdate` clips to `clipNorm`, so every tensor the clip rescaled counted as
+"trained". Comparing against round 1's **export** instead — same clipping on both sides — isolated
+training and reported **0/120**, which is what exposed the accumulation defect. With `gradAccumSteps = 1`
+it reports 120/120. *A federated round is exactly where a silently-empty update is invisible: the record
+is well-formed, the right size, and aggregates fine.*
+
+Also landed with it: `federated/NativeCheckpointTensorStore.kt` (the only binding of the JNI pair to
+`CheckpointTensorStore`), `federated/FederatedTrainingRepository.kt` (import → bounded local train →
+export, with the ordering asserted on the host over a substitutable `AdapterExchange`), and
+`scripts/federated_peer_record.py`. The peer is **explicitly synthetic**: one phone is available and
+`min_clients` is 2, and submitting the device's own record twice would produce an "aggregate"
+numerically identical to what the device already holds — an import that writes back what was already
+there cannot distinguish a working round from a no-op. So it proves the transport/aggregation/import
+seam, **not** multi-device convergence (that is #35's simulation, which trains real clients).
 
 ### #37 — FunctionGemma architecture gate & intents (`04_code_plans/05`) · checkpoint
 - [x] Did the architecture gate pass — Gemma-3 **inference**-graph export added as a registry entry? *(**GATE 1 PASSES 2026-08-09.** `google/gemma-3-270m` exports end to end through the normal front door and `mobiletransformers export --validate` produces a #13-valid package: 18 layers, canonical `logits` + 36 `present.N.key/value` + 36 `past_key_values.N.key/value`, optimum's own validation max-diff ~1e-4. It took a dependency fork AND a real registry defect fix — see "The #37 architecture gate" below. `inference_model_class` stays `None` by design: that field is the vendored GenAI-builder path, while the shipping inference export goes through optimum's `main_export`.)*
@@ -1187,6 +1302,26 @@ The `pyproject.toml` caps mirror upstream's own ceilings — they are **not** st
     mypy, breaking `make check`. Out-of-band like the ORT wheel: `pip install "flwr[simulation]"`.
 11. **The Android unit-test classpath has no `kotlin-reflect`** — `::class.members` throws
     `KotlinReflectionNotSupportedError`. Use behavioural assertions instead.
+12. **`uv run` re-syncs the environment to the lock BEFORE executing.** So `uv pip install
+    transformers==4.46.2 && uv run --extra export mobiletransformers export …` silently exports under
+    the locked **4.57.6**, and the pin you just set is gone. This invalidated the first attempt at the
+    #37 regression isolation — both "different" packages came out byte-identical with
+    `transformersVersion: 4.57.6`, which reads as "no difference found" rather than as a broken
+    experiment. For a deliberately-pinned leg, call `.venv/bin/python -m mobiletransformers.cli.main …`
+    directly. (Silver lining from the same run: the export is **deterministic** — identical inputs give
+    a byte-identical `model.onnx`, which is what makes graph diffing a usable technique here.)
+13. **The onnxruntime profile collision is reachable by hand.** `[tool.uv] conflicts` stops uv from
+    resolving them together, but running `uv sync --extra export` between two `TRAIN=1` device packages
+    leaves **both** `onnxruntime` and `onnxruntime-training` installed. The symptom names neither:
+    `ImportError: cannot import name 'PropagateCastOpsStrategy' from 'onnxruntime.capi._pybind_state'`.
+    Recover with `uv pip uninstall onnxruntime onnxruntime-training` then a clean profile sync.
+14. **Present is not usable, for `onnxruntime.training`.** The **public** onnxruntime wheel ships an
+    `onnxruntime/training/` directory, so `find_spec` finds it under the export profile even though
+    importing it dies (gotcha 13). Probe by importing what you actually need, not by looking for the
+    module — `export/pipeline.py::_training_available` was rewritten for exactly this.
+15. **`android.content.Intent` and `org.json.JSONObject` are stubbed in plain JVM unit tests**, and
+    `isReturnDefaultValues = false` makes the stubs **throw** rather than return null. Tests touching
+    either need `@RunWith(RobolectricTestRunner::class)`; Robolectric is already on the test classpath.
 
 ## Never touch the venv while an export is running
 
@@ -1339,6 +1474,21 @@ redistribution leaves `sum` alone.
 > sync.
 
 ## Device suite (S21 FE `SM-G990B` / Android 15 / arm64-v8a)
+
+> **The suite's result depends on WHICH package is installed, and the device cache holds one.** Two
+> recorded runs, both 0 failures:
+>
+> | package on device | result |
+> | --- | --- |
+> | `HuggingFaceTB/SmolLM2-135M-Instruct` `TRAIN=1 RAG=1` (decoder) | **15 / 15 pass**, 798.0 s — the table below |
+> | `sentence-transformers/all-MiniLM-L6-v2` `TASK=text-classification TRAIN=1` (encoder) | **19 tests, 0 failures, 16 skipped** — 2026-08-10 |
+>
+> The encoder run's 16 skips are the generation suites declining a graph with no token loop
+> (`DeviceModel.requireDecoder`), not missing coverage; the three that run are
+> `EncoderTrainStepDeviceTest`, `ObjectBoxParityTest` and `ExampleInstrumentedTest`. The two
+> `FederatedRoundDeviceTest` phases skip in both unless driven by
+> `scripts/federated_round_device.sh` (they need `-PmtFederationEnabled=true` and a pulled/pushed
+> record). **As of 2026-08-10 the device holds the ENCODER package.**
 
 **2026-08-10: 15 / 15 pass, 0 failures, 798.0 s.** Freshly exported and pushed `TRAIN=1 RAG=1`
 `HuggingFaceTB/SmolLM2-135M-Instruct` package, on the fix for the `transformers` regression.

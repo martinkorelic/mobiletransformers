@@ -1,6 +1,6 @@
 # Handoff — current cycle
 
-**Branch:** `restructure` · **Reset:** 2026-08-09 (end of the 2026-08-09 cycle)
+**Branch:** `restructure` · **Reset:** 2026-08-10 (end of the second 2026-08-10 cycle)
 
 This file is **only what the current cycle is doing**. It is deliberately short and gets rewritten each
 cycle.
@@ -19,26 +19,24 @@ cycle.
 
 ## Where the project stands
 
-**31 / 37 plans done · 102 / 111 self-check boxes.** Of the 9 unticked, **6 are Tier-3** (#33–#37),
-which the plan states never block v1.0.
+**35 / 37 plans done · 108 / 111 self-check boxes.** The two open plans are **#32 (licence-gated, not
+work)** and **#37**, whose one open box is the differentiation demo.
+
+**#33 and #36 both closed this cycle**, each with device evidence, and each found a real defect on the
+way (below). **No known defect is outstanding.**
 
 **Exactly one real blocker for v1.0: the licence.** CC-BY-NC-4.0 contradicts the consumable-AAR goal.
 It is a rights-holders decision (both authors in `CITATION.cff`), not engineering; the four sites are
-listed in `docs/RELEASE_CHECKLIST.md`. **The user confirmed 2026-08-09 that the second author has NOT
-agreed** — do not touch licence files, do not add SPDX headers. Flag it, nothing more. The other two
-open #32 boxes are the tag itself and the release gate that needs it.
+listed in `docs/RELEASE_CHECKLIST.md`. **Reconfirmed 2026-08-10 that the second author has NOT
+agreed** — do not touch licence files, do not add SPDX headers, do not set the `pyproject.toml` license
+expression. Flag it, nothing more. The other two open #32 boxes are the tag itself and the release gate
+that needs it.
 
-**Host gates (keep these green):**
+**Host gates (measured 2026-08-10, do not copy forward — re-measure):**
 
 ```
-Python 501 passed / 11 skipped · C++ 38 · Kotlin JVM 219 · guard 10 · parity OK · uv lock --check clean
+Python 514 passed / 11 skipped · C++ 39 · Kotlin JVM 227 · guard 7 · parity OK · uv lock --check clean
 ```
-
-> **Kotlin JVM was recorded as 168 and the tree has never produced that.** Counted 2026-08-10: HEAD
-> carries 153 `@Test` in `src/test`, plus 9 from the uncommitted scheduler work = **162** before this
-> cycle. The 168 was drift, of the same kind the `Done` column has shown three times. The number above
-> is measured (`build/test-results/testDebugUnitTest/*.xml`), not carried forward — re-measure it
-> rather than copying it.
 
 ```bash
 uv sync --frozen --group dev --python 3.10 && make check    # ALWAYS reset the profile first
@@ -46,150 +44,86 @@ make test-cpp
 cd android/MobileTransformers && JAVA_HOME=/opt/android-studio/jbr ./gradlew :MobileTransformers:testDebugUnitTest
 ```
 
-**Device suite** (S21 FE `SM-G990B` / Android 15 / arm64-v8a): see "Device suite" in the permanent
-section of `IMPLEMENTATION_ORDER.md` for the recorded table.
+> The previous handoff recorded **guard 10**; the tree produces **7** (`tests/unit/test_guards.py`).
+> That is the same drift the Kotlin figure showed. Read the real numbers from
+> `build/test-results/testDebugUnitTest/*.xml` and from the pytest summary; never carry a figure over.
 
-> ## ✅ SETTLED 2026-08-10: the `transformers` fork regression
->
-> The 13/14 device run's one failure is **root-caused and fixed in the consumer**; the fork stays.
->
-> ```
-> ConversationResetTest — inference step failed: ... Gather node.
-> Name:'/model/Gather_5'  indices element out of data bounds, idx=5 must be within [-5,4]
-> ```
->
-> **It was a short attention mask, not a position-index error.** `/model/Gather_5` exists **only** in
-> graphs exported by transformers >= 4.57 (proven by exporting the same model under both lines and
-> diffing: identical 63 inputs / 61 outputs, but two new `/model/Gather_*` nodes). It gathers the
-> *flattened* `attention_mask` at absolute positions derived from the cache length, so a mask shorter
-> than `cached + new` indexes past the end. 4.46.2 had no such node and tolerated the short mask — the
-> bookkeeping was already wrong, just unobserved.
->
-> Host reproduction against the real graph: `mask = past+new` passes (**with the old position ids
-> too**), `mask = past+new-1` fails with the exact device error.
->
-> Fixed structurally rather than by counting: `InferenceSessionCache::pastSequenceLength()` is now the
-> single authority on the cache length, `generateWithKVCache` fails closed naming all three numbers,
-> `resetConversation()` finally clears the **native** cache, and the planning moved to the ORT-free
-> `internal/runtime/GenerationInputs.kt` with 5 JVM tests pinning the turn boundary.
->
-> Full write-up + the graph diff: `IMPLEMENTATION_ORDER.md` → "The #37 architecture gate" → RESOLVED.
->
-> ⚠️ **Methodology note that cost the first attempt:** `uv pip install transformers==4.46.2` then
-> `uv run --extra export ...` silently exports under **4.57.6** — `uv run` re-syncs to the lock first.
-> Call `.venv/bin/python -m mobiletransformers.cli.main ...` directly for a pinned leg.
->
-> **Confirmed on device 2026-08-10: 15 / 15 pass, 0 failures, 798.0 s** on a freshly exported
-> `TRAIN=1 RAG=1` package. (15 rather than 14 because `ConversationResetTest` gained a second case;
-> both are now non-vacuous — the old one asserted `tokenCount >= 0`, true of every outcome.)
->
-> (The earlier two-failure run was package mutation, not regression — both tests pass here. That is
-> settled; do not re-investigate it.)
+**Device suite** (S21 FE `SM-G990B` / Android 15 / arm64-v8a) — the result depends on which package is
+installed, and the cache holds one:
+
+| package on device | result |
+| --- | --- |
+| SmolLM2-135M `TRAIN=1 RAG=1` (decoder) | 15 / 15 pass, 798.0 s |
+| all-MiniLM-L6-v2 `TASK=text-classification TRAIN=1` (encoder) | 19 tests, 0 failures, 16 skipped |
+
+**The device currently holds the ENCODER package.** Re-push the decoder one before any generation work:
+`make device-package MODEL=HuggingFaceTB/SmolLM2-135M-Instruct TRAIN=1`.
 
 ---
 
 ## What this cycle settled (do not redo these)
 
-- **The PEFT-target change is device-proven.** `q_proj,k_proj` → `q_proj,v_proj` needs no re-run.
-- **`TrainConvergence(pretrained-weights)` passes on hardware** — first ever run.
-- **MARS transfers to encoders** (#33 self-check 3). Six hardcoded decoder sites, fixed as registry
-  data (`ArchitectureSpec.projection_names`). Decoder mapping byte-identical.
-- **MARS's shared adapter actually trains now.** It was being quantized — and quantized means frozen —
-  on *every* architecture, so MARS was silently degraded to LoRA with a frozen random down-projection.
-  Rule: *a declared-trainable tensor is never quantized*. LoRA graphs byte-identical; a 30-step encoder
-  run moves 12/12 shared tensors, loss 17.4% vs 5.6% before.
-- **Training inputs bind by name** from the graph, not positionally (#33 B2 half). 8 googletests.
-- **#34's scheduler works on hardware** — chunk 1 `globalStep 0→2`, chunk 2 `2→4`, LR schedule
-  continued, thermal/energy trace captured.
-- **#35's simulation passes** — 4 clients × 3 rounds, aggregated-adapter eval loss 8.7353 → 8.5258 →
-  8.2579, payload 1.87 MB/round. Rank-r vocabulary implemented, byte golden regenerated, handoff-map
-  schema **1.1** (additive `adapterDtypes`/`adapterShapes`).
-- **#37's architecture gate passes** — `google/gemma-3-270m` exports to a #13-valid package. Needed an
-  export-profile-only `transformers` fork (`>=4.50`) and a real registry fix (the row bound the
-  **multimodal** `Gemma3OnnxConfig` to the **text-only** `Gemma3ForCausalLM`). **The fork has a cost
-  that was not anticipated — see the box at the top of this file.**
-- **Five new guards**, each verified to fail when its defect is restored: architecture literals outside
-  the registry, registry-vs-Optimum config bindings, declared-vs-realized trainable tensors, the
-  dependency fork collapsing, and the cumulative chunk budget.
+- **#36's device round-trip PASSES.** Export adapter factors from a live checkpoint on hardware →
+  `federated serve` on the host → import back → the checkpoint moved *and survived a reload*. 120
+  factors, **1.78 MiB** upload payload, every tensor byte-equal to the aggregate. Driven by
+  `scripts/federated_round_device.sh` (`make device-federated`). New production code:
+  `NativeCheckpointTensorStore`, `FederatedTrainingRepository`, `AdapterExchange`.
+  **Two real defects, both invisible to either half alone:**
+  1. **`startTraining` released the session on every exit path**, so nothing could read the checkpoint
+     it had just trained. Fixed with `ORTTrainingConfig.keepSessionAtEnd` (default false → every
+     existing caller unchanged).
+  2. **A bounded round applied no update at all**: `optimizerStep` fires on
+     `globalStep % gradAccumSteps == 0` and `gradAccumSteps` defaults to **4**, so a `maxSteps = 1`
+     round uploads the global adapter back unchanged while every callback reports success.
+  The second was hidden by a *weak assertion* — comparing the export against the aggregate counted
+  clipping as training and reported a comfortable "60/120 moved". Comparing against the previous
+  **export** (same clipping both sides) reported 0/120, which is what exposed it. Full write-up:
+  `IMPLEMENTATION_ORDER.md` → "The #36 device round-trip".
+- **#33's encoder legs ALL PASS**, including the Android smoke. The encoder TRAINING export had never
+  run past `gen_artifacts`, and it failed closed on the first try: **the peft→ORT name rewrite had a
+  decoder's own module baked into it** (`base_model.model.model.` → `backbone.model.` instead of the
+  wrapper pair `base_model.model.` → `backbone.`). Identical for every decoder, a silent no-op for
+  BERT. Fixed in all four mirrors + the eight open-coded Python copies, with encoder cases pinned in
+  Python, C++ and Kotlin tests. `EncoderTrainStepDeviceTest`: 2 real steps, finite losses,
+  **24/24 adapter factors moved**.
+- **The decoder-only device suites now skip on an encoder package** (`DeviceModel.requireDecoder`,
+  reading the task from `optimum_config.json`) instead of failing at a `generate()` the graph cannot
+  do. An unknown task counts as a decoder, so older packages behave exactly as before.
+- **Two standing debts closed.** `transformersVersion` (and `architectures`) are no longer dropped by
+  the `--stages training` re-export — `_carry_forward_inference_provenance` recovers them from the
+  `inference/optimum_config.json` the inference stage wrote, rather than re-deriving them under a
+  profile that pins a *different* transformers. And the stage-path guard's two RAG sites are **zero**:
+  `PackagePaths` grew `embeddingDatabase`/`embeddingTokenizer` and the retriever resolves through it.
 
 ---
 
-## This cycle's work, in order
+## What is left, in order
 
-### A. Settle the `transformers` fork regression (see the box at the top)
+### 1. #37 — the differentiation gate (self-check 3), the only engineering item
 
-Everything else in this list is optional until this is decided: it affects every package the repo
-exports today.
+Four of the five differentiators are in place; what is missing is **the demo wired end to end**:
+per-user action set → on-device fine-tune → validated tool call → dry-run intent.
 
-### B. #33 — task-driven package shape (DECIDED, not started)
+For FunctionGemma specifically it stays blocked by `ort-training-local`'s `transformers==4.46.2` — a
+**#2/#3 dependency decision, not a #37 one**, and floating that pin has broken `get_peft_model` before.
+The demo can be run on a trainable decoder plus the Gemma-3 inference graph.
 
-**Scope decision made: the general path, not the minimal one.** Stage layout, label contract, KV-cache
-presence and merger requirements become declared per task on `TaskSpec` rather than decoder-assumed, so
-a future objective (masked-LM, contrastive) is a registry row. Closes #33's last box on the way.
+Concretely, what a demo has to solve, and why it was not attempted this cycle:
 
-Starting points, in order:
+- it needs the **decoder** package back on the device (the cache holds the encoder now);
+- the assertion is **convergence-dependent**: a validated call means the model emitted JSON the
+  `FunctionCallValidator` accepts. A handful of LoRA steps on a 135M base will not do that, so the demo
+  needs enough steps on a small memorisable set (`agent/mobile_actions.py` generates it from the app's
+  own allowlist) — plan for a long device run, and use `gradAccumSteps = 1` (see above, or it trains
+  nothing);
+- a demo that "passes" by exercising the *refusal* path would show nothing. Assert on an accepted call
+  reaching `IntentBinder.dryRun`.
 
-1. `TaskSpec` already holds `label_shape`, `auto_model_class`, `model_init_kwargs`,
-   `quantization_exclude_layers`, `trainer_wrapper_class`. Extend it with the **package** facts: which
-   stages a task's package has, whether a KV cache exists, whether merger models are needed.
-2. `export/pipeline.py`'s `_full_export` assumes the decoder shape (inference graph with KV cache +
-   merger models + handoff map). Make those decisions read from the task spec.
-3. **The native side is already done** — `cpp/training_inputs.h` binds by name and handles the
-   encoder's `token_type_ids` + per-sequence `labels`. That half needs nothing.
-4. The Kotlin gap is `ORTDataCurator`, which builds **per-token** labels; classification needs one
-   label per sequence. This is the piece with no groundwork yet.
-5. Then `make device-package` for `sentence-transformers/all-MiniLM-L6-v2` and one ingest-free train
-   step on device.
+### 2. Decisions that are not engineering
 
-The #33 plan's DoD permits "one device step **or** a documented blocker" — if the package shape proves
-larger than it looks, record the blocker with evidence rather than half-migrating.
-
-### C. #36 — federated Android client & gateway (fully ungated)
-
-The vocabulary question is **answered and shipped**, so this is now plain work:
-
-- Mirror `tests/federated/fixtures/federated_record.golden.bin` **byte for byte** in Kotlin. The format
-  is a uint32 LE header length + UTF-8 JSON header (`tensors[].byteOffset`/`byteLength`) + concatenated
-  raw LE payloads in codec order.
-- Names/dtypes/shapes come from `weight_handoff_map.json` **schema 1.1** — `adapterDtypes` /
-  `adapterShapes` — so the Kotlin codec resolves them from data. **Do not infer shapes from the rank.**
-- Codec order is (entries sorted by canonical weight name) × `HandoffEntry.ADAPTER_ROLE_ORDER`.
-- Tensor names are the **ORT checkpoint parameter** names (`backbone.model…lora_A.lora.weight`), not
-  the PEFT module paths — that is the identity a client looks up.
-- JNI `exportTrainableTensors`/`importTrainableTensors` do not exist yet; 24 `extern "C"` entry points
-  are in `cpp/native-lib.cpp`.
-- **Privacy/security gates (consent, TLS, auth, clipping/DP) are a precondition to any real-user run**,
-  not a follow-up.
-- A package exported before schema 1.1 **fails closed** with a message naming the re-export. That is
-  intended; do not add a fallback to merged weights.
-
-### D. G2 — one package-path resolver (not started)
-
-The #35 simulation lost time to `<package>/train/` versus the manifest's `variants/<id>/train`, and the
-#34 worker needed the *flat cache* layout — two different layouts, both currently built by string
-concatenation. This is the layer-identity problem in a different namespace, and `cpp/layer_name.h`
-already shows how that class is solved structurally.
-
-The manifest declares `paths` and `select_variant()` returns them. What is missing is the rule that
-**no consumer builds a stage path by appending a string**, plus a guard enforcing it.
-`TrainingWorker.checkpointOnDisk` carries a comment marking the one place that currently knows the
-cache layout. Do this next time a package consumer is touched.
-
-### E. #37 — the remaining two self-checks
-
-The architecture gate no longer blocks them: `FunctionCallValidator` (allowlist + `validationRules`),
-`IntentBinder` (dry-run default, `startActivity` never called), and the differentiation gate.
-
-**On-device *training* of Gemma-3 is still blocked** by `ort-training-local`'s `transformers==4.46.2`,
-which is part of the ORT wheel's paired stack. That is a #2/#3 dependency decision, not a #37 one.
-Floating a pin in that block has broken `get_peft_model` before.
-
-### F. #34 — the multi-hour run (optional)
-
-Chunk/checkpoint/resume and the traces are proven. What is **not**: Doze deferral, the notification's
-appearance, and multi-hour behaviour under Android 16's tightened FGS quotas. Those are Android's
-behaviour rather than this library's, which is why the automated test drives chunks directly. Run it
-only if the release story needs it.
+- **CI provisioning** — either vendor the native deps to a runner, or formally define "CI green" in
+  `docs/RELEASE_CHECKLIST.md` as a recorded manual run. Today it is neither, which is the actual debt.
+- **The licence** — see the top of this file. Nothing to do until the rights holders decide.
 
 ---
 
@@ -197,26 +131,25 @@ only if the release story needs it.
 
 - **CI** — workflows are `workflow_dispatch`-only by choice and their native-dep provisioning is
   unresolved. "CI green" in `docs/RELEASE_CHECKLIST.md` means a recorded manual run, not a badge.
-- ~~**Post-merge numerical correctness on device**~~ — **CLOSED 2026-08-10**. `PostMergeNumericsTest`
-  passes on hardware and found three real bugs getting there (a dangling logits pointer on every
-  forward pass, a null-session release that killed whole instrumentation runs, and a training-profile
-  probe that answered the wrong question). See IMPLEMENTATION_ORDER "Post-merge numerical correctness".
+- **#34's multi-hour run** — a recorded DEBT, not work. Doze deferral, the notification's appearance,
+  and multi-hour behaviour under Android 16's FGS quotas remain unproven. They are Android's behaviour
+  rather than this library's, which is why the automated test drives chunks directly.
 - **Variant naming** — `cpu-int4` legitimately ships an fp32 inference graph, declared via the measured
   `inferenceGraphPrecision`. Renaming is a wire-contract change, deliberately not done.
-- **#34's multi-hour run** is a recorded DEBT, not work: Doze deferral, the notification's appearance,
-  and multi-hour behaviour under Android 16's FGS quotas remain unproven. They are Android's behaviour
-  rather than this library's, which is why the automated test drives chunks directly. Run it only if
-  the release story needs it.
 - **`inference/builder.py`** carries ~10 upstream-derived TODOs. Vendored GenAI builder; treat as
   upstream, and it is allow-listed in the architecture-literal guard for that reason.
-- ~~**`artifacts/validation.py`** hardcodes `replace("self_attn", "attn")`~~ — **CLOSED 2026-08-10.**
-  `ONNXModelGenerator` takes an `architecture_spec` and resolves the spelling through
-  `_attention_module_name()`; the entry is **removed** from the architecture-literal allow-list rather
-  than widened, so the guard now enforces it.
-- **`peft/ablation/layer.py`** — merging is genuinely unimplemented for ablation PEFT, and now
-  **fails closed**. `get_delta_weight` used to `pass` (return `None`), and PEFT's `merge()` adds that
-  delta to the base weight — so the merge completed "successfully" and wrote nothing, handing back an
-  untrained model reported as merged. It raises `NotImplementedError` naming the alternative.
+- **`peft/mapping.py` has two decoder-shaped prefix sites left, deliberately untouched.** One converts
+  `base_layer_name` into checkpoint space for the **MARS** mapping only (LoRA's mapping keeps raw keys),
+  so generalising it would change MARS's `peft_mapping` keys for encoders — and
+  `test_mars_encoder_transfer.py` passes today against the current shape. The other
+  (`module_name.replace(...)` with the result discarded) is **dead**, and load-bearing by being dead:
+  the loop below it works in raw space, so assigning it would break `relative_path`. Both want a
+  deliberate look with the MARS tests in hand, not a sweep.
+- **`trainableParameterCount` / `trainingParameterCount` never reach the manifest** — the training
+  stage reports them and `build_manifest` drops them (both the decoder and encoder packages read
+  `null`). `train/trainable_parameters.json` does carry the real number. Manifest field list is #14's.
+- **The stage-path guard carries 2 allow-listed sites**, both legitimate producers that write a layout
+  down once (`export/pipeline.py`, `ModelPackageInstaller.kt`). The RAG pair is gone.
 
 ## Cycle protocol
 
@@ -224,9 +157,10 @@ Follow `IMPLEMENTATION_ORDER.md` "How to execute a plan". For this repo specific
 
 1. **Reset the profile before `make check`** — `uv sync --frozen --group dev --python 3.10`. More
    "broken repo" reports have come from a leftover export/training venv than from any real defect.
-   This cycle also installed `flwr` and `pytest` out-of-band; the reset removes them.
+   `scripts/device_package.sh` leaves the tree on the training profile.
 2. **Flip a `Done` box only when the self-check holds**, with the evidence (device, OS, ABI, date)
-   inline. The column has drifted three times by ticking on intent.
-3. **Assert across the seam.** Every expensive defect here has been two halves each verified alone —
-   including three found this cycle.
+   inline.
+3. **Assert across the seam, and check the assertion can FAIL.** This cycle's most useful finding came
+   from tightening an assertion that was already passing: it was measuring clipping and calling it
+   training. Both device legs now compare against a self-calibrating baseline for that reason.
 4. **When you correct an earlier claim, correct it where the claim lives**, not only in a new entry.
