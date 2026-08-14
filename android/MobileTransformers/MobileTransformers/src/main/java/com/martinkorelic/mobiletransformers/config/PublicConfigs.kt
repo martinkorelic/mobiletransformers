@@ -97,7 +97,8 @@ data class DatasetConfig(
     val trainFile: String = "arc_e",
     /**
      * Which on-device preprocessor parses [trainFile] (`logiqa`, `boolq`, `mini_personalqa`,
-     * `mini_recommendation`, `cola`). `null` = whatever the installed package declares.
+     * `mini_recommendation`, `cola`, `cola_cls`, `mobile_actions`). `null` = whatever the installed
+     * package declares.
      *
      * The task belongs with the data, and the data is supplied by the caller: model packages
      * deliberately do not ship training sets. Leaving this unset on a package that declares nothing

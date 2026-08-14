@@ -1,93 +1,103 @@
 package com.martinkorelic.mobiletransformers.app.viewmodels
 
-import androidx.compose.runtime.MutableState
-import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
-import com.martinkorelic.mobiletransformers.ORTGenerationConfig
-import com.martinkorelic.mobiletransformers.ORTRagConfig
-import com.martinkorelic.mobiletransformers.ORTTrainingConfig
-import com.martinkorelic.mobiletransformers.repository.LLMRepository
+import com.martinkorelic.mobiletransformers.app.AppConfig
+import com.martinkorelic.mobiletransformers.config.DatasetConfig
+import com.martinkorelic.mobiletransformers.config.GenerationConfig
+import com.martinkorelic.mobiletransformers.config.RagConfig
+import com.martinkorelic.mobiletransformers.config.TrainConfig
+import com.martinkorelic.mobiletransformers.constants.SamplingMethod
+import com.martinkorelic.mobiletransformers.constants.SchedulerType
+import com.martinkorelic.mobiletransformers.constants.SearchType
+import kotlinx.coroutines.flow.StateFlow
 
-class ConfigurationViewModel(private val llmRepository: LLMRepository) : ViewModel() {
+/**
+ * The ~45 knobs, expressed through the **public** config types only.
+ *
+ * The old Configuration screen was 1,091 lines editing `ORTGenerationConfig`, `ORTTrainingConfig`,
+ * `ORTRagConfig`, `SamplingOptions`, `DeviceOptions` and `SchedulerConfig` directly. Everything it
+ * could express is reachable here through `GenerationConfig`/`TrainConfig`/`RagConfig`/`DatasetConfig`
+ * — which is the check this screen exists to perform. A knob that turned out to be unreachable would
+ * be a facade gap to record against #17/#19, not a licence to import an `ORT*` type.
+ */
+class ConfigurationViewModel : ViewModel() {
 
-    private val _generationConfig = mutableStateOf(llmRepository.generationConfig)
-    val generationConfig: MutableState<ORTGenerationConfig> = _generationConfig
+    val generation: StateFlow<GenerationConfig> = AppConfig.generation
+    val train: StateFlow<TrainConfig> = AppConfig.train
+    val rag: StateFlow<RagConfig> = AppConfig.rag
+    val dataset: StateFlow<DatasetConfig> = AppConfig.dataset
 
-    private val _trainingConfig = mutableStateOf(llmRepository.trainingConfig)
-    val trainingConfig: MutableState<ORTTrainingConfig> = _trainingConfig
+    // --- generation ---------------------------------------------------------------------------
+    fun setMaxNewTokens(v: Int) = AppConfig.updateGeneration { it.copy(maxNewTokens = v.coerceAtLeast(1)) }
 
-    private val _ragConfig = mutableStateOf(llmRepository.ragConfig)
-    val ragConfig: MutableState<ORTRagConfig> = _ragConfig
+    fun setSamplingMethod(v: SamplingMethod) =
+        AppConfig.updateGeneration { it.copy(sampling = it.sampling.copy(method = v)) }
 
-    private val _ragEnabled = mutableStateOf(false)
-    val ragEnabled : MutableState<Boolean> = _ragEnabled
+    fun setTemperature(v: Float) =
+        AppConfig.updateGeneration { it.copy(sampling = it.sampling.copy(temperature = v)) }
 
-    val availableModels = llmRepository.availableModels
+    fun setTopK(v: Int) = AppConfig.updateGeneration { it.copy(sampling = it.sampling.copy(topK = v)) }
 
-    // Add availability states
-    private val _isRagAvailable = mutableStateOf(llmRepository.isRagAvailable)
-    val isRagAvailable: MutableState<Boolean> = _isRagAvailable
+    fun setTopP(v: Float) = AppConfig.updateGeneration { it.copy(sampling = it.sampling.copy(topP = v)) }
 
-    private val _isTrainingAvailable = mutableStateOf(llmRepository.isTrainingAvailable)
-    val isTrainingAvailable: MutableState<Boolean> = _isTrainingAvailable
+    fun setSeed(v: Int) = AppConfig.updateGeneration { it.copy(sampling = it.sampling.copy(seed = v)) }
 
-    private val _isGenerationAvailable = mutableStateOf(llmRepository.isGenerationAvailable)
-    val isGenerationAvailable: MutableState<Boolean> = _isGenerationAvailable
+    fun setSystemPrompt(v: String) =
+        AppConfig.updateGeneration { it.copy(systemPrompt = v.ifBlank { null }) }
 
-    init {
-        // Initialize availability and disable RAG if not available
-        updateAvailability()
-    }
+    fun setLoadMerged(v: Boolean) = AppConfig.updateGeneration { it.copy(loadMerged = v) }
 
-    private fun updateAvailability() {
-        _isRagAvailable.value = llmRepository.isRagAvailable
-        _isTrainingAvailable.value = llmRepository.isTrainingAvailable
-        _isGenerationAvailable.value = llmRepository.isGenerationAvailable
+    // --- training -----------------------------------------------------------------------------
+    fun setEpochs(v: Int) = AppConfig.updateTrain { it.copy(epochs = v.coerceAtLeast(1)) }
 
-        // Disable RAG if not available
-        if (!llmRepository.isRagAvailable) {
-            _ragEnabled.value = false
-        }
-    }
+    fun setBatchSize(v: Int) = AppConfig.updateTrain { it.copy(batchSize = v.coerceAtLeast(1)) }
 
-    fun updateGenerationConfig(config: ORTGenerationConfig) {
-        _generationConfig.value = config
-        llmRepository.generationConfig = config // Persist to repository
-    }
+    /**
+     * `maxSteps` is an **upper bound**, not a target: training also stops at the end of the epoch, so
+     * `rows / batchSize` wins when it is smaller. Measured the hard way on 2026-08-14 — a run asking
+     * for 120 steps took 54 because the dataset held 108 rows.
+     */
+    fun setMaxSteps(v: Int?) = AppConfig.updateTrain { it.copy(maxSteps = v) }
 
-    fun updateTrainingConfig(config: ORTTrainingConfig) {
-        _trainingConfig.value = config
-        llmRepository.trainingConfig = config // Persist to repository
-    }
+    /**
+     * The default is 4, and `optimizerStep` fires on `globalStep % gradAccumSteps == 0` — so a short
+     * bounded run at the default can complete, report success on every callback, and apply **no
+     * update at all**. Worth surfacing rather than burying.
+     */
+    fun setGradientAccumulationSteps(v: Int) =
+        AppConfig.updateTrain { it.copy(gradientAccumulationSteps = v.coerceAtLeast(1)) }
 
-    fun updateRagConfig(config: ORTRagConfig) {
-        _ragConfig.value = config
-        llmRepository.ragConfig = config // Persist to repository
-    }
+    fun setLearningRate(v: Float) = AppConfig.updateTrain { it.copy(learningRate = v) }
 
-    fun updateRagEnabled(enabled: Boolean) {
-        _ragEnabled.value = enabled
-    }
+    fun setScheduler(v: SchedulerType) = AppConfig.updateTrain { it.copy(scheduler = v) }
 
-    fun onGenerationModelChanged(modelName: String) {
-        // Reload configuration from repository when model changes
-        llmRepository.modelName = modelName
-        val newConfig = llmRepository.generationConfig.copy(repoName = modelName)
-        _generationConfig.value = newConfig
+    fun setWarmupSteps(v: Int) = AppConfig.updateTrain { it.copy(warmupSteps = v.coerceAtLeast(0)) }
 
-        val newRagConfig = llmRepository.ragConfig.copy(repoName = modelName)
-        _ragConfig.value = newRagConfig
+    fun setMergeAtEnd(v: Boolean) = AppConfig.updateTrain { it.copy(mergeAtEnd = v) }
 
-        updateAvailability()
-    }
+    fun setResumeFromState(v: Boolean) = AppConfig.updateTrain { it.copy(resumeFromState = v) }
 
-    fun onTrainingModelChanged(modelName: String) {
-        // Reload configuration from repository when model changes
-        llmRepository.modelName = modelName
-        val newConfig = llmRepository.trainingConfig.copy(repoName = modelName)
-        _trainingConfig.value = newConfig
+    // --- rag ----------------------------------------------------------------------------------
+    fun setTopKRag(v: Int) = AppConfig.updateRag { it.copy(topK = v.coerceAtLeast(1)) }
 
-        updateAvailability()
-    }
+    fun setSearchType(v: SearchType) = AppConfig.updateRag { it.copy(searchType = v) }
 
+    fun setMinScore(v: Double) = AppConfig.updateRag { it.copy(minScore = v) }
+
+    fun setChunkSize(v: Int) = AppConfig.updateRag { it.copy(chunkSize = v.coerceAtLeast(1)) }
+
+    fun setChunkOverlap(v: Int) = AppConfig.updateRag { it.copy(chunkOverlap = v.coerceAtLeast(0)) }
+
+    // --- dataset ------------------------------------------------------------------------------
+    fun setTrainFile(v: String) = AppConfig.updateDataset { it.copy(trainFile = v) }
+
+    fun setTask(v: String) = AppConfig.updateDataset { it.copy(task = v.ifBlank { null }) }
+
+    fun setMaxSequenceLength(v: Int) =
+        AppConfig.updateDataset { it.copy(maxSequenceLength = v.coerceAtLeast(1)) }
+
+    fun setMaxDatasetLength(v: Int) =
+        AppConfig.updateDataset { it.copy(maxDatasetLength = v.coerceAtLeast(1)) }
+
+    fun reset() = AppConfig.reset()
 }

@@ -10,6 +10,9 @@ import com.martinkorelic.mobiletransformers.config.HubConfig
 import com.martinkorelic.mobiletransformers.config.PeftConfig
 import com.martinkorelic.mobiletransformers.config.RagConfig
 import com.martinkorelic.mobiletransformers.config.TrainConfig
+import com.martinkorelic.mobiletransformers.federated.FederatedConfig
+import com.martinkorelic.mobiletransformers.federated.FederatedRoundResult
+import com.martinkorelic.mobiletransformers.federated.LocalRoundTraining
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
 import com.martinkorelic.mobiletransformers.rag.IngestionProgress
 import com.martinkorelic.mobiletransformers.rag.PromptAssembler
@@ -143,6 +146,36 @@ class MobileTransformerModel internal constructor(
             ToolCallResult.Rejected(raw = raw, reason = e.message ?: "rejected")
         }
     }
+
+    /**
+     * #35/#36: run **one** federated round on this device — import the cohort's global adapter, train
+     * locally under [localTraining]'s bounds, and export this device's update.
+     *
+     * Nothing is uploaded here: the round returns bytes and accepts bytes, so the transport (HTTPS to
+     * `federated serve`, or `adb` in a device test) stays the caller's choice. `config` is checked
+     * first and fails closed naming the missing protection — consent, TLS, auth, or the default-off
+     * `BuildConfig.FEDERATION_ENABLED` — before any tensor is read.
+     *
+     * ```kotlin
+     * val result = model.federatedRound(
+     *     config = FederatedConfig(gatewayUrl = "https://…", clientAuthToken = token,
+     *                              consent = FederatedConsent.GRANTED),
+     *     globalRecord = previousAggregate,   // null for round 0
+     *     roundNumber = 1,
+     *     localTraining = { round -> model.train(dataset, TrainConfig(maxSteps = 20)) },
+     * )
+     * upload(result.update)                   // result.payloadBytes is the #36 DoD measurement
+     * ```
+     */
+    suspend fun federatedRound(
+        config: FederatedConfig,
+        globalRecord: ByteArray?,
+        roundNumber: Int,
+        localTraining: LocalRoundTraining,
+        metrics: Map<String, Double> = emptyMap(),
+        train: Boolean = true,
+    ): FederatedRoundResult =
+        session.federatedRound(config, globalRecord, roundNumber, localTraining, metrics, train)
 
     fun close() = session.close()
 }

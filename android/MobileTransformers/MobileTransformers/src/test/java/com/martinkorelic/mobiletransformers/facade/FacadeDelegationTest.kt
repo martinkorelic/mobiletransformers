@@ -10,6 +10,9 @@ import com.martinkorelic.mobiletransformers.config.HubConfig
 import com.martinkorelic.mobiletransformers.config.PeftConfig
 import com.martinkorelic.mobiletransformers.config.RagConfig
 import com.martinkorelic.mobiletransformers.config.TrainConfig
+import com.martinkorelic.mobiletransformers.federated.FederatedConfig
+import com.martinkorelic.mobiletransformers.federated.FederatedRoundResult
+import com.martinkorelic.mobiletransformers.federated.LocalRoundTraining
 import com.martinkorelic.mobiletransformers.runtime.GenerationResult
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
 import com.martinkorelic.mobiletransformers.runtime.MergeResult
@@ -103,6 +106,23 @@ class FacadeDelegationTest {
             return PushResult(repoId)
         }
 
+        override suspend fun federatedRound(
+            config: FederatedConfig,
+            globalRecord: ByteArray?,
+            roundNumber: Int,
+            localTraining: LocalRoundTraining,
+            metrics: Map<String, Double>,
+            train: Boolean,
+        ): FederatedRoundResult {
+            calls += "federatedRound:$roundNumber:import=${globalRecord != null}:train=$train"
+            return FederatedRoundResult(
+                round = roundNumber,
+                importedTensors = if (globalRecord == null) 0 else 3,
+                update = byteArrayOf(1, 2, 3, 4),
+                trainedLocally = train,
+            )
+        }
+
         override fun close() {
             calls += "close"
         }
@@ -146,6 +166,32 @@ class FacadeDelegationTest {
         val model = MobileTransformerModel(fake, caps(), "test/repo")
         assertThrows(UnsupportedOperationException::class.java) { model.trainingJob() }
         assertEquals(listOf("trainingJob"), fake.calls)
+    }
+
+    /**
+     * #35/#36 was the one shipped capability with no facade door: `FederatedTrainingRepository.forSession`
+     * is `internal` and hand-assembly needs `NativeCheckpointTensorStore(trainer: ORTTrainerNative)`, so a
+     * facade-only app could not run a round at all. This pins that the door exists and that every
+     * argument reaches the session rather than being defaulted away en route.
+     */
+    @Test
+    fun federatedRoundIsReachableFromTheFacadeAndPassesItsArgumentsThrough() = runBlocking {
+        val fake = FakeSession(caps())
+        val model = MobileTransformerModel(fake, caps(), "test/repo")
+
+        val result = model.federatedRound(
+            config = FederatedConfig(gatewayUrl = "https://gw.example", clientAuthToken = "t"),
+            globalRecord = byteArrayOf(9),
+            roundNumber = 4,
+            localTraining = { },
+        )
+
+        assertEquals(4, result.round)
+        assertEquals(3, result.importedTensors)
+        assertEquals(4, result.payloadBytes)
+        assertTrue(result.trainedLocally)
+        // Round number, the presence of a global record and the train flag all had to survive the hop.
+        assertEquals(listOf("federatedRound:4:import=true:train=true"), fake.calls)
     }
 
     @Test

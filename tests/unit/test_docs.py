@@ -161,3 +161,95 @@ def test_every_doc_page_is_reachable_from_the_readme() -> None:
         p.name for p in DOCS.glob("*.md") if p.name not in exempt and f"docs/{p.name}" not in readme
     )
     assert not unlinked, f"not linked from README.md: {unlinked}"
+
+
+#: Types a Kotlin snippet may legitimately name without the SDK declaring them: Kotlin/Java stdlib,
+#: Android framework, coroutines, and the generated `BuildConfig`. Kept explicit rather than "skip
+#: anything we cannot find", which would make the guard pass on a typo.
+_COOKBOOK_EXTERNAL_TYPES = frozenset(
+    {
+        "Boolean",
+        "Byte",
+        "ByteArray",
+        "Double",
+        "Float",
+        "Int",
+        "List",
+        "Long",
+        "Map",
+        "Set",
+        "String",
+        "Unit",
+        "Array",
+        "Pair",
+        "Context",
+        "Intent",
+        "Log",
+        "File",
+        "System",
+        "BuildConfig",
+        "Exception",
+        "Throwable",
+    }
+)
+
+#: `object`/`companion` members and enum values are not declarations `_KOTLIN_DECL` can see; they are
+#: covered by `make parity` (enum wire values) or by the JVM suites that call them.
+_COOKBOOK_IGNORED_TOKENS = frozenset(
+    {
+        "GREEDY",
+        "NATIVE",
+        "GENAI",
+        "DEFAULT",
+        "Accepted",
+        "Rejected",
+        "Inference",
+        "Training",
+    }
+)
+
+
+def test_cookbook_snippets_only_name_kotlin_types_that_exist() -> None:
+    """`docs/COOKBOOK.md`'s snippets must not name a Kotlin type the facade does not declare.
+
+    The cookbook's whole value is that it can be pasted into a real app. A snippet naming a renamed or
+    deleted type is worse than no snippet, and this is exactly how `docs/RAG.md` rotted before the
+    Kotlin-facade guard above was added — nothing checked the code, only the prose links.
+
+    Scans ```kotlin fences (not the whole page), so prose may still discuss a type by name in the past
+    tense while the code stays honest.
+    """
+    if not _KOTLIN_FACADE_ROOT.is_dir():
+        pytest.skip("Android sources not present in this checkout")
+
+    page = DOCS / "COOKBOOK.md"
+    assert page.is_file(), "docs/COOKBOOK.md is missing"
+
+    declared: set[str] = set()
+    for source in _KOTLIN_FACADE_ROOT.rglob("*.kt"):
+        declared.update(_KOTLIN_DECL.findall(source.read_text(encoding="utf-8")))
+    assert declared, "no Kotlin declarations found — the guard would pass vacuously"
+
+    blocks = re.findall(r"```kotlin\n(.*?)```", page.read_text(encoding="utf-8"), re.DOTALL)
+    assert blocks, "COOKBOOK.md has no kotlin snippets — the guard would pass vacuously"
+
+    named: set[str] = set()
+    for block in blocks:
+        # Strip line comments and string literals: a repo id, an intent name or a prose comment is
+        # not a type reference, and treating one as such would make the guard fail on correct code.
+        code = re.sub(r"//.*", "", block)
+        code = re.sub(r'"[^"]*"', '""', code)
+        named.update(re.findall(r"\b([A-Z][A-Za-z0-9_]*)\b", code))
+
+    unknown = sorted(
+        name
+        for name in named
+        if name not in declared
+        and name not in _COOKBOOK_EXTERNAL_TYPES
+        and name not in _COOKBOOK_IGNORED_TOKENS
+    )
+    assert not unknown, (
+        f"docs/COOKBOOK.md names Kotlin types that do not exist: {unknown}. "
+        "Either the facade renamed them or the cookbook drifted — fix the snippet, because it is "
+        "meant to be copy-pasteable."
+    )

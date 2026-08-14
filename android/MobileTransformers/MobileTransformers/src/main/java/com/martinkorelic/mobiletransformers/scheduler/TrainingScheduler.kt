@@ -10,6 +10,9 @@ import androidx.work.workDataOf
 import com.martinkorelic.mobiletransformers.DatasetOptions
 import com.martinkorelic.mobiletransformers.ORTTrainingConfig
 import com.martinkorelic.mobiletransformers.SchedulerConfig
+import com.martinkorelic.mobiletransformers.config.DatasetConfig
+import com.martinkorelic.mobiletransformers.config.TrainConfig
+import com.martinkorelic.mobiletransformers.internal.config.toOrt
 import com.martinkorelic.mobiletransformers.packages.PackageFormat
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -177,6 +180,41 @@ object TrainingScheduler {
         }
         return enqueueChunk(context, repoId, cacheDir.absolutePath, config, training, chunk = 1)
     }
+
+    /**
+     * Schedule charging-cycle training from the **public** config types.
+     *
+     * #17/#19 gap found building the showcase app's Train screen: the only `schedule` overload took an
+     * `ORTTrainingConfig`, so #34's scheduler — which `RuntimeCapabilities.supportsScheduledTraining`
+     * advertises through the facade — could not be driven by a facade-only app at all. A capability the
+     * public API advertises has to be reachable from the public API.
+     *
+     * The `customPreprocess == null` precondition the other overload enforces is satisfied by
+     * construction here: [DatasetConfig] names a registered task rather than carrying a lambda, which
+     * is exactly what a chunk rebuilt from `Data` after process death needs.
+     *
+     * @param base the package's own training config, used for the fields `TrainConfig` does not carry
+     *   (`repoName`, `onnxName`). Pass `LLMRepository.trainingConfig`'s equivalent from the facade.
+     */
+    fun schedule(
+        context: Context,
+        repoId: String,
+        dataset: DatasetConfig,
+        training: TrainConfig = TrainConfig(),
+        base: ORTTrainingConfig = ORTTrainingConfig(repoName = repoId),
+        cacheDir: File = context.filesDir,
+        config: TrainingScheduleConfig = TrainingScheduleConfig(),
+    ): UUID =
+        schedule(
+            context = context,
+            repoId = repoId,
+            training = training.toOrt(base).copy(
+                datasetOptions = dataset.toOrt(),
+                taskName = dataset.task ?: base.taskName,
+            ),
+            cacheDir = cacheDir,
+            config = config,
+        )
 
     internal fun enqueueChunk(
         context: Context,

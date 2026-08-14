@@ -56,8 +56,18 @@ android {
         }
     }
 
-
-
+    testOptions {
+        unitTests {
+            // The showcase app's ViewModels hold pure state-mapping logic (empty states, disabled
+            // features, engine pickers) that must be provable without a device — the app module had
+            // no test source set at all before the facade rewrite.
+            isIncludeAndroidResources = true
+            // Matches the library module: stubbed android.* methods THROW rather than returning null,
+            // so a test that accidentally reaches Android fails loudly instead of asserting on a
+            // silent default. Anything genuinely needing org.json/Intent uses Robolectric.
+            isReturnDefaultValues = false
+        }
+    }
 }
 
 dependencies {
@@ -85,7 +95,13 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     debugImplementation(libs.androidx.ui.tooling)
 
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.kotlinx.coroutines.android)
+
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     debugImplementation(libs.androidx.ui.test.manifest)

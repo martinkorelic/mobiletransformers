@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
+#include <limits>
 #include <system_error>
 #include <android/log.h>
 #include <nlohmann/json.hpp>
@@ -134,11 +136,65 @@ size_t dtype_byte_size(ONNXTensorElementDataType t) {
 // Write the tensor's raw bytes (external-data layout) atomically: temp -> fsync -> rename, then a
 // sibling ".sha256". This matches the per-tensor .bin the inference graph references and the offline
 // exporter's checksum, so offline and device merges are byte-identical.
-bool write_raw_tensor_atomic(const std::string& final_path, const Ort::Value& tensor) {
+bool write_raw_tensor_atomic(const std::string& final_path, const Ort::Value& tensor,
+                             const std::vector<int64_t>& declared_shape = {}) {
     auto info = tensor.GetTensorTypeAndShapeInfo();
     size_t count = info.GetElementCount();
     size_t bytes = count * dtype_byte_size(info.GetElementType());
     const void* data = tensor.GetTensorData<uint8_t>();
+
+    // #37 ROOT CAUSE: the merged weight must be written in the INFERENCE graph's layout, which is the
+    // TRANSPOSE of the one the merger computes in.
+    //
+    // The merger works in checkpoint convention — `base_layer.weight` is a PyTorch `nn.Linear` weight,
+    // `[out_features, in_features]` — and the merger graph declares its `weight` input and
+    // `merged_weight` output the same way. The inference initializer that consumes the result is an
+    // ONNX `MatMul` right-hand side, `[in_features, out_features]`. Writing the merger's output raw
+    // therefore stored every merged weight TRANSPOSED.
+    //
+    // Proven on device 2026-08-14: after a merge whose delta was exactly zero (`adapter_B l2=0`,
+    // scale 1.0, correct shapes), `max|written - original.T| = 1.9e-09` — the written bytes were the
+    // transpose of the correct ones, to float round-trip precision. The model went from 4.65 nats to
+    // 15.45 on the same text, i.e. worse than uniform.
+    //
+    // Why nothing caught it:
+    //   * `q_proj` is square, so the shape never disagreed and no load-time check fired;
+    //   * `v_proj` is `[576,192]` vs `[192,576]` — the SAME element count, so the raw external-data
+    //     read succeeded too;
+    //   * L2 norm and absmax are transpose-INVARIANT, so every numeric probe in the project matched;
+    //   * `TrainMergeGenerateTest` asserts only that generation is non-empty, and
+    //     `PostMergeNumericsTest` compared two near-uniform cross-entropies over arbitrary token ids.
+    //
+    // NOTE for the owner of `artifacts/handoff_map.py`: this package declares
+    // `transposePolicy = "no_transpose"`, which describes what the code did and is contradicted by the
+    // measurement above. The policy field is therefore NOT used as the authority here; the transpose is
+    // applied and then VERIFIED against the map's declared on-disk shape, which fails closed. Whether
+    // the exporter should be emitting `already_transposed_for_inference` is a #8 decision, not one to
+    // make silently inside the merge.
+    std::vector<float> transposed;
+    auto shape = info.GetShape();
+    if (shape.size() == 2 && info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+        const int64_t rows = shape[0], cols = shape[1];
+        const float* src = tensor.GetTensorData<float>();
+        transposed.resize(static_cast<size_t>(rows) * static_cast<size_t>(cols));
+        for (int64_t r = 0; r < rows; ++r) {
+            for (int64_t c = 0; c < cols; ++c) {
+                transposed[static_cast<size_t>(c) * rows + r] = src[static_cast<size_t>(r) * cols + c];
+            }
+        }
+        // Fail closed when the transposed shape contradicts what the graph will read. For a square
+        // weight both orders satisfy this, which is exactly why the defect above survived — so the
+        // check is a backstop, not the mechanism.
+        if (declared_shape.size() == 2 &&
+            (declared_shape[0] != cols || declared_shape[1] != rows)) {
+            LOGE("merged tensor %s is [%lldx%lld]; transposed that is [%lldx%lld] but the handoff map "
+                 "declares [%lldx%lld] on disk. Refusing to write a weight the graph cannot read.",
+                 final_path.c_str(), (long long) rows, (long long) cols, (long long) cols,
+                 (long long) rows, (long long) declared_shape[0], (long long) declared_shape[1]);
+            return false;
+        }
+        data = transposed.data();
+    }
     {
         // Diagnostic: a merged tensor that does not match the handoff map's declared shape is rejected
         // at load time by WeightSessionCache, far from here. Name the shape at the point of writing.
@@ -375,17 +431,55 @@ bool WeightMerger::load_peft_mapping(const std::string& json_path) {
             return false;
         }
 
+        // #37: the merger graph's `alpha` input is a MULTIPLIER — the EFFECTIVE adapter scale, not the
+        // raw hyper-parameter. MARS supplies it per layer already divided (`MarsLayer.alpha =
+        // alpha / rank`), which is why MARS merges correctly. `create_lora_mapping`, by contrast,
+        // emits ONLY `adapter_A`/`adapter_B` — so for LoRA these two fields were never assigned, and
+        // `PeftMapping mapping;` (default-, not value-initialization) left the scalars INDETERMINATE.
+        // The merger therefore computed `base + <uninitialized float> * (B @ A)`.
+        //
+        // Measured on an S21 FE, 2026-08-14: pristine graph 4.65 nats on English, post-merge 15.55
+        // nats on the same text — above the 10.80 uniform-prediction floor, i.e. the merge left the
+        // model worse than random. It hid for months because every prior gate merged a 1- or 3-step
+        // adapter, where `B @ A` is ~0 and any multiplier leaves the graph ~unchanged; only a long run
+        // makes the delta large enough for the wrong scale to matter. An earlier incarnation of this
+        // same defect read the value through `std::map::operator[]`, which VALUE-initializes to 0.0 —
+        // so the merge was a silent no-op instead of silent corruption (see the note in
+        // `merge_and_export_weights`). The read was moved to a stack struct; the fact that LoRA never
+        // populates alpha at all was never addressed.
+        //
+        // The file's top-level `alpha`/`rank` are the authority for LoRA (`training_export.py` writes
+        // them beside `peft_mapping`). Fail closed rather than guessing: a wrong multiplier is silent
+        // corruption, which is precisely the failure mode this path keeps producing.
+        const float file_alpha =
+                j.contains("alpha") ? j["alpha"].get<float>() : std::numeric_limits<float>::quiet_NaN();
+        const int file_rank = j.contains("rank") ? j["rank"].get<int>() : 0;
+
         for (const auto& [base_layer_name, mapping_data] : j["peft_mapping"].items()) {
-            PeftMapping mapping;
+            // Value-initialized: `rank`/`alpha`/`adapter_index` are scalars with no default member
+            // initializer, so plain `PeftMapping mapping;` leaves them indeterminate.
+            PeftMapping mapping{};
 
             if (mapping_data.contains("adapter_B")) {
                 mapping.adapter_B = mapping_data["adapter_B"];
             }
             if (mapping_data.contains("rank")) {
                 mapping.rank = mapping_data["rank"];
+            } else if (file_rank > 0) {
+                mapping.rank = file_rank;
             }
             if (mapping_data.contains("alpha")) {
+                // MARS: already the effective scale. Left exactly as it was.
                 mapping.alpha = mapping_data["alpha"];
+            } else {
+                if (!std::isfinite(file_alpha) || file_rank <= 0) {
+                    LOGE("peft_mapping entry '%s' declares no 'alpha', and the file carries no usable "
+                         "top-level alpha/rank (alpha=%f rank=%d). Refusing to merge at a guessed "
+                         "scale — a wrong multiplier corrupts the weights silently.",
+                         base_layer_name.c_str(), file_alpha, file_rank);
+                    return false;
+                }
+                mapping.alpha = file_alpha / static_cast<float>(file_rank);
             }
             if (mapping_data.contains("shared_A")) {
                 mapping.shared_A = mapping_data["shared_A"];
@@ -401,7 +495,10 @@ bool WeightMerger::load_peft_mapping(const std::string& json_path) {
             }
 
             peft_mapping_[base_layer_name] = mapping;
-            LOGI("Loaded PEFT mapping for: %s", base_layer_name.c_str());
+            // The scale is logged because it is the value that decides whether the merge is correct,
+            // and it was previously unobservable — the old line said only that a mapping loaded.
+            LOGI("Loaded PEFT mapping for: %s (merge scale=%f, rank=%d)",
+                 base_layer_name.c_str(), mapping.alpha, mapping.rank);
         }
 
         LOGI("Successfully loaded %zu PEFT mappings", peft_mapping_.size());
@@ -741,6 +838,37 @@ bool WeightMerger::run_merger_model(MergerVariant variant, const std::string& ba
             input_tensors.push_back(std::move(alpha_tensor));
             input_names.push_back("alpha");
 
+            // #37 instrumentation, first merged layer only: the shapes and magnitudes actually fed to
+            // `base + scale * (B @ A)`. A merge that is the exact identity at B == 0 but ruinous at
+            // B != 0 is decided entirely by these tensors, and nothing logged them.
+            static bool logged_lora_inputs = false;
+            if (!logged_lora_inputs) {
+                logged_lora_inputs = true;
+                for (size_t i = 0; i < input_tensors.size(); ++i) {
+                    if (!input_tensors[i].IsTensor()) continue;
+                    auto info = input_tensors[i].GetTensorTypeAndShapeInfo();
+                    auto shape = info.GetShape();
+                    std::string dims;
+                    for (size_t d = 0; d < shape.size(); ++d) {
+                        dims += std::to_string(shape[d]);
+                        if (d + 1 < shape.size()) dims += "x";
+                    }
+                    double norm = 0.0, amax = 0.0;
+                    if (info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+                        const float* p = input_tensors[i].GetTensorData<float>();
+                        const size_t n = info.GetElementCount();
+                        for (size_t k = 0; k < n; ++k) {
+                            const double v = static_cast<double>(p[k]);
+                            norm += v * v;
+                            amax = std::max(amax, std::abs(v));
+                        }
+                        norm = std::sqrt(norm);
+                    }
+                    LOGI("MERGE-INPUT %s dims=[%s] count=%zu l2=%f absmax=%f",
+                         input_names[i], dims.c_str(), (size_t) info.GetElementCount(), norm, amax);
+                }
+            }
+
         } else if (variant == MergerVariant::LORA_Q) {
             // LoRA quantized merger inputs
             if (!base_params.weight_quantized) {
@@ -1048,7 +1176,9 @@ bool WeightMerger::save_merged_parameters(const std::string& output_directory) {
                     return;
                 }
                 std::string path = output_directory + "/" + loc->second;
-                if (write_raw_tensor_atomic(path, *val)) {
+                // Pass the map's declared on-disk shape so the write can verify the layout it produces
+                // is the one the inference graph will read (#37).
+                if (write_raw_tensor_atomic(path, *val, entry->shape_for(role))) {
                     LOGI("merged %s [%s] -> %s", layer_name.c_str(), role.c_str(), loc->second.c_str());
                 } else {
                     LOGE("failed writing merged %s [%s]", layer_name.c_str(), role.c_str());

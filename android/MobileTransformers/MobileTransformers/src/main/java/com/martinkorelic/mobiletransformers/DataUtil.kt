@@ -89,6 +89,35 @@ interface TaskPreprocessor {
      * When this returns non-null, [preprocess] is not consulted for the label; only its input text is.
      */
     fun classLabel(json: JSONObject): Int? = null
+
+    /**
+     * Whether this task's examples must be tokenized **the way `generate` will tokenize the prompt**
+     * at inference, rather than as bare text.
+     *
+     * #37. Declaring `true` makes the curator, for every row:
+     *  1. render the prompt through the package's chat template when it ships one — matching
+     *     `ORTGeneratorNative.generate`, which wraps its prompt via
+     *     [ORTConversationState.addUserMessage] whenever `tokenizer.chatTemplate` is non-null;
+     *  2. **prepend BOS**, which `generate` does for the first turn (`prependBos =
+     *     pastAttentionMaskLength == 0`) while `tokenize`'s own default is `false`;
+     *  3. terminate the completion with EOS, so the model has a stop signal instead of running to
+     *     `maxNewTokens`.
+     *
+     * (2) was a real, measured mismatch: training tokenized without BOS while every generation began
+     * with it. (1) is latent for packages whose `tokenizer_config.json` carries no `chat_template`
+     * key — SmolLM2's export puts the template in a sibling `chat_template.jinja` that
+     * `ORTTokenizerNative` does not read, so `chatTemplate` is null and *neither* side templates.
+     * That is why this is expressed as "match the generate path" rather than "apply the chat
+     * template": the two coincide only when a template is actually loaded.
+     *
+     * **This does not, on its own, make the #37 tool-call demo converge.** With BOS parity and EOS in
+     * place the run still collapses to a single repeated token at inference despite a training loss
+     * of ~0.006 — see the #37 self-check for where that investigation stands.
+     *
+     * Additive with a default of `false` for the same reason as [classLabel] — [TaskPreprocessor] is
+     * public API, and every existing task (`cola`, `boolq`, …) keeps its raw formatting untouched.
+     */
+    fun formatsPromptForGeneration(): Boolean = false
 }
 
 // Factory function using the interface
@@ -245,4 +274,12 @@ object MobileActionsPreprocessor : TaskPreprocessor {
         // generator bug rather than untrusted input, so it is not worth failing the whole run over.
         return prompt to completion
     }
+
+    /**
+     * #37: a tool call is produced by `MobileTransformerModel.generateToolCall`, which goes through
+     * the ordinary generate path. Its examples must therefore be tokenized the way that path
+     * tokenizes a prompt — BOS included — or the model is fitted to a token sequence it is never
+     * asked to continue.
+     */
+    override fun formatsPromptForGeneration(): Boolean = true
 }

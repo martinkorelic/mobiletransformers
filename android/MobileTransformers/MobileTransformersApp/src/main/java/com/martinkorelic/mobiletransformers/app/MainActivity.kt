@@ -1,172 +1,105 @@
 package com.martinkorelic.mobiletransformers.app
 
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-
-import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.style.TextAlign
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.ui.unit.dp
-import com.martinkorelic.mobiletransformers.app.databinding.ActivityMainBinding
-import com.martinkorelic.mobiletransformers.repository.InferenceRepository
-import com.martinkorelic.mobiletransformers.repository.LLMRepository
-import com.martinkorelic.mobiletransformers.repository.RagRepository
-import com.martinkorelic.mobiletransformers.repository.TrainingRepository
 import com.martinkorelic.mobiletransformers.app.ui.theme.AppTheme
 import com.martinkorelic.mobiletransformers.app.ui.theme.AppThemedContent
-import com.martinkorelic.mobiletransformers.app.viewmodels.ConfigurationViewModel
-import com.martinkorelic.mobiletransformers.app.viewmodels.InferenceViewModel
-import com.martinkorelic.mobiletransformers.app.viewmodels.TrainingViewModel
+import com.martinkorelic.mobiletransformers.app.views.ChatScreen
 import com.martinkorelic.mobiletransformers.app.views.ConfigurationScreen
-import com.martinkorelic.mobiletransformers.app.views.InferenceScreen
-import com.martinkorelic.mobiletransformers.app.views.TrainingScreen
+import com.martinkorelic.mobiletransformers.app.views.FederatedScreen
+import com.martinkorelic.mobiletransformers.app.views.ModelsScreen
+import com.martinkorelic.mobiletransformers.app.views.ToolCallScreen
+import com.martinkorelic.mobiletransformers.app.views.TrainScreen
 
+/**
+ * The MobileTransformers showcase app — **the reference example for the public SDK**.
+ *
+ * Every screen is a self-contained worked example of one capability, and every one of them talks to the
+ * library only through the public facade: `MobileTransformers.fromPretrained`,
+ * `MobileTransformerModel`, and the `config/` types. No `ORT*`, `*Native` or `*Repository` type appears
+ * anywhere in this module, and `tests/unit/test_guards.py::test_the_sample_app_uses_only_the_public_facade`
+ * fails the build if one does.
+ *
+ * That rule is the point of the app's existence. The previous version drove
+ * `LLMRepository`/`TrainingRepository`/`RagRepository`/`InferenceRepository` directly, which meant the
+ * public API #17/#19 shipped had never been exercised by anything — its ergonomics had never met a real
+ * screen, and there was no worked example of the interface every consumer is told to adopt. Building
+ * these six screens found six facade gaps, each fixed **in the facade** and recorded against #17/#19.
+ *
+ * Screen order is dependency order: Models first, because on a real device nothing else is reachable
+ * until a package is installed.
+ */
 class MainActivity : ComponentActivity() {
-
-    private val LOG_TAG = "MainActivity"
-
-    private lateinit var binding: ActivityMainBinding
-
-    // Creating training and inference repository
-    // Pick and play
-    private lateinit var llmRepository : LLMRepository
-    private lateinit var inferenceRepository : InferenceRepository
-    private lateinit var trainingRepository : TrainingRepository
-    private lateinit var ragRepository: RagRepository
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // To LLMRepository pass the application files directory to access models
-        llmRepository = LLMRepository(applicationContext, filesDir.absolutePath)
-        inferenceRepository = InferenceRepository(llmRepository)
-        trainingRepository = TrainingRepository(llmRepository)
-        ragRepository = RagRepository(llmRepository)
-
-        enableEdgeToEdge()
-
         setContent {
-            // Change theme when needed
-            val currentTheme by remember { mutableStateOf(AppTheme.FRI) }
-
-            AppThemedContent(theme = currentTheme) {
-                Surface (
-                    modifier = Modifier
-                        .fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    MainApp()
+            AppThemedContent(theme = AppTheme.BETTER) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    ShowcaseApp()
                 }
             }
         }
     }
+}
 
-    companion object {
-        // Used to load the 'mobiletransformers' library on application startup.
-        init {
-            System.loadLibrary("mobiletransformers")
-        }
-    }
+private enum class Destination(val label: String) {
+    Models("Models"),
+    Chat("Chat"),
+    Train("Train"),
+    ToolCalls("Tool calls"),
+    Federated("Federated"),
+    Configuration("Config"),
+}
 
-    @OptIn(ExperimentalMaterial3Api::class)
-    @Composable
-    fun MainApp() {
-        var selectedTab by remember { mutableStateOf(0) }
-        val tabs = listOf("Inference", "Training", "Configuration")
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ShowcaseApp() {
+    var destination by remember { mutableStateOf(Destination.Models) }
 
-        // Create ViewModels
-
-        val inferenceViewModel = remember { InferenceViewModel(llmRepository, inferenceRepository, ragRepository) }
-        val trainingViewModel = remember { TrainingViewModel(llmRepository, trainingRepository) }
-        val configurationViewModel = remember { ConfigurationViewModel(llmRepository) }
-
-        Column(modifier = Modifier
-            .fillMaxSize()) {
-            TopAppBar(
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.fri_logo),
-                            contentDescription = "App logo",
-                            modifier = Modifier
-                                .size(128.dp),
-                                //.size(48.dp)
-                        )
-                        Text(
-                            text = "MobileTransformers",
-                            //text = "Mobile Health Assistant",
-                            modifier = Modifier.fillMaxWidth(),
-                            textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.titleLarge,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                    }
-
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                )
-            )
-            TabRow(selectedTabIndex = selectedTab, contentColor = Color.White, containerColor = Color.White,
-                indicator = { tabPositions ->
-                    TabRowDefaults.Indicator(
-                        Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }) {
-                tabs.forEachIndexed { index, title ->
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("MobileTransformers") }) },
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            // Scrollable rather than a bottom bar: six destinations do not fit a NavigationBar, and
+            // dropping one would mean a shipped capability with no worked example.
+            ScrollableTabRow(selectedTabIndex = destination.ordinal, edgePadding = 8.dp) {
+                Destination.entries.forEach { d ->
                     Tab(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        text = { Text(title, color = MaterialTheme.colorScheme.primary) },
-                        selectedContentColor = MaterialTheme.colorScheme.primary,
-                        unselectedContentColor = MaterialTheme.colorScheme.primary
+                        selected = d == destination,
+                        onClick = { destination = d },
+                        text = { Text(d.label) },
                     )
                 }
             }
 
-            when (selectedTab) {
-                0 -> InferenceScreen(viewModel = inferenceViewModel, configurationViewModel = configurationViewModel)
-                1 -> TrainingScreen(viewModel = trainingViewModel)
-                2 -> ConfigurationScreen(viewModel = configurationViewModel)
+            when (destination) {
+                Destination.Models -> ModelsScreen(viewModel())
+                Destination.Chat -> ChatScreen(viewModel())
+                Destination.Train -> TrainScreen(viewModel())
+                Destination.ToolCalls -> ToolCallScreen(viewModel())
+                Destination.Federated -> FederatedScreen(viewModel())
+                Destination.Configuration -> ConfigurationScreen(viewModel())
             }
         }
     }
-
 }

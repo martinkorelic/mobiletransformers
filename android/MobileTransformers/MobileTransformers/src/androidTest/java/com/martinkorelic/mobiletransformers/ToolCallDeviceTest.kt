@@ -60,8 +60,18 @@ class ToolCallDeviceTest {
     private companion object {
         const val LOG_TAG = "ToolCallDeviceTest"
 
-        /** Long enough to memorise three phrasings; short enough for an instrumented run. */
+        /**
+         * Long enough to memorise three phrasings; short enough for an instrumented run.
+         *
+         * **`maxSteps` is an upper bound, not a target.** Training stops at the end of the epoch, so
+         * the steps actually taken are `rows / batchSize` when that is the smaller number. The first
+         * run asked for 120 and took 54 (108 rows / batch 2), which is why [REPEATS] and
+         * `maxDatasetLength` below are sized to put the epoch above this bound rather than under it.
+         */
         const val STEPS = 120
+
+        /** Repetitions of the 9 base pairs. 9 x 24 = 216 rows -> 108 steps at batchSize 2. */
+        const val REPEATS = 24
     }
 
     /**
@@ -106,7 +116,7 @@ class ToolCallDeviceTest {
         rows += "open wifi settings" to """{"actionName": "open_wifi_settings", "parameters": {}}"""
 
         // Repeated so a bounded number of steps sees each pair many times.
-        return (1..12).flatMap { rows }.joinToString("\n") { (prompt, completion) ->
+        return (1..REPEATS).flatMap { rows }.joinToString("\n") { (prompt, completion) ->
             org.json.JSONObject()
                 .put("prompt", prompt)
                 .put("completion", completion)
@@ -139,8 +149,12 @@ class ToolCallDeviceTest {
                 DatasetConfig(
                     trainFile = trainFile,
                     task = "mobile_actions",
-                    maxSequenceLength = 96,
-                    maxDatasetLength = 128,
+                    // The `mobile_actions` prompt is rendered through the chat template (the model is
+                    // queried that way), which adds the system turn and the ChatML markup — roughly
+                    // 40 tokens before the instruction. At 96 the rendered rows sat close enough to
+                    // the limit that `removeLongSamples` could silently shrink the dataset.
+                    maxSequenceLength = 160,
+                    maxDatasetLength = 256,
                     datasetBatchSize = 4,
                 ),
                 TrainConfig(
@@ -158,9 +172,14 @@ class ToolCallDeviceTest {
                 },
             )
 
+            // Sized against the epoch, not against 0: a row that overruns `maxSequenceLength` is
+            // dropped silently, so a shrinking dataset shows up here as a short run rather than as a
+            // failure at the end. 216 rows / batch 2 = 108 steps; anything under half of that means
+            // rows were dropped and the run below is not the one this test claims to be making.
             assertTrue(
-                "no per-step losses were reported — training cannot be shown to have done anything",
-                losses.size >= 6,
+                "only ${losses.size} steps ran — the dataset was smaller than declared, so rows were " +
+                    "dropped (likely maxSequenceLength) and the convergence claim below is unsupported",
+                losses.size >= 50,
             )
             val window = losses.size / 3
             val drop = (losses.take(window).average() - losses.takeLast(window).average()) /

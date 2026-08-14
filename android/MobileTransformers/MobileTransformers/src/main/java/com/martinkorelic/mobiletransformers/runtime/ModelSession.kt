@@ -9,6 +9,9 @@ import com.martinkorelic.mobiletransformers.config.HubConfig
 import com.martinkorelic.mobiletransformers.config.PeftConfig
 import com.martinkorelic.mobiletransformers.config.RagConfig
 import com.martinkorelic.mobiletransformers.config.TrainConfig
+import com.martinkorelic.mobiletransformers.federated.FederatedConfig
+import com.martinkorelic.mobiletransformers.federated.FederatedRoundResult
+import com.martinkorelic.mobiletransformers.federated.LocalRoundTraining
 import com.martinkorelic.mobiletransformers.rag.IngestionProgress
 import com.martinkorelic.mobiletransformers.rag.PromptStrategy
 import com.martinkorelic.mobiletransformers.training.TrainingJob
@@ -58,6 +61,24 @@ interface ModelSession {
 
     /** #19 surface; throws `NotImplementedFeatureException` until the #22 adapter push-back lands. */
     suspend fun pushAdapter(hubConfig: HubConfig, repoId: String): PushResult
+
+    /**
+     * #35/#36: run one federated round — import the global adapter, train locally, export the update.
+     *
+     * #17/#19 gap: `FederatedTrainingRepository.forSession` is `internal`, and assembling one by hand
+     * needs `FederatedRound` + `NativeCheckpointTensorStore(trainer: ORTTrainerNative)`. So federation
+     * was **entirely unreachable** from the public API — the only shipped capability with no facade
+     * door at all. Exposed here as one round in, one [FederatedRoundResult] out, so the caller never
+     * names a repository or a native handle.
+     */
+    suspend fun federatedRound(
+        config: FederatedConfig,
+        globalRecord: ByteArray?,
+        roundNumber: Int,
+        localTraining: LocalRoundTraining,
+        metrics: Map<String, Double> = emptyMap(),
+        train: Boolean = true,
+    ): FederatedRoundResult
 
     fun close()
 }

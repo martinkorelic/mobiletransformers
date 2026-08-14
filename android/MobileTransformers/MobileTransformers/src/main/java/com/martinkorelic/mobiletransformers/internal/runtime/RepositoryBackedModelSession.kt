@@ -16,8 +16,14 @@ import com.martinkorelic.mobiletransformers.config.HubConfig
 import com.martinkorelic.mobiletransformers.config.PeftConfig
 import com.martinkorelic.mobiletransformers.config.RagConfig
 import com.martinkorelic.mobiletransformers.config.TrainConfig
+import com.martinkorelic.mobiletransformers.federated.FederatedConfig
+import com.martinkorelic.mobiletransformers.federated.FederatedRoundResult
+import com.martinkorelic.mobiletransformers.federated.FederatedTrainingRepository
+import com.martinkorelic.mobiletransformers.federated.LocalRoundTraining
 import com.martinkorelic.mobiletransformers.hub.AdapterUploadDisabledException
 import com.martinkorelic.mobiletransformers.hub.AdapterUploader
+import com.martinkorelic.mobiletransformers.packages.PackagePaths
+import com.martinkorelic.mobiletransformers.packages.WeightHandoffMap
 import com.martinkorelic.mobiletransformers.internal.config.PeftSupport
 import com.martinkorelic.mobiletransformers.internal.config.toOrt
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
@@ -252,6 +258,52 @@ internal class RepositoryBackedModelSession(
             ?: throw NotImplementedFeatureException("pushAdapter (no cache dir)")
         AdapterUploader.prepareCard(cacheDir, repoId) // builds metadata + gate + card; fails closed
         throw NotImplementedFeatureException("pushAdapter upload (device leg)")
+    }
+
+    override suspend fun federatedRound(
+        config: FederatedConfig,
+        globalRecord: ByteArray?,
+        roundNumber: Int,
+        localTraining: LocalRoundTraining,
+        metrics: Map<String, Double>,
+        train: Boolean,
+    ): FederatedRoundResult {
+        // Fail closed, and say which precondition is missing: consent, TLS, auth and the default-off
+        // BuildConfig.FEDERATION_ENABLED flag are all checked here, BEFORE a native handle is touched
+        // or a single tensor is read.
+        config.requireRoundIsPermitted()
+
+        val trainer = repo.ortTrainerNative
+            ?: throw MissingArtifactException(
+                "a federated round needs a live training session; this package has no train/ stage " +
+                    "(installed features: ${capabilities.availableFeatures})",
+            )
+        val inferenceDir = inferencePackagePath
+            ?: PackagePaths.forCache(modelDir.parentFile, modelDir.name).inference.absolutePath
+        val handoffFile = File(inferenceDir, WeightHandoffMap.FILENAME)
+        if (!handoffFile.isFile) {
+            throw MissingArtifactException(
+                "federated rounds are keyed by ${WeightHandoffMap.FILENAME}, which is absent from " +
+                    "$inferenceDir — it is the authority on adapter tensor names and shapes for both " +
+                    "the device and the gateway, so a round without it would upload tensors neither " +
+                    "side can identify",
+            )
+        }
+        val handoff = WeightHandoffMap.load(handoffFile)
+
+        return FederatedTrainingRepository.forSession(
+            config = config,
+            handoff = handoff,
+            trainer = trainer,
+            localTraining = localTraining,
+            baseModelId = modelDir.name,
+            packageRevision = handoff.schemaVersion,
+        ).runRound(
+            globalRecord = globalRecord,
+            roundNumber = roundNumber,
+            metrics = metrics,
+            train = train,
+        )
     }
 
     override fun close() {

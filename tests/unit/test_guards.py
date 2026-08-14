@@ -327,3 +327,93 @@ def test_no_stage_path_concatenation() -> None:
     for path, allowed in STAGE_PATH_ALLOWLIST.items():
         actual = counts.get(path, 0)
         assert actual <= allowed, f"{path}: stage-path concatenation grew from {allowed} to {actual}"
+
+
+# --- #17/#19: the showcase app must use the public facade, nothing else -------------------------
+
+#: The sample app's Kotlin sources. `MobileTransformersApp` is the reference example every external
+#: consumer is pointed at, so anything it reaches for is, in practice, public API.
+_APP = "android/MobileTransformers/MobileTransformersApp/src/main"
+
+#: Library sources, used to DERIVE the banned set rather than hand-list it.
+_SDK_MAIN = f"{_SDK}"
+
+#: Files whose declarations are internal machinery by construction. A type declared in one of these
+#: is banned from app code no matter what it is called.
+#:
+#: Deriving from the declaring FILE is the point. The obvious guard — ban `ORT*`, `*Native`,
+#: `*Repository` by name — has a hole big enough to drive the old app through: it also imported
+#: `DeviceOptions`, `SamplingOptions`, `SchedulerConfig`, `InferenceProgress`, `TrainingProgress` and
+#: `RagResult`, none of which match any of those patterns, yet all six are declared inside
+#: `ORTGenerationConfig.kt` / `ORTTrainingConfig.kt` / `ORTProgress.kt` and exist only to build or
+#: receive an `ORT*` config. A name-based guard would have reported "migrated" with the app still
+#: wired to the engine. This cannot rot as new types are added to those files.
+_INTERNAL_DECL_FILE_GLOB = "ORT*.kt"
+
+#: Name patterns that are internal regardless of where they are declared.
+_INTERNAL_NAME_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*(Native|Repository)$")
+
+_KOTLIN_DECL_RE = re.compile(
+    r"\b(?:data class|sealed class|enum class|value class|abstract class|open class|class|interface|"
+    r"fun interface|object)\s+([A-Z][A-Za-z0-9_]*)"
+)
+
+
+def _banned_sdk_symbols() -> set[str]:
+    """Every library type the sample app must not import, derived from the library sources."""
+    sdk = REPO_ROOT / _SDK_MAIN
+    banned: set[str] = set()
+    for source in sdk.rglob("*.kt"):
+        declared = set(_KOTLIN_DECL_RE.findall(source.read_text(encoding="utf-8")))
+        # (1) anything declared in an ORT*.kt file, (2) anything *Native / *Repository anywhere.
+        if source.match(_INTERNAL_DECL_FILE_GLOB):
+            banned |= declared
+        banned |= {name for name in declared if _INTERNAL_NAME_RE.match(name)}
+    return banned
+
+
+def test_the_sample_app_uses_only_the_public_facade() -> None:
+    """`MobileTransformersApp` may not reach past the facade into the engine layer.
+
+    #17/#19 built a public SDK surface — `MobileTransformers.fromPretrained`,
+    `MobileTransformerModel`, the `config/` types — and then nothing exercised it: the app that ships
+    with the library drove `LLMRepository`/`TrainingRepository`/`RagRepository`/`InferenceRepository`
+    and the `ORT*` configs directly, so the ergonomics of the documented API had never met a real
+    screen and there was no worked example of the thing consumers are told to adopt.
+
+    This guard is what makes "migrated" checkable rather than claimed. It is deliberately a source
+    grep over imports: an app that cannot *name* an internal type cannot reach one.
+
+    Note the third rule — the `internal/` package. Kotlin's `internal` is module-scoped, and the app
+    is a separate Gradle module, so the compiler already stops it; the check is here so the intent is
+    stated in one place with the other two rather than depending on a module boundary staying put.
+    """
+    app = REPO_ROOT / _APP
+    if not app.is_dir():
+        pytest.skip("Android sample app not present in this checkout")
+
+    banned = _banned_sdk_symbols()
+    assert banned, "the banned set is empty — this guard would pass vacuously"
+
+    sources = sorted(app.rglob("*.kt"))
+    assert sources, f"no Kotlin sources under {_APP} — the guard would pass vacuously"
+
+    violations: list[str] = []
+    for source in sources:
+        rel = str(source.relative_to(REPO_ROOT))
+        for lineno, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if not stripped.startswith("import com.martinkorelic.mobiletransformers"):
+                continue
+            symbol = stripped.removeprefix("import ").split(" as ")[0].rsplit(".", 1)[-1]
+            if ".internal." in stripped:
+                violations.append(f"{rel}:{lineno}: {stripped}  (internal package)")
+            elif symbol in banned:
+                violations.append(f"{rel}:{lineno}: {stripped}  ({symbol} is engine-layer)")
+
+    assert not violations, (
+        "the sample app reaches past the public facade. Use `MobileTransformers.fromPretrained` and "
+        "the `config/` types instead; if the facade cannot express what the screen needs, FIX THE "
+        "FACADE and record it against #17/#19 — a reach-around is the debt reappearing under a new "
+        "name:\n" + "\n".join(violations)
+    )

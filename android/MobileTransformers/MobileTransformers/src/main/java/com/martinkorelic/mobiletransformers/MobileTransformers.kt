@@ -4,12 +4,16 @@ import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import com.martinkorelic.mobiletransformers.config.HubConfig
+import com.martinkorelic.mobiletransformers.hub.DownloadProgress
+import com.martinkorelic.mobiletransformers.hub.DownloadProgressListener
 import com.martinkorelic.mobiletransformers.hub.HubDownloader
 import com.martinkorelic.mobiletransformers.hub.HubResolver
+import com.martinkorelic.mobiletransformers.packages.CacheIndex
 import com.martinkorelic.mobiletransformers.internal.runtime.RepositoryBackedModelSession
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
 import com.martinkorelic.mobiletransformers.packages.PackageFormat
 import com.martinkorelic.mobiletransformers.repository.LLMRepository
+import com.martinkorelic.mobiletransformers.runtime.GenAiSupport
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
 import com.martinkorelic.mobiletransformers.runtime.RuntimeCapabilities
 import java.io.File
@@ -40,6 +44,7 @@ object MobileTransformers {
         features: Set<ModelFeature> = setOf(ModelFeature.Inference),
         engine: InferenceEngine = InferenceEngine.NATIVE,
         hubConfig: HubConfig? = null,
+        onDownloadProgress: DownloadProgressListener? = null,
     ): MobileTransformerModel {
         val sanitized = PackageFormat.sanitizeRepoId(repoId)
         val modelDir = File(cacheDir, sanitized)
@@ -65,6 +70,9 @@ object MobileTransformers {
                     totalMemMb = deviceMemoryMb(context),
                     endpoint = hubConfig?.endpoint ?: HubResolver.DEFAULT_ENDPOINT,
                     token = hubConfig?.token,
+                    onProgress = { done, total, path ->
+                        onDownloadProgress?.onProgress(DownloadProgress(done, total, path))
+                    },
                 )
             } catch (e: Exception) {
                 throw ModelNotInstalledException(
@@ -105,9 +113,18 @@ object MobileTransformers {
             )
         }
 
+        // #17/#19: what a picker may offer. Native is the floor; GenAI needs both the package
+        // side-car and the native probe — exactly ModelRuntimeFactory's two conditions.
+        val genaiInstalled = File(modelDir, "inference/genai_config.json").isFile
+        val availableEngines = buildSet {
+            add(InferenceEngine.NATIVE)
+            if (genaiInstalled && GenAiSupport.available()) add(InferenceEngine.GENAI)
+        }
+
         val capabilities =
             RuntimeCapabilities(
                 engine = resolvedEngine,
+                availableEngines = availableEngines,
                 supportsTraining = repo.isTrainingAvailable,
                 supportsMerge = repo.isTrainingAvailable,
                 supportsRag = repo.isRagAvailable,
@@ -127,6 +144,27 @@ object MobileTransformers {
             )
         return MobileTransformerModel(session, capabilities, repoId)
     }
+
+    /**
+     * The model packages already installed in [cacheDir], newest-agnostic and cheap enough to call
+     * from a screen's initial load.
+     *
+     * #17/#19 gap found building the showcase app: `CacheIndex.list` existed, but nothing on the
+     * public entry point exposed it, so an app could not answer "what do I already have?" — which is
+     * the first question a Models screen has to answer, and the reason the old sample app simply
+     * assumed an `adb push`ed package that no real user can produce.
+     *
+     * Returns an empty list when [cacheDir] does not exist yet: "nothing installed" is a normal
+     * first-run state, not an error.
+     */
+    @JvmStatic
+    fun installed(cacheDir: String): List<CacheIndex.InstalledPackage> =
+        CacheIndex.list(File(cacheDir))
+
+    /** Convenience overload using the same default [cacheDir] as [fromPretrained]. */
+    @JvmStatic
+    fun installed(context: Context): List<CacheIndex.InstalledPackage> =
+        installed(context.filesDir.absolutePath)
 
     /** Total device RAM in MB, for the #13 `recommendedDeviceMemoryMb` filter. Null when unavailable. */
     private fun deviceMemoryMb(context: Context): Int? =

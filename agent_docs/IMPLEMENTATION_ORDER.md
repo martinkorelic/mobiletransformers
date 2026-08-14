@@ -355,6 +355,29 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 
 **Code-complete 2026-07-15.** 13 JVM tests (config round-trip == `ORT*Config` defaults, feature/engine semantics, manifest variant-select, facade→session delegation via a hand-written fake). Box open pending the device load→generate checkpoint.
 
+### Six facade gaps found by the app rewrite — all fixed IN the facade (2026-08-14)
+
+The showcase app was rewritten onto the public facade (see below). Driving six real screens through it
+found six places where the facade could not express what a screen needed. **Each was fixed in the
+facade, not worked around** — a reach-around would have been the same debt under a new name. This is
+the return on the rewrite: the API had never met a real screen, and every one of these had been
+invisible for that reason.
+
+| # | gap | fix |
+| --- | --- | --- |
+| 1 | `fromPretrained` called `HubDownloader.downloadAndInstall` with the default no-op `onProgress`, so a multi-hundred-MB first-run download was **invisible** to any facade-only caller | `onDownloadProgress: DownloadProgressListener?` parameter + a named `DownloadProgress` type (`filesDone`/`filesTotal`/`path`/`fraction`, the last `null` until the plan resolves) |
+| 2 | no way to answer "what is already installed?" — `CacheIndex.list` existed but nothing on the entry point exposed it | `MobileTransformers.installed(cacheDir)` / `installed(context)` |
+| 3 | `TrainingJob.start` took an `ORTTrainingConfig`, so the lifecycle handle (`status`/`events`/`cancel`/`checkpoint`) was **reachable and unusable at once** — an app could have progress flows or stay on the facade, never both | `TrainingJob.start(dataset: DatasetConfig, config: TrainConfig)`, mapping through the same `ConfigMappers` as the one-shot path |
+| 4 | `TrainingScheduler.schedule` likewise took `ORTTrainingConfig`, so #34's scheduler — which `RuntimeCapabilities.supportsScheduledTraining` **advertises through the facade** — could not be driven from it | public overload taking `DatasetConfig` + `TrainConfig`; the `customPreprocess == null` precondition holds by construction since `DatasetConfig` names a registered task |
+| 5 | **federation was entirely unreachable.** `FederatedTrainingRepository.forSession` is `internal`, and hand-assembly needs `NativeCheckpointTensorStore(trainer: ORTTrainerNative)`. The only shipped capability with no public door at all | `MobileTransformerModel.federatedRound(...)` → `FederatedRoundResult`; fails closed on consent/TLS/auth **and** on a missing `weight_handoff_map.json`, naming which. `LocalRoundTraining` became a `fun interface` so callers can pass a lambda |
+| 6 | `RuntimeCapabilities` said which engine you got but not which others were **selectable**, so an engine picker could only offer both and learn the answer by catching `EngineUnavailableException` — an exception as control flow for a question the SDK already knew | `RuntimeCapabilities.availableEngines`, computed from the same two conditions `ModelRuntimeFactory` applies (package ships `genai_config.json` **and** the native probe succeeds) |
+
+Covered by `FacadeDelegationTest::federatedRoundIsReachableFromTheFacadeAndPassesItsArgumentsThrough`
+and the app module's `ShowcaseStateTest` (6 JVM tests). No seventh gap was found: the ~45 configuration
+knobs the old app edited via `ORT*` types all proved expressible through
+`GenerationConfig`/`TrainConfig`/`RagConfig`/`DatasetConfig`, which is the result the Configuration
+screen exists to report.
+
 ### #18 — Training lifecycle & checkpoint contracts (`00_code_plans/08`)
 - [x] Does `TrainingJob` expose status/events/checkpoint without hiding the native lifecycle? *(`TrainingJob` + `TrainingStatus`/`TrainingEvent` (StateFlow/SharedFlow) + `CheckpointInfo`; `TrainingEventAdapter` maps the `TrainingCallback` 1:1 — `TrainingEventAdapterTest` asserts order/transitions)*
 - [x] Is the callback→event adapter complete and the checkpoint file format preserved? *(adapter complete; `CheckpointInfo` is a read-only Gson projection of `training_state.json` — `CheckpointInfoTest` asserts the on-disk JSON is unchanged after read)*
@@ -1233,7 +1256,107 @@ seam, **not** multi-device convergence (that is #35's simulation, which trains r
 ### #37 — FunctionGemma architecture gate & intents (`04_code_plans/05`) · checkpoint
 - [x] Did the architecture gate pass — Gemma-3 **inference**-graph export added as a registry entry? *(**GATE 1 PASSES 2026-08-09.** `google/gemma-3-270m` exports end to end through the normal front door and `mobiletransformers export --validate` produces a #13-valid package: 18 layers, canonical `logits` + 36 `present.N.key/value` + 36 `past_key_values.N.key/value`, optimum's own validation max-diff ~1e-4. It took a dependency fork AND a real registry defect fix — see "The #37 architecture gate" below. `inference_model_class` stays `None` by design: that field is the vendored GenAI-builder path, while the shipping inference export goes through optimum's `main_export`.)*
 - [x] Does it **never** execute raw model output (allowlist + dry-run + validated tool calls)? *(**2026-08-10**: `agent/FunctionCallValidator.kt` + `agent/IntentBinder.kt`, **16 JVM tests**. The guarantee is structural rather than procedural: `IntentBinder.dryRun` accepts only a `ValidatedCall`, which nothing but the validator can construct, so raw model text cannot reach it; and the intent action is read from the app's `ActionSpec.allowedIntent`, never from model output — **a model selects an action, it cannot name an intent**, so the reachable intent set is fixed when the allowlist is built. `IntentBinder` holds no `Context` and has no `startActivity` call site; executing is the caller's decision with the caller's own `Context`, deliberately not offered as a convenience. Undeclared parameters are refused (so an `allowedIntent` cannot be smuggled in as one), missing ones are refused rather than defaulted, an **unrecognised validation rule rejects rather than passing by default** (a typo in the app's allowlist must not silently disable the check it was written to perform), and a duplicated action name fails at construction instead of `associateBy` silently keeping the last.)*
-- [ ] Does the train → validated-tool-call → dry-run-intent demo show ≥2 differentiators? *(**four of the five are in place; the end-to-end demo is not run.** Present: local validated tool-call generation + Android intent binding (above), personalized per-user action sets (`agent/mobile_actions.py` generates a user's dataset FROM their app's allowlist, so completions are by construction calls the validator accepts — 8 tests pin that seam), and privacy-preserving local data (the dataset is generated on-device from a declaration and never leaves it). On-device training is device-proven for decoders generally. **What is missing is the demo itself wired end to end**, and it is blocked for FunctionGemma specifically by `ort-training-local`'s `transformers==4.46.2` — a #2/#3 dependency decision, not a #37 one. The demo can be run on a trainable decoder with the Gemma-3 inference graph; that has not been done.)*
+- [ ] Does the train → validated-tool-call → dry-run-intent demo show ≥2 differentiators? *(**RUN 2026-08-14 on the S21 FE `SM-G990B` / Android 15 / arm64-v8a — it FAILS, and the failure is now characterised rather than guessed at. See "The #37 demo run" below.** Previously: four of the five pieces in place, demo never executed.*
+- *Everything except the demo remains as recorded below.)*
+
+### The #37 demo run — MEASURED 2026-08-14. Root cause FOUND and FIXED: the merge wrote every weight transposed
+
+> **Superseded header.** This section first read "FAILS, root cause narrowed to merge numerics" and
+> advised against spending a cycle on more steps. The narrowing was right; the diagnosis took three
+> more rounds and two wrong hypotheses (see below). **The defect is found, fixed and verified.**
+
+**The bug:** `weight_merger.cpp` wrote merged weights in the merger's own convention
+(`[out_features, in_features]`, PyTorch `nn.Linear` / checkpoint layout) into an ONNX `MatMul`
+initializer that the inference graph reads as `[in_features, out_features]`. **Every merged weight was
+stored transposed, for as long as on-device merging has existed.** Fixed in
+`write_raw_tensor_atomic`, which now transposes 2-D float weights and verifies the result against the
+handoff map's declared on-disk shape, failing closed on disagreement.
+
+**Verified on device** (S21 FE `SM-G990B` / Android 15 / arm64-v8a), by
+`PostMergeNumericsTest::aLargeAdapterDeltaSurvivesTheMergeIntoTheInferenceGraph` — **PASS, 1040 s**:
+
+| cross-entropy on the same text | pristine | before fix | after fix |
+| --- | --- | --- | --- |
+| text the adapter memorised | — | 12.445 | **1.295** |
+| unrelated English | 4.651 | 15.446 | **5.529** |
+| uniform-prediction floor | 10.803 | | |
+
+Before the fix both numbers sat *above* the uniform floor — the merged model was worse than random.
+After it, the memorised text costs 1.295 nats (far below the 4.651 baseline: the model learned, and the
+learning survived the merge) and unrelated English costs 5.529 (mild, expected forgetting after 100
+steps on one repeated example). **This is the first numerically verified train → merge → generate on
+this project.**
+
+Proof of the mechanism, on raw bytes: after a merge whose delta was *exactly zero*
+(`adapter_B l2=0.000000`, scale 1.0, correct shapes), `max|written − original.T| = 1.9e-09`. After the
+fix the relation inverts — `max|written − original| = 1.9e-09`.
+
+**A second, genuine bug was fixed on the way:** the LoRA merge scale read **uninitialized memory**.
+`PeftMapping mapping;` is default-initialized, and `create_lora_mapping` emits only
+`adapter_A`/`adapter_B` — so `alpha`/`rank` were never assigned and the merger computed
+`base + <indeterminate float> * (B @ A)`. It is now `alpha / rank` (= 1.0 here, logged per layer).
+Undefined behaviour on every LoRA merge ever run, but worth ~1% of the damage; the transpose was the
+cause.
+
+**Two hypotheses were wrong and are recorded so the method failure is not repeated:** (1) the scale
+error was claimed to "fit the measurements exactly" — disproved by experiment, it moved the numbers
+~1%; (2) "a zero-adapter merge is bit-exact identity" was reported as a control when `merge()` without
+a prior training run **never executes a merge at all**, so the control was vacuous. The general lesson
+— magnitude-based checks cannot detect a permutation — is in Operational knowledge.
+
+**What the fix does NOT yet cover:** every previously recorded training result in this project was
+measured against the broken merge, including the 15/15 device suite and #18/#19's train→merge→generate
+checkpoints. They describe a system that no longer exists and need re-running.
+
+### Original narrowing (kept — the elimination was sound)
+
+`ToolCallDeviceTest` had never executed (written 2026-08-14 with no device attached). It has now run
+twice on a pristine `TRAIN=1` SmolLM2-135M-Instruct package, S21 FE / Android 15 / arm64-v8a.
+
+**The result: the model does not emit an accepted call. It emits token 198 (newline) 48 times.**
+
+What the run proves, and this is the useful part — *the failure is not where the handoff predicted*:
+
+| link | measured |
+| --- | --- |
+| training converges | **yes, emphatically.** Loss 5.85 → 0.0051–0.0121 over 108 steps (99.5% drop). This is memorisation, as intended. |
+| merge runs | **yes.** 60 PEFT mappings loaded, `merger_lora_fpin_fpout.onnx` applied, "Completed lora merger" for all 60 q_proj/v_proj tensors across 30 layers. |
+| merged weights reach inference | **yes.** 60 "Loaded merged initializer: model.layers.N.self_attn.{q,v}_proj.MatMul.weight ← ….bin". **Zero** occurrences of the "loading base weights" fallback warning, so this is not a silent downgrade. |
+| the prompt matches training | **yes.** Generation input tokens logged as `[1, 42037, 549, 418, 216, 32, 39, 42, 35, 32]` — BOS + `wake me at 07:30`, the same sequence the curator now builds. |
+| generation | **collapses.** Greedy argmax is token 198 at every step. |
+
+So convergence, dataset size, step count and prompt format were all **excluded** as causes, correctly.
+The conclusion — "the merged weights are not numerically the weights that were trained" — was right,
+and the suspected area (the adapter→inference weight-space mapping) was the right neighbourhood. The
+actual defect was one step further out: not the `B·A` delta's orientation but the **whole merged
+weight's** orientation on write, which is why it corrupted the model even when the delta was zero.
+
+~~**Do not spend another cycle on more steps or a smaller corpus.**~~ Correct at the time and still
+correct: the lever was never the dataset. The cause was the transpose above.
+
+`PostMergeNumericsTest` passing (below) does **not** contradict this: it asserts that merging *changes*
+the computation and stays finite, not that the delta is the correct one — the "merge happened without
+being correct" shape the operational notes warn about.
+
+**Two real defects were found and fixed getting here** (both in `ORTDataCurator` /
+`TaskPreprocessor.formatsPromptForGeneration`, 4 JVM tests in `ChatFormattedTrainingPromptTest`):
+
+1. **BOS mismatch.** Training tokenized with `prependBos = false` (the `tokenize` default) while
+   `generate` always prepends BOS on the first turn. Fixed for tasks that opt in.
+2. **No stop signal.** Completions carried no EOS, so a trained model runs to `maxNewTokens`.
+
+A third, latent one is recorded but not reachable on this package: `ORTTokenizerNative` reads
+`chat_template` only from `tokenizer_config.json`, while the SmolLM2 export writes it to a sibling
+`chat_template.jinja`. So `chatTemplate` is null and **neither** training nor generation applies a chat
+template (`W/ORTTokenizerNative: Chat template not found …`). For a package that *does* carry the key,
+training and inference would previously have disagreed; that is now closed by the same opt-in.
+
+Sizing note: `maxSteps` is an upper bound, not a target — training stops at the end of the epoch. The
+first run asked for 120 steps and took 54 (108 rows / batch 2). The corpus is now 216 rows → 108 steps.
+
+*(Original status, still accurate for the other four links:* Present: local validated tool-call generation + Android intent binding (above), personalized per-user action sets (`agent/mobile_actions.py` generates a user's dataset FROM their app's allowlist, so completions are by construction calls the validator accepts — 8 tests pin that seam), and privacy-preserving local data (the dataset is generated on-device from a declaration and never leaves it). On-device training is device-proven for decoders generally. It remains blocked for FunctionGemma specifically by `ort-training-local`'s `transformers==4.46.2` — a #2/#3 dependency decision, not a #37 one.
+
+**Superseded 2026-08-14:** this paragraph used to end "what is missing is the demo itself wired end to end … that has not been done". The demo **has** now been wired and run on a trainable decoder — see the section above. What is missing is no longer the wiring but the merge-numerics defect the run exposed.)*
 
 ---
 
@@ -1422,6 +1545,45 @@ nine open-coded prefix rewrites) plus the export-time assertion
 `artifacts/checkpoint_names.py::verify_handoff_names_resolve`, which would have caught three of those
 defects on the host instead of on a phone. **Any new consumer of a layer name goes through the
 normalizer.**
+
+## Magnitude-based checks cannot detect a permutation (2026-08-14)
+
+**The most expensive defect found in this project to date: every merged weight was written TRANSPOSED,
+for as long as on-device merging has existed, and four independent gates could not see it.**
+
+`weight_merger.cpp` computes in checkpoint convention — `base_layer.weight` is a PyTorch `nn.Linear`
+weight, `[out_features, in_features]`, and the merger ONNX graph declares its `weight` input and
+`merged_weight` output the same way. The inference initializer it writes into is an ONNX `MatMul`
+right-hand side, `[in_features, out_features]`. The result was written raw.
+
+Proven by pulling the bytes off the device after a merge whose delta was **exactly zero**
+(`adapter_B l2=0.000000`, scale 1.0, shapes correct): `max|written − original.T| = 1.9e-09`, i.e. the
+written weight was the transpose to float round-trip precision. Model quality went from 4.65 nats to
+15.45 on the same text — *above* the 10.80 uniform-prediction floor, so worse than random.
+
+### Why every gate missed it — the transferable part
+
+| gate | why it was blind |
+| --- | --- |
+| shape checks | `q_proj` is **square** (576×576), so no shape ever disagreed |
+| external-data reads | `v_proj` is `[576,192]` vs `[192,576]` — **identical element count**, so the raw read succeeded |
+| L2 norm / absmax probes | **transpose-invariant.** Both matched to 6 decimals. This fooled the investigating agent too, which cleared the base weight on an L2 comparison before realising it could not distinguish a matrix from its transpose |
+| byte hashes (`TrainMergeGenerateTest`) | a transpose changes the hash, so "the bytes changed" passed while confirming nothing about correctness |
+| `PostMergeNumericsTest` | its `PROBE` is a hand-written array of arbitrary token ids, so cross-entropy sits at the uniform floor (10.19 nats) **by construction**; comparing two near-uniform numbers with a 2× bound is close to unfalsifiable |
+| `TrainMergeGenerateTest`'s output check | `assertTrue(after.isNotEmpty())` — passes on 48 consecutive newlines, which is exactly what the corrupted model emitted |
+
+**The rule: a norm, a sum, a maximum, a byte count or a checksum cannot detect a permutation of
+elements.** Any check on a weight-shaped tensor whose correctness depends on element *order* must
+compare element order — against a reference, a known element, or the same computation through the
+other graph. Prefer "does the model behave" (cross-entropy on **real tokenized text**) over "do the
+numbers look plausible".
+
+**Second-order cause, still open:** `ObservedInit.transposed` in `artifacts/handoff_map.py` is a
+declared field that **nothing ever assigns**, so `transposePolicy` is hard-coded to `"no_transpose"` by
+omission across all 60 entries (and in the test fixtures). The contract meant to describe the layout was
+never implemented on the producing side, and the consumer faithfully honoured a value nobody computed.
+Owned by #8. The device fix does not trust the field: it transposes and then verifies the result
+against the map's declared on-disk shape, failing closed on disagreement.
 
 ## The recurring failure shape (worth internalising)
 

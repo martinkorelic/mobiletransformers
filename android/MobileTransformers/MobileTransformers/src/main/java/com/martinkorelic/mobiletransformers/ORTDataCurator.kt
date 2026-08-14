@@ -34,6 +34,36 @@ class ORTDataCurator(
     private var allSamples: List<TrainingSample> = emptyList()
     private var inMemoryIndex = 0
 
+    /**
+     * #37: the chat-template renderer used for tasks whose preprocessor declares
+     * [TaskPreprocessor.chatFormatted]. Built once — compiling the Pebble template per row would cost
+     * a template compile for every example in the dataset.
+     *
+     * Null when the package ships no chat template, in which case a chat-formatted task degrades to
+     * the raw prompt: that is the same shape `generate` would use for such a package, so the two
+     * halves still agree.
+     */
+    private val chatTemplateHandler: ORTChatTemplateHandler? by lazy {
+        tokenizer.chatTemplate?.let { ORTChatTemplateHandler(it) }
+    }
+
+    private val chatSpecialTokens: Map<String, String> by lazy { tokenizer.getSpecialTokensWithContent() }
+
+    /**
+     * Renders one prompt exactly as [ORTGeneratorNative.generate] renders the first turn of a fresh
+     * conversation: a **new** [ORTConversationState] per row (so every row is a first message, with
+     * the template's system-prompt injection and `add_generation_prompt`), and no explicit system
+     * prompt — matching `GenerationConfig.systemPrompt`'s `null` default.
+     *
+     * A caller that generates with a *custom* `systemPrompt` changes the inference-side prompt and
+     * would need a dataset rendered the same way; that knob is not plumbed through `DatasetConfig`
+     * today, and is recorded as a follow-up rather than silently approximated here.
+     */
+    private fun renderChatPrompt(content: String): String? {
+        val handler = chatTemplateHandler ?: return null
+        return ORTConversationState(handler, chatSpecialTokens, null).addUserMessage(content)
+    }
+
     init {
         initialize()
     }
@@ -270,16 +300,30 @@ class ORTDataCurator(
             }
 
             // Step 1: Get input and label text (e.g. prompt + response)
-            val (inputText, labelText) = customPreprocess?.preprocess(json)
+            val (rawInput, labelText) = customPreprocess?.preprocess(json)
                 ?: return null
 
-            if (inputText.isBlank() || labelText.isBlank()) return null
+            if (rawInput.isBlank() || labelText.isBlank()) return null
+
+            // #37: tokenize the prompt the way `generate` will. Two parts, and only the first is
+            // conditional on the package: the chat template is applied when the tokenizer loaded one
+            // (it often has not — see `formatsPromptForGeneration`), while BOS is prepended
+            // unconditionally for such tasks because `generate` always prepends it on the first turn
+            // and `tokenize` defaults to not doing so.
+            val matchGeneration = customPreprocess.formatsPromptForGeneration()
+            val inputText = if (matchGeneration) renderChatPrompt(rawInput) ?: rawInput else rawInput
 
             // Step 2: Tokenize prompt and answer separately (like Python code)
-            val promptTokens = tokenizer.tokenize(inputText)
-            val answerTokens = tokenizer.tokenize(
+            val promptTokens = tokenizer.tokenize(inputText, prependBos = matchGeneration)
+            val rawAnswerTokens = tokenizer.tokenize(
                 labelText
             ) // No special tokens for answer
+
+            // A chat turn ends with EOS. Without it the model has no stop signal and runs to
+            // `maxNewTokens`, trailing whatever follows a well-formed call.
+            val eos = tokenizer.eosToken
+            val answerTokens =
+                if (matchGeneration && eos != null) rawAnswerTokens + eos else rawAnswerTokens
 
             // Step 3: Concatenate the token seq  uences
             val fullInputIds = (promptTokens + answerTokens).toMutableList()

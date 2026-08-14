@@ -12,7 +12,7 @@ import com.martinkorelic.mobiletransformers.packages.WeightHandoffMap
  * constraints) belongs to #34's scheduler and the caller's `ORTTrainingConfig`, not to the federated
  * layer. This layer only guarantees that training happens **between** the import and the export.
  */
-interface LocalRoundTraining {
+fun interface LocalRoundTraining {
     /** Runs one round's worth of local training. [round] is passed for logging/telemetry only. */
     suspend fun trainOneRound(round: Int)
 }
