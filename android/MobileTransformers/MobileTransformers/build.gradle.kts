@@ -186,3 +186,18 @@ publishing {
         }
     }
 }
+
+// The cross-language oracle fixtures live at the REPO root (`tests/fixtures/`), outside anything
+// Gradle knows about, and `PackagesTest` / `MobileActionsParityTest` read them by walking up from the
+// working directory. Gradle therefore considered the test task up-to-date when only a fixture changed
+// — a corrupted oracle produced `BUILD SUCCESSFUL` in 670 ms without running a single test, which is
+// the exact failure mode these parity tests exist to prevent. Declaring the directory as an input
+// makes a fixture change re-run them.
+tasks.withType<Test>().configureEach {
+    val sharedFixtures = rootProject.file("../../tests/fixtures")
+    if (sharedFixtures.isDirectory) {
+        inputs.dir(sharedFixtures)
+            .withPathSensitivity(PathSensitivity.RELATIVE)
+            .withPropertyName("sharedCrossLanguageFixtures")
+    }
+}

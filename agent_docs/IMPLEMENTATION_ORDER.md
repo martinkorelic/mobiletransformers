@@ -4,25 +4,28 @@ This index orders every feature code-plan under `agent_docs/00_code_plans/` … 
 
 The high-level "what & why" lives in the six tier docs (`00_repository_restructure_plan.md`, `01_tier0_foundation_decisions.md`, `02_tier1_hf_integrated_core.md`, `03_tier2_inference_and_rag.md`, `04_tier3_reach_extensions.md`, `05_cross_cutting_release_modernization.md`). These code plans are the "how" — concrete enough for another agent to implement.
 
-> **Status as of 2026-08-09 (end of cycle): 31 / 37 plans done · 102 of 111 self-check boxes ticked.**
+> **Status as of 2026-08-14: 35 / 37 plans done · 107 of 111 self-check boxes ticked.**
 >
-> This cycle ticked **#33's MARS-transfer box** (the transfer is now verified, not assumed) and
-> re-proved the whole device suite under the changed PEFT targets. It also produced two **recorded
-> negative results**, which are findings rather than missing work: #35's simulation is blocked on the
-> merged-vs-rank-r tensor-vocabulary conflict its own plan left open, and #37's architecture gate is
-> blocked upstream of the graph by a `transformers` pin. Both are written up below with their
-> evidence.
+> ⚠️ **The block that stood here was stale in four separate claims** and is corrected above rather than
+> appended to, per this file's own rule ("record the correction next to the claim"). It read
+> *"31 / 37 plans · 102 of 111"* and described **#35's simulation and #37's architecture gate as
+> blocked**. All four are false: the tables below read 35/37, a `grep -c` over this file's self-check
+> boxes returns **107 `[x]` / 4 `[ ]`**, #35's 4-client × 3-round simulation passed 2026-08-09 (eval
+> loss falling 8.7353 → 8.5258 → 8.2579) and #37's architecture gate passed 2026-08-09. The counts
+> below are measured, not carried forward.
 >
-> Of the 9 unticked boxes, **6 are Tier-3** (#33/#34/#35/#36/#37), which this plan states never block
-> v1.0. Against the 100 in-scope boxes, 97 are done, and **the only three that remain are #32's**:
+> **The 4 open boxes are #32's three and #37's one.** Of these, exactly one is engineering:
 >
 > 1. the **relicense** — CC-BY-NC-4.0 → Apache-2.0, a rights-holders decision (both authors in
->    `CITATION.cff`), and the one genuine blocker;
-> 2. **version sites == tag** — the four sites already agree at `0.1.0` and are test-guarded; this
->    closes when v1.0.0 is tagged, i.e. it is the release act, not work;
-> 3. the **full release gate**, which needs (1), a tag, and the CI-trigger decision.
+>    `CITATION.cff`), and the one genuine v1.0 blocker;
+> 2. **version sites == tag** — the sites already agree at `0.1.0` and are test-guarded
+>    (`tests/unit/test_version_sites.py`, which as of 2026-08-14 also pins the manifest's
+>    `mobiletransformersVersion`, the 5th site, which had been unguarded); this closes when v1.0.0 is
+>    tagged, i.e. it is the release act, not work;
+> 3. the **full release gate**, which needs (1), a tag, and the CI-trigger decision;
+> 4. **#37's differentiation demo** (self-check 3) — the only open engineering item in the project.
 >
-> Everything technical the release gate was waiting behind is finished.
+> Everything else technical the release gate was waiting behind is finished.
 >
 > A six-agent audit (`agent_docs/audits/`) found several `[x]` marks overstated; a 2026-08-07
 > remediation pass closed most of what it found, and a 2026-08-09 pass de-drifted the `Done` column
@@ -47,7 +50,7 @@ The high-level "what & why" lives in the six tier docs (`00_repository_restructu
 - **`FederatedAdapterRecord` derives from `TrainableTensorCodec`.** Federated exchange (Tier 3) is a thin wrapper over `weight_handoff_map.json` + the codec from `00_code_plans/07`; it never invents its own tensor ordering, and its `adapterFormatVersion` tracks the handoff-map `schemaVersion`. See `04_code_plans/03`.
 - **One canonical manifest schema, one owner.** `02_code_plans/03` owns the `mobiletransformers_manifest.json` **field list** (camelCase wire names: `supportedEngines`, `defaultVariant`, `recommendedDeviceMemoryMb`, per-variant `paths`, `downloadPlan` keyed `[variantId][group]`); `00_code_plans/06` owns the **validator / variant-selection / cache-install semantics** and references that schema instead of redefining it. `sanitize_repo_id` maps `/` → `__` (double underscore) and is defined once in `02_code_plans/03`, mirrored byte-identically in Kotlin.
 - **Kotlin naming split (no duplicate contracts).** `ModelRuntime` is the **inference-engine boundary** (`01_code_plans/03`: `load/generate/release`, impls `ORTGeneratorNative`/`ORTGeneratorGenAI`, with engine-level `EngineCapabilities`). The facade-level whole-model adapter (`00_code_plans/05`) is **`ModelSession`** (impl `RepositoryBackedModelSession`, model-level `RuntimeCapabilities`). One `InferenceEngine { NATIVE, GENAI }` enum, declared once by `01_code_plans/03` (#11 — it lands first, order 11) and reused verbatim by #17/#19; no plan declares a second engine enum.
-- **Python config lives inside the package.** `src/mobiletransformers/config/` holds `constants.py` (enums), `settings.py` (secrets), `models.py` (Pydantic), `registry/` — all shipped in the wheel. Repo-root `config/` holds only user-editable YAML (`config.yml`, `logging.yml`). Root `config.py` / `tools/parser_config.py` become deprecation shims importing from `mobiletransformers.config.*`. Owned by `00_code_plans/02` + `00_code_plans/09`.
+- **Python config lives inside the package.** `src/mobiletransformers/config/` holds `constants.py` (enums), `settings.py` (secrets), `models.py` (Pydantic), `registry/` — all shipped in the wheel. Repo-root `config/` holds only user-editable YAML (`config.yml`, `logging.yml`). Root `config.py` / `tools/parser_config.py` became deprecation shims importing from `mobiletransformers.config.*`; **both are now deleted** — `tools/parser_config.py` with the `tools/` root in S9, `config.py` on 2026-08-14 once its last two importers were repointed. Owned by `00_code_plans/02` + `00_code_plans/09`.
 - **Cross-boundary readers use typed fail-closed parsing, not on-device JSON-Schema validation.** Kotlin/C++ parse into typed classes (Gson on Android — already a dependency); closed-set values go through enum `fromWire()` (throws on unknown **value**); `check_compat()` gates `schemaVersion`/`minReaderVersion`; unknown **fields** are tolerated (additive minor bumps). Pydantic read models use `extra="ignore"`. `schemas/*.schema.json` + golden `enums.json` are **CI parity artifacts only**, never a device dependency.
 - **Public generation config uses `maxNewTokens` from the first facade pass** (`00_code_plans/05`); `03_code_plans/02` locks parity/mapping, it does not rename.
 - **Registries replace hardcoded dispatch.** PEFT methods, model architectures, and merger variants are declared in data-driven registries; no `if x == "lora"/elif "mars"` or `architectures[0] == "..."` chains in business logic. Adding a method/architecture/merger is a registry entry + an enum member, not a new `elif`. The same pattern also owns **task-type, execution-provider, document-loader (RAG), and export-front-door** registries, added as their consumers land. Owned by `00_code_plans/09_typed_models_enums_and_registries.md`.
@@ -102,7 +105,7 @@ Every code plan is written to be executed cold by an agent. Follow this protocol
 | [x] | 10 | `01_code_plans/02_genai_external_data_swap_spike.md` | Feeds Gate 0.1 | 9 | *(2026-07-15: **Gate 0.1 = ADOPT GenAI.** F2 validated — external-data swap changes GenAI output on device (token/fp differ) + desktop; symbol/fork-only confirmed; RSS measured (mmap). The one blocker — ORT-runtime coexistence (genai needs stock ORT ≥1.26, Native needs training ORT 1.23) — **resolved** via `libort_gen.so` distinct-soname separation, verified both coexist on device. Cross-engine #1/#4 (same package under BOTH engines) ride with #11's dual-engine smoke + a real #9 package. See `spikes/genai_external_swap/README.md`.)* |
 | [x] | 11 | `01_code_plans/03_inference_engine_abstraction_native_and_genai.md` | Engine selection | 10 | *(code-complete 2026-07-15: `runtime/ModelRuntime.kt` (interface + `EngineCapabilities` + `EXECUTION_PROVIDER_REGISTRY` F3 + `GenAiSupport` + `ModelRuntimeFactory` pure-select + device-create w/ transparent Native fallback); `ORTGeneratorGenAI.kt` + `cpp/genai_runtime.cpp` (streaming, callback parity); `ORTGeneratorNative` adapted to `ModelRuntime`; `engine` field in `ORTGenerationConfig`; `LLMRepository` wired via factory; dead `ORTGenAINative.kt`+`onnx-genai.cpp` deleted. Compiles+links arm64, **48 JVM tests**, device build loads. Box open pending the dual-engine same-folder device smoke + streaming-parity harness — need a real #9 package.)* |
 | [x] | 12 | `01_code_plans/04_memory_mapping_experiments.md` | Optimizes 9–11 (non-blocking) | 9 | *(2026-08-08: the four-point RSS table was collected on device via `make device-rss`; **Gate 0.2 FAILS as specified** (6.3% vs 15% required) and that measured FAIL is the deliverable — mmap is default-off and explicitly "an optimization, not a v1 requirement", so it does not block v1. Ticked 2026-08-09. Code-complete 2026-07-15: `cpp/mem_probe.h` (RSS) + `cpp/mmap_tensor.h` (RAII) + a default-off `MTF_MMAP_WEIGHTS` zero-copy branch in `session_cache.h` (copy path stays the shipping default, #23 unaffected); `spikes/mmap/{measure_rss(re-export),base_blob_mmap_spike}.py` (desktop byte-identical correctness invariant). arm64 links. Device 4-point RSS table = the manual Gate 0.2 leg.)* |
-| [x] | 13 | `00_code_plans/06_manifest_first_package_and_cache_bridge.md` | Package contract | 8, 9 | *(done 2026-07-14: Python `artifacts/manifest.py` + Kotlin `packages/` cache-bridge (6 classes), JVM-tested + `compileDebugKotlin`; only the on-device generate smoke deferred)* |
+| [x] | 13 | `00_code_plans/06_manifest_first_package_and_cache_bridge.md` | Package contract | 8, 9 | *(done 2026-07-14: Python `artifacts/manifest.py` + Kotlin `packages/` cache-bridge (6 classes), JVM-tested + `compileDebugKotlin`; the on-device generate smoke it deferred is **CLOSED** — `FacadeLoadGenerateTest` PASS 2026-08-08 on the S21 FE)* |
 | [x] | 14 | `02_code_plans/03_hub_model_package_format.md` | Hub repo shape | 13 | *(done 2026-07-14: `hub/package_format.py` — `sanitize_repo_id`, `build_manifest`, tiny_package fixture; no device)* |
 | [x] | 15 | `02_code_plans/05_one_command_export_cli.md` | Wraps 7–9 + 13 *(checkpoint: export E2E)* | 7, 9, 13 | *(done 2026-07-14; 2026-07-15: `_full_export` real inference+GenAI leg implemented (stage-gated) + on-box verified — SmolLM2-135M → #13-valid package, GenAI loads it; training stage staged for the ort-training-local run — see #15 self-check)* |
 | [x] | 16 | `00_code_plans/04_android_gradle_rename_migration.md` | Isolated, verified rename | — | *(done 2026-07-14: **full removal / option B** — Kotlin+native+JNI all renamed off `ortmobile`; supersedes the doc's option-A. Compile+link-verified arm64-v8a, `compileDebugKotlin` + `make parity` green.)* |
@@ -173,10 +176,10 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 
 ### #4 — Config layering (`00_code_plans/02`)
 - [x] Does precedence resolve CLI > env > YAML > package default, with secrets only in `Settings`?
-- [x] Do the deprecation shims for `config.py` / `tools/parser_config.py` still import and warn?
+- [x] Do the deprecation shims for `config.py` / `tools/parser_config.py` still import and warn? *(both shims are now **deleted** — the box records that the migration they covered completed, not that the shims survive. `tests/unit/test_settings_precedence.py` asserts the root `config.py` stays gone.)*
 - [x] Are non-secret constants in `constants.py` and user knobs in `config.yml`, with **no** secrets in YAML?
 
-> Done 2026-07-13. `mobiletransformers.config.resolve()` implements CLI>env>YAML>default (unit-tested); secrets live only in `Settings`/`get_settings()` and the CI grep guard (`os.environ[...HF_TOKEN|HF_CACHE|GEMINI_API_KEY|AZURE_...]` over `src/`) is empty. Root `config.py` + `tools/parser_config.py` are deprecation shims (import + `DeprecationWarning` tested); `config/config.yml` copied verbatim (4 sections, YAML-only dir); `utils/yaml.load_config_from_file` added. `test_settings_precedence.py` green.
+> Done 2026-07-13. `mobiletransformers.config.resolve()` implements CLI>env>YAML>default (unit-tested); secrets live only in `Settings`/`get_settings()` and the CI grep guard (`os.environ[...HF_TOKEN|HF_CACHE|GEMINI_API_KEY|AZURE_...]` over `src/`) is empty. Root `config.py` + `tools/parser_config.py` were deprecation shims (import + `DeprecationWarning` tested), **both since deleted**; `config/config.yml` copied verbatim (4 sections, YAML-only dir); `utils/yaml.load_config_from_file` added. `test_settings_precedence.py` green.
 > **In-scope deferral:** the six in-module `load_config_from_file` copies are intentionally NOT ripped out this pass (business-module migration is a later plan). `trainer/builder.py`'s variant pre-indexes `config[TRAIN_CONFIG]`, so its call sites must migrate together with that swap — the shared util is provided for new code only.
 
 ### #5 — Python code quality & module health (`00_code_plans/10`)
@@ -267,6 +270,10 @@ Reflective "is it really done?" questions, complementary to each plan's `## Test
 > the C++ `weight_merger.cpp`/`session_cache.h` map-driven save/load rewrite rides with **#9** (merge/save)
 > and **#23** (native load); the Kotlin JNI thread-through rides with **#18/#19**. The
 > cross-language golden + C++ smoke integration tests land with those consumers.
+>
+> ⚠️ **CLOSED — this deferral note is stale (corrected 2026-08-14).** The build-side emit landed
+> (the 2026-08-07 audit recorded it as done "contrary to the plan's own trailing 'deferred' note"),
+> the C++ rewrite shipped with #9/#23, and the JNI thread-through with #18/#19. Nothing here is open.
 
 ### #9 — Unified merger & external-data export (`01_code_plans/01`)
 - [x] Do offline and on-device merge emit **identical** external-initializer filenames keyed by the map? *(code-level yes: both sides read `externalDataLocation[role]` from `weight_handoff_map.json`; byte-for-byte device-vs-offline parity is the outstanding **manual** device test)*
@@ -342,7 +349,7 @@ MainActivity→`..._mobiletransformers_app_MainActivity_*`). Python couplings up
 - [x] Are the JNI symbol decisions (rename vs alias) documented and does the app still link? *(chose rename-all, not alias; each symbol mangled from its class's new package; `libmobiletransformers.so` links on arm64-v8a)*
 
 ### #17 — Android facade foundation (`00_code_plans/05`) · checkpoint
-- [x] Does `MobileTransformers.fromPretrained(...)` return a working `MobileTransformerModel` wrapping the existing repositories (no JNI rewrite)? *(`RepositoryBackedModelSession` wraps `LLMRepository` + 3 sub-repos; no `ORT*`/`Job` in public signatures; delegation covered by `FacadeDelegationTest`. Actual on-device load→generate is the outstanding leg)*
+- [x] Does `MobileTransformers.fromPretrained(...)` return a working `MobileTransformerModel` wrapping the existing repositories (no JNI rewrite)? *(`RepositoryBackedModelSession` wraps `LLMRepository` + 3 sub-repos; no `ORT*`/`Job` in public signatures; delegation covered by `FacadeDelegationTest`. The on-device load→generate leg is **CLOSED** — `FacadeLoadGenerateTest` PASS 2026-08-08, S21 FE / Android 15 / arm64-v8a)*
 - [x] Are the engine selector + exception hierarchy in place? *(`InferenceEngine`/`RuntimeCapabilities` + `ModelFeature` engine-selector semantics tested; `MobileTransformersException` base + `ModelNotInstalled`/`MissingArtifact` stubs — full hierarchy is #19)*
 - [x] Does the facade workflow (load → generate one token, device-manual) pass? *(`FacadeLoadGenerateTest` PASS, S21 FE / Android 15 / arm64, 2026-08-08)*
 
@@ -370,7 +377,7 @@ GenAI-config gate; `pushAdapter` is a `NotImplementedFeatureException` stub (rid
 app still compiles.
 - [x] Do `applyPeft`/`train`/`merge`/`generate`/`retrieve` map cleanly onto existing repositories? *(RepositoryBackedModelSession delegates all five; applyPeft validates via PeftSupport)*
 - [x] Are public config names HF-aligned and mapped to internal config (mapping table present)? *(ConfigMappers + PeftSupport taxonomy; delta tests assert engine→type, merge→loadMergedWeights, dataset, sampling)*
-- [x] Does the **train→merge→generate** workflow (device-manual) pass end to end? *(`TrainMergeGenerateTest` PASS, S21 FE `SM-G990B` / Android 15 / arm64-v8a — first 2026-08-08 (60/60 trainable `.bin` files rewritten by the merge), **re-proven 2026-08-09 under the changed `q_proj`/`v_proj` PEFT targets** as part of a 13/13 0-skipped suite. NOTE the evidence is that the merge HAPPENED — byte-fingerprint before/after — not that it is numerically sane; one LoRA step on an 8-row fixture yields `,,,,,,,,`. Post-merge numerical correctness on device remains unasserted, and is tracked as a standing debt.)*
+- [x] Does the **train→merge→generate** workflow (device-manual) pass end to end? *(`TrainMergeGenerateTest` PASS, S21 FE `SM-G990B` / Android 15 / arm64-v8a — first 2026-08-08 (60/60 trainable `.bin` files rewritten by the merge), **re-proven 2026-08-09 under the changed `q_proj`/`v_proj` PEFT targets** as part of a 13/13 0-skipped suite. NOTE the evidence is that the merge HAPPENED — byte-fingerprint before/after — not that it is numerically sane; one LoRA step on an 8-row fixture yields `,,,,,,,,`. Post-merge numerical correctness on device was tracked here as a standing debt; it is **CLOSED 2026-08-10** — see "Post-merge numerical correctness — CLOSED" in the permanent section. Corrected here 2026-08-14, because the debt was closed there and never struck out here.)*
 > Notes: manifest carries no `peftMethods` — PEFT support is derived from `train/training_config.json`
 > alone (Gson, testable); GenAI availability is a `fromPretrained` file check (no new `LLMRepository`
 > flag). `compat/LegacyAliases.kt` skipped: #16 fully retired the `ortmobile` brand, so there are no
@@ -408,7 +415,7 @@ fail-closed validation before `AddExternalInitializers`. Conversation-reset prep
 `NativeLoadRegressionTest` (host JVM) green; arm64 AAR links.
 - [x] Does Native implement `ModelRuntime` with map-driven, **fail-closed** external-initializer load? *(HandoffPrecondition gate + C++ `session_cache.h` map-driven load; both fail closed naming the tensor)*
 - [x] Are there zero `inference/merged/` references left, and the dead GenAI stubs deleted? *(grep regression test `NativeLoadRegressionTest`; `/merged` gone from both load sides; `ORTGenAINative.kt`/`onnx-genai.cpp` stay deleted)*
-- [x] Is the conversation-state prepend bug fixed with a reset test? *(rendered-offset fix + `resetConversation()` on load; `ORTConversationStateTest` covers reset — the two-prompt device smoke is the deferred leg)*
+- [x] Is the conversation-state prepend bug fixed with a reset test? *(rendered-offset fix + `resetConversation()` on load; `ORTConversationStateTest` covers reset; the two-prompt device smoke it deferred is **CLOSED** — `ConversationResetTest` PASS on device)*
 - [x] **Device:** map-driven load-and-generate over a real #9 package (`FacadeLoadGenerateTest`); two-prompt no-leak smoke (`ConversationResetTest`); train→merge→generate reflecting merged weights (`TrainMergeGenerateTest`). All PASS, S21 FE / Android 15 / arm64, 2026-08-08.
 
 ### #24 — Sampling & streaming public config (`03_code_plans/02`)
@@ -426,7 +433,7 @@ magic for `SamplingMethod.fromWire(...).nativeOrdinal` (fail-closed on unknown, 
 - [x] Does `InMemoryVectorStore` let RAG logic be unit-tested on the JVM with no ObjectBox/device? *(pure-Kotlin cosine store in the test source set; insert/search/count/topK/minScore tested)*
 - [x] Is the `1 - score` distance→similarity conversion covered by an explicit test? *(`minScoreFiltersOnSimilarity` + `searchOrdersByCosineSimilarity` assert hand-computed similarities; identical→1.0, orthogonal→0.0)*
 - [x] Are unsupported embedding dimensions rejected fail-closed, and backends pluggable via the registry (F4)? *(`DimensionRegistry.requireSupported` throws on dim 300; `register(301)` then accepted; `VectorStoreRegistry.create` throws on unknown key)*
-- Deferred (device/later): the ObjectBox parity smoke (Android, supported dims — manual). ~~`SearchType` String→enum swap rides with #17/#19~~ — **that deferral expired** when both landed 2026-07-15 and the audit found it ownerless; done 2026-08-07 (`FileUtil` validates `searchType` through `SearchType.fromWire` at the parse boundary and `ORTRetriever.query` dispatches on the enum; the field stays `String` because it crosses JNI as one). ~~`docs/RAG.md` is #31~~ — written, and de-drifted 2026-08-07 (it had claimed #26/#27 were unimplemented long after they landed).
+- ~~Deferred (device/later): the ObjectBox parity smoke (Android, supported dims — manual).~~ **CLOSED** — `ObjectBoxParityTest` PASS in both recorded device runs. ~~`SearchType` String→enum swap rides with #17/#19~~ — **that deferral expired** when both landed 2026-07-15 and the audit found it ownerless; done 2026-08-07 (`FileUtil` validates `searchType` through `SearchType.fromWire` at the parse boundary and `ORTRetriever.query` dispatches on the enum; the field stays `String` because it crosses JNI as one). ~~`docs/RAG.md` is #31~~ — written, and de-drifted 2026-08-07 (it had claimed #26/#27 were unimplemented long after they landed).
 
 ### #26 — RAG ingestion & chunking (`03_code_plans/04`)
 - [x] Does `ingestData()` chunk + embed + store `.txt`/`.md`/`.jsonl` with progress, replacing the TODO? *(device-verified 2026-08-08: `RagDeviceTest` ingests a real `.txt` through the real embedder)*
@@ -535,7 +542,10 @@ otherwise impossible to export an encoder through it: `TASK_PREFERENCE` does not
 `text-classification`, so `all-MiniLM-L6-v2` auto-resolves to `feature-extraction`, which is declared
 `trainable=False`.
 
-**Still outstanding:** the on-device encoder train step. Everything it needs is in place.
+~~**Still outstanding:** the on-device encoder train step.~~ **CLOSED 2026-08-10** — see "The #33
+ encoder legs — ALL PASS" below (`EncoderTrainStepDeviceTest`: 2 real steps, finite losses, 24/24
+ adapter factors moved). Struck out here 2026-08-14; the closure was recorded further down but this
+ claim was left standing.
 
 **Objective DECIDED 2026-08-09: sequence classification** (user's call; the abstraction is built so
 masked-LM and contrastive embedding arrive as registry rows — see `registry/task.py`'s "Adding a
@@ -546,7 +556,8 @@ loss  0.6950 -> 0.5433   (21.8% drop over 30 steps, monotonic)
 accuracy 0.250 -> 1.000  (separable 8-example sentiment set)
 ```
 
-Only the Android smoke is outstanding, and it is device-gated.
+~~Only the Android smoke is outstanding, and it is device-gated.~~ **CLOSED 2026-08-10** — the smoke
+passed, and getting there exposed a decoder-shaped constant in the peft→ORT name rewrite.
 
 ### What works, proven under `ort-training-local` on `sentence-transformers/all-MiniLM-L6-v2`
 
@@ -788,8 +799,10 @@ both failure paths name the offending entity. `ModelFeature.Training` was delibe
 variant/feature ids are a wire contract and the download group is genuinely identical. Compiles and
 links arm64-v8a.
 
-**Outstanding:** no encoder package has been exported or pushed, so the on-device encoder train step
-has not run. That needs the encoder package shape end to end (classification inference graph, handoff
+~~**Outstanding:** no encoder package has been exported or pushed, so the on-device encoder train step
+has not run.~~ **CLOSED 2026-08-10** — the encoder package was exported and pushed (19 tests, 0
+failures, 16 skipped: the generation suites correctly decline a graph with no token loop). The text
+below describes what it took. That needs the encoder package shape end to end (classification inference graph, handoff
 map, merger models, and per-sequence label plumbing through `ORTDataCurator`), which is materially
 more than the binder.
 
@@ -1091,9 +1104,11 @@ the defect — restoring the old binding fails with *"bound to 'Gemma3OnnxConfig
 ['Gemma3TextOnnxConfig']"*. Optimum already knows the right answer for every model type; the registry
 is now checked against it instead of maintained in parallel.
 
-**Still outstanding for #37** (self-checks 2 and 3): the tool-call validator, the intent binder with
-its allowlist and dry-run default, and the differentiation gate. The architecture gate no longer
-blocks them.
+~~**Still outstanding for #37** (self-checks 2 and 3): the tool-call validator, the intent binder with
+its allowlist and dry-run default, and the differentiation gate.~~ **Partly closed 2026-08-10**: the
+validator (`agent/FunctionCallValidator.kt`, 11 tests) and the binder (`agent/IntentBinder.kt`, 5
+tests) both landed, closing self-check 2. **Only the differentiation gate (self-check 3) is open**, and
+it is the last engineering item in the project. The architecture gate no longer blocks it.
 
 ### #36 — Federated Android client & gateway (`04_code_plans/04`)
 - [x] Are `exportTrainableTensors`/`importTrainableTensors` JNI added, and is the codec byte-identical to Python (golden test)? *(**Codec half DONE 2026-08-10; JNI half NOT started.** `federated/AdapterTensorCodec.kt` is byte-identical to `tests/federated/fixtures/federated_record.golden.bin` - asserted directly, and it passed on the first run. 11 codec tests. `packages/WeightHandoffMap.kt` was the concrete blocker: it modelled only the merged/load-side fields, so it could not describe the rank-r factors at all; it now reads schema **1.1** (`checkpointNames`, `adapterDtypes`, `adapterShapes`), carries the `ADAPTER_ROLE_ORDER` constant and a `toCheckpointName` twin of `checkpoint_names.py`, and `adapterTensorSpecs()` fails closed on a pre-1.1 package naming the re-export rather than falling back to merged weights. **The header is built by hand, not via Gson** - Python's `json.dumps(sort_keys=True)` uses `", "`/`": "` separators WITH spaces and sorts recursively, so a Gson-serialized header decodes fine and fails the golden. **JNI landed 2026-08-10** as `nativeExportCheckpointTensor` / `nativeImportCheckpointTensor` (first use of `Ort::CheckpointState::UpdateParameter` in this project), plus `federated/FederatedRound.kt` composing them with the codec and the consent gate. **Deviation from the plan doc, deliberate:** it names `exportTrainableTensors(session, handoffMapPath) -> ByteArray`, i.e. the whole record assembled in C++. These move BYTES only. Assembling the record natively would be a SECOND implementation of the exact format the cross-language golden exists to keep from drifting, and would need `handoff_io.h` extended plus a C++ JSON writer reproducing Python's `sort_keys` separators — two implementations of one wire format is the failure this project keeps paying for. So C++ moves tensor bytes, Kotlin owns the format, and order/naming/dtype still come from `weight_handoff_map.json`. Import reads the EXISTING parameter to learn shape/dtype rather than trusting the sender's description, and refuses on a byte-count mismatch instead of truncating. `CheckpointTensorStore` is an interface so clipping and name-matching are host-testable; 6 round tests. **`gateway.py` + `federated serve` landed 2026-08-10**, verified on the REAL `TRAIN=1` SmolLM2 package: two client records over its 120 declared adapter tensors, weights 1 and 3, aggregate to exactly `(1*1 + 3*3)/4 = 2.5` in every tensor; 1,868,857 B global record. 8 tests. It is the round STATE MACHINE, not a web server - blobs in, validated, averaged via the existing `federated_average`, global record out; transport stays the transport's problem, which is what lets the aggregation be tested without a socket. Enforced: tensors matched **by name, never by position** (a record serialized in reversed order still aggregates correctly - the #35 defect), a client whose record disagrees with the package is **dropped rather than coerced**, dropout completes the round over survivors, and `min_clients` makes it FAIL rather than publish an aggregate two devices decided. **The device round-trip PASSES 2026-08-10** (S21 FE `SM-G990B` / Android 15 / arm64-v8a) — see "The #36 device round-trip" below.)*
@@ -1254,7 +1269,24 @@ seam, **not** multi-device convergence (that is #35's simulation, which trains r
   `System.loadLibrary`. **No x86_64 emulator.**
 - **Untracked vendored native deps** (all `.gitignore`d): `cpp/includes/google` (protobuf headers),
   `jniLibs/`, `aarLibs/`. Provisioned locally from the sibling `../ORTTransformer` checkout. Their
-  absence is why CI's `android-assemble` self-skips.
+  absence is why CI's `android-assemble` self-skips. **They are the only thing a `git clone` does not
+  bring**, so moving this repo to another machine means carrying, out of band:
+  `jniLibs/arm64-v8a/` (`libonnxruntime.so`, `libort_gen.so`, `libonnxruntime-genai{,-jni}.so`,
+  `libtokenizers_c.a`, `libprotobuf-lite.a`, `libobjectbox-jni.so`, `libonnxruntime4j_jni.so`),
+  `aarLibs/onnxruntime-genai.aar` (~40 MB), `cpp/includes/` (~24 MB) — all under
+  `android/MobileTransformers/MobileTransformers/src/main/` — plus, only if you need the training
+  side, `third_party/wheels/onnxruntime_training-*.whl` (~632 MB, see the macOS note below).
+  Everything else (`.venv*`, `build/`, `.gradle`, `.cxx`, `onnx_models/`, `dist/`) is recreatable.
+- **macOS cannot run the training side without a rebuild.** The source-built wheel is
+  `cp312-linux_x86_64` and **will not install or load on macOS**. Blocked there until it is rebuilt for
+  `macosx_arm64`: the real train→merge→generate legs (#18/#19), the train-capable package
+  (`make device-package TRAIN=1`), and #34's real training run. Everything else works — all core/dev +
+  export + genai-smoke Python, every Android host build/test, the inference+GenAI device package and
+  its device legs, #22 PEFT materialization (needs only the `train` extra, i.e. torch CPU) and #35
+  federated. Rebuild via `scripts/build_ort_training_*.sh` + `third_party/onnxruntime/BUILD.md`, then
+  repoint the `ort-training-local` group in `pyproject.toml`. *(Carried over 2026-08-14 from
+  `MAC_WORKPLAN.md`, which was retired: it was never executed, nothing referenced it, and its premise —
+  "#30/#31/#33/#34/#36/#37 not yet started" — was overtaken by the device runs on this Linux box.)*
 
 ## Upstream version ceilings (verified against PyPI 2026-08-09)
 

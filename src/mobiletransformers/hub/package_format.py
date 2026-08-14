@@ -178,6 +178,11 @@ def build_manifest(
         "onnxRuntimeGenAIVersion": report.get("onnxRuntimeGenAIVersion"),
         "peftMethods": list(report.get("peftMethods", [])),
         "quantization": list(report.get("quantization", [])),
+        # The training stage reports both of these (`export/pipeline.py`), and this field list used to
+        # drop them — every shipped package read `null` while `train/trainable_parameters.json` carried
+        # the real number. `None` on an inference-only package is correct, not a hole.
+        "trainableParameterCount": report.get("trainableParameterCount"),
+        "trainingParameterCount": report.get("trainingParameterCount"),
         "defaultVariant": default_variant,
         "variants": manifest_variants,
         "downloadPlan": download_plan,

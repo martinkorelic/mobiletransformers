@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures.gen_legacy_symbol_golden import public_symbols
+from tests.fixtures.symbol_tools import public_symbols
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _PKG = "src/mobiletransformers"
@@ -235,14 +235,17 @@ def test_public_symbols_survive_relocation(dotted: str) -> None:
 
 
 def test_golden_covers_every_legacy_module() -> None:
-    """A new legacy module must be recorded before it can be moved."""
-    from tests.fixtures.gen_legacy_symbol_golden import collect
+    """The golden is FROZEN and must stay populated.
 
-    missing = sorted(set(collect()) - set(GOLDEN))
-    assert not missing, (
-        f"legacy modules absent from the golden: {missing} — run "
-        "`python tests/fixtures/gen_legacy_symbol_golden.py`"
-    )
+    This used to call `collect()` and assert nothing was missing from the golden. Once S9 deleted the
+    seven legacy roots, `collect()` walked nothing and returned `{}`, so the assertion held for the
+    empty set — the test passed while checking nothing (found 2026-08-14, same class of rot as the two
+    empty-allow-list guards). There is no longer a source to collect from, so the meaningful invariant
+    is the opposite one: the recorded evidence must not be emptied out or truncated.
+    """
+    assert GOLDEN, "the symbol golden is empty — it is the migration's evidence and must not be reset"
+    assert len(GOLDEN) >= 40, f"the golden shrank to {len(GOLDEN)} modules; entries are never removed"
+    assert all(isinstance(v, list) for v in GOLDEN.values())
 
 
 #: Modules deliberately relocated OUTSIDE the package, with the reason. Anything else must land in
@@ -286,7 +289,7 @@ DECORATOR_GOLDEN = json.loads(
 
 
 def _decorators_at(path: Path) -> dict[str, list[str]]:
-    from tests.fixtures.gen_legacy_symbol_golden import decorated_definitions
+    from tests.fixtures.symbol_tools import decorated_definitions
 
     return decorated_definitions(path) if path.is_file() else {}
 

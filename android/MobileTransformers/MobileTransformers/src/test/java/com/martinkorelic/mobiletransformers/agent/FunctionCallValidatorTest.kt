@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 /**
  * #37 self-check 2: "Does it **never** execute raw model output (allowlist + dry-run + validated tool
@@ -75,10 +76,12 @@ class FunctionCallValidatorTest {
 
     @Test
     fun rejectsAMissingParameterRatherThanDefaultingIt() {
+        // `alarm` declares no `requiredParameters`, so every declared parameter stays mandatory —
+        // the default must not loosen for allowlists written before optional parameters existed.
         val error = assertThrows(RejectedCallException::class.java) {
             validator.validate("""{"actionName": "set_alarm", "parameters": {"time": "07:30"}}""")
         }
-        assertTrue(error.message!!.contains("missing parameter"))
+        assertTrue(error.message!!.contains("missing required parameter"))
         assertTrue(error.message!!.contains("label"))
     }
 
@@ -140,5 +143,66 @@ class FunctionCallValidatorTest {
         // The property that makes this a boundary: every intent any accepted call can produce is one
         // the app declared, so the set is knowable without reasoning about the model at all.
         assertEquals(setOf("set_alarm", "set_timer"), validator.allowedActions)
+    }
+
+    // --- optional parameters, and loading the allowlist the dataset command emits ----------------
+
+    /** `send_email` in `google/mobile-actions`: 3 declared, 2 required. */
+    private val email = ActionSpec(
+        actionName = "send_email",
+        parameters = mapOf("to" to "string", "subject" to "string", "body" to "string"),
+        allowedIntent = "android.intent.action.SENDTO",
+        requiredParameters = setOf("to", "subject"),
+    )
+
+    @Test
+    fun anOptionalParameterMayBeOmitted() {
+        val call = FunctionCallValidator(listOf(email)).validate(
+            """{"actionName": "send_email", "parameters": {"to": "a@b.c", "subject": "hi"}}""",
+        )
+        assertEquals("send_email", call.actionName)
+        assertEquals(setOf("to", "subject"), call.parameters.keys)
+    }
+
+    @Test
+    fun aRequiredParameterMayNotBeOmitted() {
+        val error = assertThrows(RejectedCallException::class.java) {
+            FunctionCallValidator(listOf(email)).validate(
+                """{"actionName": "send_email", "parameters": {"to": "a@b.c"}}""",
+            )
+        }
+        assertTrue(error.message!!.contains("missing required parameter(s) [subject]"))
+    }
+
+    @Test
+    fun buildsFromTheActionSchemaTheDatasetCommandWrites() {
+        val file = File.createTempFile("action_schema", ".json").apply {
+            writeText(
+                """
+                [{"actionName": "show_map",
+                  "parameters": {"query": "string"},
+                  "allowedIntent": "android.intent.action.VIEW",
+                  "requiredParameters": ["query"],
+                  "validationRules": {},
+                  "privacyClass": "imported-corpus"}]
+                """.trimIndent(),
+            )
+            deleteOnExit()
+        }
+        val fromSchema = FunctionCallValidator.fromSchema(file)
+        assertEquals(setOf("show_map"), fromSchema.allowedActions)
+        assertEquals(
+            "android.intent.action.VIEW",
+            fromSchema.validate("""{"actionName": "show_map", "parameters": {"query": "gym"}}""").allowedIntent,
+        )
+    }
+
+    @Test
+    fun aMissingOrUnparseableSchemaFailsClosed() {
+        assertThrows(RejectedCallException::class.java) {
+            FunctionCallValidator.fromSchema(File("/nonexistent/action_schema.json"))
+        }
+        val bad = File.createTempFile("bad", ".json").apply { writeText("{not json"); deleteOnExit() }
+        assertThrows(RejectedCallException::class.java) { FunctionCallValidator.fromSchema(bad) }
     }
 }

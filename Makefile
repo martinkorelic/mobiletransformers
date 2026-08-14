@@ -7,7 +7,7 @@
 
 .PHONY: help setup setup-export setup-train setup-genai \
         lint format typecheck parity guard test test-smoke test-train test-jvm test-cpp test-integration check consumer-app \
-        export-model package-model android-build device-package device-test device-rss device-federated build-aar publish-local docs clean-generated
+        export-model package-model android-build device-package device-test device-rss device-federated build-aar publish-local docs requirements clean-generated
 
 # Overridable export knobs (used by `export-model`).
 MODEL   ?=
@@ -15,6 +15,8 @@ OUTPUT  ?= build/package
 PEFT    ?= lora
 QUANT   ?= int4
 CONFIG  ?=
+# `package-model` re-emits the manifest of an ALREADY-EXPORTED package; defaults to what export wrote.
+PACKAGE ?= $(OUTPUT)
 # device-package knobs (the script re-applies its own defaults for empty values).
 VARIANT ?= cpu-int4
 TRAIN   ?= 0
@@ -91,10 +93,10 @@ check: lint typecheck parity guard test  ## lint + typecheck + parity + guards +
 
 # --- one-command export / package (wraps #15; no logic here) ------------------------------------
 export-model:  ## MODEL=<hf-id> [OUTPUT= PEFT= QUANT=] -> device-ready package (wraps #15).
-	mobiletransformers export --model $(MODEL) --output $(OUTPUT) --peft $(PEFT) --quant $(QUANT)
+	uv run mobiletransformers export --model $(MODEL) --output $(OUTPUT) --peft $(PEFT) --quant $(QUANT)
 
-package-model:  ## Validate + assemble an existing build dir into a Hub package (wraps #15).
-	mobiletransformers package-model $(if $(CONFIG),--config $(CONFIG),)
+package-model:  ## PACKAGE=<dir> [CONFIG=] -> re-hash + re-emit that package's manifest and checksums.
+	uv run mobiletransformers package-model --package $(PACKAGE) $(if $(CONFIG),--config $(CONFIG),)
 
 # --- android / publish (bodies owned by #30; thin wrappers over Gradle + scripts/) --------------
 android-build:  ## gradle assembleDebug (SDK + sample app).
@@ -121,8 +123,15 @@ build-aar:  ## Assemble the release AAR (#30 owns the script body).
 publish-local:  ## Publish the library to mavenLocal (#30 owns the script body).
 	scripts/publish_local_maven.sh
 
-docs:  ## Build the docs set if a docs system is added (#31).
-	@echo "docs: no docs system wired yet (owned by 05_code_plans/04, #31)."
+docs:  ## Regenerate the derived docs (compatibility matrix) and check every page's links/tables.
+	uv run mobiletransformers support-matrix --md docs/COMPATIBILITY_MATRIX.md
+	uv run pytest tests/unit/test_docs.py -q
+
+requirements:  ## Regenerate requirements/*.lock.txt from uv.lock (they had no producer and rotted).
+	uv export --no-emit-project --group dev --format requirements.txt -o requirements/requirements-dev.lock.txt
+	uv export --no-emit-project --extra export --format requirements.txt -o requirements/requirements-export.lock.txt
+	uv export --no-emit-project --extra rag --format requirements.txt -o requirements/requirements-rag.lock.txt
+	uv export --python 3.12 --no-emit-project --group ort-training-local --format requirements.txt -o requirements/requirements-train-local.lock.txt
 
 # --- cleanup (generated artifacts ONLY; never user caches / cache_dir/) --------------------------
 clean-generated:  ## Remove generated build/model artifacts ONLY (never user caches).

@@ -87,3 +87,38 @@ def test_citation_release_date_is_not_in_the_future() -> None:
     assert match, "CITATION.cff declares no date-released"
     released = date(*(int(g) for g in match.groups()))
     assert released <= date.today(), f"date-released {released} is in the future"
+
+
+def test_manifest_version_site_is_derived_not_hardcoded() -> None:
+    """The 5th version site: the manifest's `mobiletransformersVersion`.
+
+    `export/pipeline.py` derives it from `importlib.metadata`, so a real export is always correct.
+    The FIXTURES were the rot risk: three of them hardcoded "0.1.0", so a version bump would have left
+    the committed package, its generator and the pipeline test disagreeing with `pyproject.toml`
+    while every other version test stayed green.
+    """
+    import json
+
+    expected = declared_version()
+    fixture = REPO_ROOT / "tests/fixtures/tiny_package/mobiletransformers_manifest.json"
+    manifest = json.loads(fixture.read_text(encoding="utf-8"))
+    assert manifest["mobiletransformersVersion"] == expected, (
+        f"{fixture.relative_to(REPO_ROOT)} says {manifest['mobiletransformersVersion']!r}, "
+        f"pyproject says {expected!r} — regenerate it with tests/fixtures/make_tiny_package.py"
+    )
+
+    for path in (
+        REPO_ROOT / "tests/fixtures/make_tiny_package.py",
+        REPO_ROOT / "tests/export/test_pipeline.py",
+    ):
+        text = path.read_text(encoding="utf-8")
+        if "mobiletransformersVersion" not in text:
+            continue
+        for line in text.splitlines():
+            if "mobiletransformersVersion" in line and '"' in line.split(":", 1)[-1]:
+                literal = re.search(r'"mobiletransformersVersion":\s*"([^"]+)"', line)
+                if literal:
+                    assert literal.group(1) == expected, (
+                        f"{path.relative_to(REPO_ROOT)} hardcodes "
+                        f"{literal.group(1)!r}; pyproject says {expected!r}"
+                    )

@@ -7,7 +7,8 @@ import com.martinkorelic.mobiletransformers.config.PeftConfig
 /**
  * Pure PEFT taxonomy mapping + validation (#19). On-device `applyPeft` reads the exported method from the
  * package's `train/training_config.json` and validates the requested [PeftConfig] against it. This mirrors
- * the Python export taxonomy (`trainer/builder.py` `train_method` + `MarsConfig.optimization_level`); keep
+ * the Python export taxonomy (`export/training_export.py` `train_method`, via `config/registry/peft.py`,
+ * + `MarsConfig.optimization_level`); keep
  * the two in sync. Everything here is pure (Gson, no Android framework) so it is JVM-unit-testable.
  */
 data class PeftTaxonomy(val trainMethod: String, val optimizationLevel: Int?)

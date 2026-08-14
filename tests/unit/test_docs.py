@@ -16,20 +16,66 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCS = REPO_ROOT / "docs"
 MARKDOWN = sorted(DOCS.glob("*.md")) + [REPO_ROOT / "README.md", REPO_ROOT / "CHANGELOG.md"]
 
+#: EVERY tracked markdown file, `docs/` and `agent_docs/` alike.
+#:
+#: The link check used to cover `docs/` + README + CHANGELOG only. The 2026-08-14 review found the
+#: worst reference rot was in `agent_docs/` — plan text still pointing at `tools/parser_config.py` and
+#: other files deleted in S9 — precisely because nothing checked it. A planning doc that names a file
+#: which no longer exists sends the next cold agent to a dead address, which is the same failure a
+#: broken link in `docs/` is, with a longer feedback loop.
+#:
+#: Deliberately relative links only. Checking external URLs needs the network, goes red for reasons
+#: outside this repo, and would make the one gate that always runs the flakiest one.
+#:
+#: Enumerated with `git ls-files` rather than `rglob` + an exclude list. An `rglob` sweep reported 8
+#: "broken" pages that were all vendored nlohmann/json docs under `.cxx/_deps/` — build output whose
+#: links are not ours to fix — and every new vendored dependency would have needed another exclusion.
+#: Tracked-files-only is self-maintaining: anything gitignored is out by construction.
+
+
+def _tracked_markdown() -> list[Path]:
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "ls-files", "*.md"], cwd=REPO_ROOT, capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        return []
+    return sorted(REPO_ROOT / line for line in result.stdout.split() if (REPO_ROOT / line).is_file())
+
+
 _LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
-@pytest.mark.parametrize("page", MARKDOWN, ids=lambda p: p.name)
-def test_relative_links_resolve(page: Path) -> None:
+def _broken_links(page: Path) -> list[str]:
     broken = []
-    for match in _LINK.finditer(page.read_text(encoding="utf-8")):
+    for match in _LINK.finditer(page.read_text(encoding="utf-8", errors="replace")):
         target = match.group(2)
         if target.startswith(("http://", "https://", "#", "mailto:")):
             continue
         path = target.partition("#")[0]
         if path and not (page.parent / path).resolve().exists():
             broken.append(f"[{match.group(1)}]({target})")
-    assert not broken, f"{page.name}: broken relative link(s): {broken}"
+    return broken
+
+
+@pytest.mark.parametrize("page", MARKDOWN, ids=lambda p: p.name)
+def test_relative_links_resolve(page: Path) -> None:
+    assert not _broken_links(page), f"{page.name}: broken relative link(s): {_broken_links(page)}"
+
+
+def test_no_tracked_markdown_links_to_a_missing_file() -> None:
+    """The repo-wide sweep, reported in one place so a rename shows every page it broke at once."""
+    pages = _tracked_markdown()
+    if not pages:
+        pytest.skip("git not available or not a checkout")
+    assert len(pages) > 50, f"only {len(pages)} markdown files found — the sweep is not seeing the repo"
+
+    broken = {str(page.relative_to(REPO_ROOT)): links for page in pages if (links := _broken_links(page))}
+    assert not broken, (
+        "markdown link(s) pointing at files that do not exist — a renamed or deleted file leaves "
+        f"these behind silently:\n{broken}"
+    )
 
 
 def test_cli_table_lists_every_registered_subcommand() -> None:

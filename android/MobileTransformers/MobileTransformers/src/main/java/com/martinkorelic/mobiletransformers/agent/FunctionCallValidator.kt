@@ -3,6 +3,7 @@ package com.martinkorelic.mobiletransformers.agent
 import com.google.gson.Gson
 import com.google.gson.JsonSyntaxException
 import com.martinkorelic.mobiletransformers.MobileTransformersException
+import java.io.File
 
 /**
  * Rejected because the model asked for something the app did not declare, or asked for it wrongly.
@@ -32,7 +33,20 @@ data class ActionSpec(
     val allowedIntent: String,
     val validationRules: Map<String, String> = emptyMap(),
     val privacyClass: String = "unspecified",
-)
+    /**
+     * Parameters that MUST be present. `null` means "all declared ones", which is what a hand-written
+     * allowlist means and what this validator enforced before optional parameters existed.
+     *
+     * Real tool schemas separate the two. In `google/mobile-actions`, `send_email` declares
+     * `subject`/`body`/`to` but requires only `to`/`subject`; `create_contact` requires 2 of 4.
+     * Treating every declared parameter as required would reject calls that corpus considers correct
+     * — the model would be trained toward targets its own validator refuses.
+     */
+    val requiredParameters: Set<String>? = null,
+) {
+    /** The effective required set: all declared parameters unless [requiredParameters] narrows it. */
+    val required: Set<String> get() = requiredParameters ?: parameters.keys
+}
 
 /** The raw shape parsed out of model output. Untrusted until [FunctionCallValidator] accepts it. */
 internal data class ToolCall(
@@ -67,6 +81,32 @@ data class ValidatedCall(
  * already a dependency.
  */
 class FunctionCallValidator(allowlist: List<ActionSpec>) {
+
+    companion object {
+        private val HH_MM = Regex("^([01]\\d|2[0-3]):[0-5]\\d$")
+
+        /** The filename `mobiletransformers agent-dataset` writes beside the training JSONL. */
+        const val ACTION_SCHEMA_FILENAME = "action_schema.json"
+
+        /**
+         * Build a validator from the action schema emitted next to the training set.
+         *
+         * The point of loading rather than hard-coding: the schema comes out of the SAME command that
+         * produced the training rows, so the boundary the model was trained toward and the boundary
+         * enforced here are one artifact. A hand-written allowlist beside a generated dataset is a
+         * drift waiting to happen.
+         */
+        @JvmStatic
+        fun fromSchema(file: File): FunctionCallValidator {
+            if (!file.isFile) throw RejectedCallException("no action schema at ${file.path}")
+            val specs = try {
+                Gson().fromJson(file.readText(Charsets.UTF_8), Array<ActionSpec>::class.java)
+            } catch (e: JsonSyntaxException) {
+                throw RejectedCallException("${file.path} is not a valid action schema: ${e.message}")
+            } ?: throw RejectedCallException("${file.path} parsed to null")
+            return FunctionCallValidator(specs.toList())
+        }
+    }
 
     private val byName: Map<String, ActionSpec> = allowlist.associateBy { it.actionName }
 
@@ -114,9 +154,10 @@ class FunctionCallValidator(allowlist: List<ActionSpec>) {
             )
         }
 
-        val missing = spec.parameters.keys - supplied.keys
+        // Against `required`, not every declared parameter — an optional one may legitimately be absent.
+        val missing = spec.required - supplied.keys
         if (missing.isNotEmpty()) {
-            throw RejectedCallException("action '$name' is missing parameter(s) ${missing.sorted()}")
+            throw RejectedCallException("action '$name' is missing required parameter(s) ${missing.sorted()}")
         }
 
         for ((param, rule) in spec.validationRules) {
@@ -142,7 +183,4 @@ class FunctionCallValidator(allowlist: List<ActionSpec>) {
         else -> false
     }
 
-    private companion object {
-        val HH_MM = Regex("^([01]\\d|2[0-3]):[0-5]\\d$")
-    }
 }

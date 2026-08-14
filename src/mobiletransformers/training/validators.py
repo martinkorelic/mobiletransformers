@@ -16,7 +16,6 @@ import onnxruntime as ort
 import onnxruntime as rt
 import psutil
 import torch
-import yaml
 from datasets import Dataset
 from onnxruntime import SessionOptions
 from onnxruntime.training.api import CheckpointState, LinearLRScheduler, Module, Optimizer
@@ -37,6 +36,7 @@ from mobiletransformers.training.preprocessing import (
     DataCollatorForSupervisedDataset,
     taskname_to_deepeval_preprocess_function,
 )
+from mobiletransformers.utils.yaml import load_config_from_file
 
 
 class CosineLRScheduler:
@@ -1178,13 +1178,6 @@ def parse_extra_options(extra_options: list[str]) -> dict[str, str]:
 
     print(f"Extra options: {options_dict}")
     return options_dict
-
-
-def load_config_from_file(config_file: str):
-    """Load configurations from a YAML file into a dictionary."""
-    with open(config_file) as file:
-        config = yaml.safe_load(file)
-    return config
 
 
 def parse_arguments():

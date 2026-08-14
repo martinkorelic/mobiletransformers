@@ -12,6 +12,7 @@ import argparse
 
 from mobiletransformers import __version__
 from mobiletransformers.cli import (
+    agent_dataset,
     export,
     federated,
     package_model,
@@ -22,7 +23,17 @@ from mobiletransformers.cli import (
     validate,
 )
 
-_SUBCOMMANDS = (export, validate, package_model, push, support_matrix, pull, push_adapter, federated)
+_SUBCOMMANDS = (
+    export,
+    validate,
+    package_model,
+    push,
+    support_matrix,
+    pull,
+    push_adapter,
+    federated,
+    agent_dataset,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,7 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(
         dest="command",
         metavar=(
-            "{export,validate,package-model,push,support-matrix,pull,install-package,push-adapter,federated}"
+            "{export,validate,package-model,push,support-matrix,pull,install-package,"
+            "push-adapter,federated,agent-dataset}"
         ),
     )
     for module in _SUBCOMMANDS:

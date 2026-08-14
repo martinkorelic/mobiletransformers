@@ -6,7 +6,6 @@ from typing import Any
 
 import numpy as np
 import onnxruntime as ort
-import yaml
 
 from mobiletransformers.artifacts.checkpoint_names import to_checkpoint_name
 from mobiletransformers.config.constants import (
@@ -15,6 +14,7 @@ from mobiletransformers.config.constants import (
     TRAIN_CONFIG,
 )
 from mobiletransformers.training.validators import ORTTrainer
+from mobiletransformers.utils.yaml import load_config_from_file
 
 
 class PEFTMergeValidator:
@@ -418,13 +418,6 @@ def parse_extra_options(extra_options: list[str]) -> dict[str, str]:
 
     print(f"Extra options: {options_dict}")
     return options_dict
-
-
-def load_config_from_file(config_file: str):
-    """Load configurations from a YAML file into a dictionary."""
-    with open(config_file) as file:
-        config = yaml.safe_load(file)
-    return config
 
 
 def parse_arguments():

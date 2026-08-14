@@ -68,6 +68,19 @@ class ActionSpec:
     allowed_intent: str = ""
     validation_rules: dict[str, str] = field(default_factory=dict)
     privacy_class: str = "unspecified"
+    #: Parameters that MUST be present. ``None`` means "all of them", which is what a hand-written
+    #: allowlist means and what the validator enforced before optional parameters existed.
+    #:
+    #: Real tool schemas distinguish the two: in `google/mobile-actions`, `send_email` declares
+    #: `subject`/`body`/`to` but requires only `to`/`subject`, and `create_contact` requires 2 of 4.
+    #: Treating every declared parameter as required would reject calls the dataset itself considers
+    #: correct — the model would be trained on targets its own validator refuses.
+    required_parameters: set[str] | None = None
+
+    @property
+    def required(self) -> set[str]:
+        """The effective required set (all declared parameters unless narrowed)."""
+        return set(self.parameters) if self.required_parameters is None else set(self.required_parameters)
 
 
 def _value_for(param: str, rule: str | None, rng: random.Random) -> str:
@@ -86,7 +99,7 @@ def generate_examples(
     per_action: int = 8,
     seed: int = 0,
     templates: dict[str, tuple[str, ...]] | None = None,
-) -> list[dict[str, object]]:
+) -> list[dict[str, str]]:
     """One user's dataset: ``{"prompt": ..., "completion": <tool-call JSON>}`` rows.
 
     The completion is the exact JSON shape ``FunctionCallValidator.validate`` parses, so what the model
@@ -103,7 +116,7 @@ def generate_examples(
 
     table = {**DEFAULT_TEMPLATES, **(templates or {})}
     rng = random.Random(seed)
-    rows: list[dict[str, object]] = []
+    rows: list[dict[str, str]] = []
 
     for spec in allowlist:
         forms = table.get(spec.action_name) or (
@@ -137,7 +150,7 @@ def generate_examples(
     return rows
 
 
-def write_jsonl(rows: list[dict[str, object]], path: str | Path) -> Path:
+def write_jsonl(rows: list[dict[str, str]], path: str | Path) -> Path:
     """Write ``rows`` as JSONL, the format ``ORTDataCurator`` reads on device."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,6 +176,10 @@ def load_allowlist(path: str | Path) -> list[ActionSpec]:
                 allowed_intent=row.get("allowedIntent", ""),
                 validation_rules=row.get("validationRules", {}),
                 privacy_class=row.get("privacyClass", "unspecified"),
+                # Absent means "all declared parameters are required" — the same default the Kotlin
+                # ActionSpec applies, so a schema written before optional parameters existed keeps
+                # its original, stricter meaning on both sides.
+                required_parameters=(set(row["requiredParameters"]) if "requiredParameters" in row else None),
             )
         )
     return specs

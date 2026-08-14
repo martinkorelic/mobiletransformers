@@ -35,13 +35,14 @@ against `public_api.txt`, so any addition is a deliberate SemVer change.
 | --- | --- |
 | `export` | HF model → device-ready package (`--dry-run`, `--config`, `--validate` supported). |
 | `validate` | Validate a written package (`--package`) and/or a config YAML (`--config`). |
-| `package-model` | Assemble a Hub package from a build dir *(stub; body in a later plan)*. |
+| `package-model` | Re-hash an existing package and re-emit its manifest + checksums (`--package`). |
 | `push` | Validate + publish a package to the Hub. |
 | `pull` | Download a package (manifest-first, sha256-verified). |
 | `install-package` | Materialize a pulled package into the SDK cache layout. |
 | `support-matrix` | Generate `model_support_matrix.json` (+ `--docs`, `--md`). |
 | `push-adapter` | Publish a trained adapter (PEFT Mode 1 / native Mode 2). |
 | `federated` | `federated simulate` — FedAvg simulation over codec-ordered adapter records. |
+| `agent-dataset` | Build the #37 tool-call training set + action schema (import a corpus, or synthesise per-user). |
 
 Run `mobiletransformers <command> --help` for flags. `make help` lists the wrapper targets
 (`export-model`, `package-model`, `android-build`, …).

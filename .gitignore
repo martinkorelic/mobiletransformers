@@ -24,3 +24,8 @@ third_party/onnxruntime/build/
 .ruff_cache/
 .pytest_cache/
 .venv-genai-spike/
+
+# Gradle daemon caches (67 files of examples/consumer-app/.gradle were tracked until 2026-08-14)
+.gradle/
+*.fork.bak
+*.stub.bak

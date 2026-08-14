@@ -38,6 +38,25 @@ data class MobileTransformersManifest(
 
     fun variant(id: String): Variant? = variants.firstOrNull { it.id == id }
 
+    /**
+     * The engines the installed variant declares, for [ModelRuntimeFactory.create]'s selection.
+     *
+     * `ModelRuntimeFactory.create` used to be called with a hard-coded `setOf("native","genai")` and a
+     * comment saying the set "would come from the manifest variant (#13)" — so a native-only variant
+     * was still offered to GenAI, and the manifest field this class has always parsed was never read.
+     *
+     * A package that declares no engines at all (an older export) yields `null`, and the caller keeps
+     * the permissive default: an unknown declaration must not become a *narrower* one, or upgrading the
+     * SDK would break packages that work today.
+     */
+    fun supportedEnginesFor(variantId: String? = null): Set<String>? {
+        val chosen = variantId?.let { variant(it) }
+            ?: variants.singleOrNull()
+            ?: variant(defaultVariant)
+            ?: return null
+        return chosen.supportedEngines.takeIf { it.isNotEmpty() }?.toSet()
+    }
+
     companion object {
         private val gson = Gson()
 

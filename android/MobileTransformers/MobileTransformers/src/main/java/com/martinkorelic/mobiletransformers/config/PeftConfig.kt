@@ -3,8 +3,9 @@ package com.martinkorelic.mobiletransformers.config
 /**
  * PEFT selection surface (#19), a sealed class over the Python export taxonomy.
  *
- * **On-device semantics:** PEFT topology is baked in at export time (`trainer/builder.py`
- * `train_method` + `peft_models/mars/config.py` `MarsConfig.optimization_level`), so a package's
+ * **On-device semantics:** PEFT topology is baked in at export time (`export/training_export.py`
+ * `train_method`, resolved through `config/registry/peft.py`, + `peft/mars/config.py`
+ * `MarsConfig.optimization_level`), so a package's
  * `train/training_config.json` already fixes the method. `MobileTransformerModel.applyPeft` is therefore
  * a *selection/validation* step (against what the installed package supports) plus rank/alpha overrides —
  * never a graph rewrite. The mapping to the Python taxonomy lives in

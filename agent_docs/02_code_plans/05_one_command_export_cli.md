@@ -44,7 +44,7 @@ Reused existing code (wrapped, not forked):
 - `artifact/onnx_builder.py`: `convert_pipeline(...)`, `gen_artifacts(...)` (ORT training artifacts via `onnxruntime.training.artifacts.generate_artifacts`), `gen_genai(...)`, `force_dequantize_external_and_save(...)`.
 - `artifact/merger.py`: `build_merger_model(MergerSpec, output_path)` — the single unified merger builder from `00_code_plans/09` (it replaces the legacy `create_*_merger_model{,_2}` factories; do not call those). The CLI iterates `09.resolve_merger(peft_method, quant_in, quant_out)` and emits one merger per spec.
 - `tools/tokenizer_export.py`: `export_tokenizer_config(...)` (writes `tokenizer/` + `ortmobile_tokenizer_config.json`).
-- `mobiletransformers.config.constants`: section constants `TRAIN_CONFIG`, `INFERENCE_CONFIG`, `ARTIFACT_CONFIG`, `TASK_NAME_TO_DATASET` (via the `00_code_plans/02` layout; `tools/parser_config.py` is only a shim).
+- `mobiletransformers.config.constants`: section constants `TRAIN_CONFIG`, `INFERENCE_CONFIG`, `ARTIFACT_CONFIG`, `TASK_NAME_TO_DATASET` (via the `00_code_plans/02` layout; `tools/parser_config.py` was only a shim, and is deleted).
 - `mobiletransformers.config.settings.get_settings()`: `hf_token` (root `config.py` is only a deprecation shim by now — see `00_code_plans/02`); `config/config.yml` sections `TRAIN_BUILDER`, `INFERENCE_BUILDER`, `ARTIFACT_BUILDER`.
 - `mobiletransformers/hub/package_format.py` (#14): `build_manifest`, `FEATURE_GROUPS`, repo-shape constants.
 

@@ -13,8 +13,9 @@ import os
 import textwrap
 import time
 
-import yaml
 from dotenv import load_dotenv
+
+from mobiletransformers.utils.yaml import load_config_from_file
 
 load_dotenv()
 
@@ -676,7 +677,10 @@ def convert_pipeline(
     export_inference_config=True,
     export_merger=True,
     delete_models=False,
-    config_file_path="config.yml",
+    # `config/config.yml` is the canonical user-editable YAML (see `config/__init__.py`). This used to
+    # read `"config.yml"` — the repo-root duplicate, which was stale (missing `handoff_mode`) and was
+    # deleted 2026-08-14.
+    config_file_path="config/config.yml",
     **kwargs,
 ):
     """
@@ -830,13 +834,6 @@ def parse_extra_options(extra_options: list[str]) -> dict[str, str]:
 
     print(f"Extra options: {options_dict}")
     return options_dict
-
-
-def load_config_from_file(config_file: str):
-    """Load configurations from a YAML file into a dictionary."""
-    with open(config_file) as file:
-        config = yaml.safe_load(file)
-    return config
 
 
 def parse_arguments():

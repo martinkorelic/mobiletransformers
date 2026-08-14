@@ -11,7 +11,7 @@ import org.junit.Test
 
 /**
  * #19: the on-device PEFT taxonomy mapping + validation (pure; mirrors the Python export taxonomy —
- * `trainer/builder.py` `train_method` + `MarsConfig.optimization_level`).
+ * `export/training_export.py` `train_method` + `MarsConfig.optimization_level`).
  */
 class PeftMappingTest {
 

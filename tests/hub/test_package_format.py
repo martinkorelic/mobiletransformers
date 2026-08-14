@@ -94,6 +94,32 @@ def test_build_manifest_is_deterministic():
     assert rebuilt["downloadPlan"] == m["downloadPlan"]
 
 
+def test_parameter_counts_reach_the_manifest():
+    """The training stage reports both counts; `build_manifest` used to drop them on the floor.
+
+    Every shipped package (decoder and encoder alike) read `null` for these while
+    `train/trainable_parameters.json` carried the real number — so a package could not be audited
+    from its manifest alone.
+    """
+    m = _load_manifest()
+    variants = [
+        {k: v for k, v in var.items() if k not in ("weightHandoff", "paths")} for var in m["variants"]
+    ]
+    report = {"trainableParameterCount": 442_368, "trainingParameterCount": 135_000_000}
+    rebuilt = build_manifest(
+        PKG, variants, base_model_id=m["baseModelId"], report=report, default_variant=m["defaultVariant"]
+    )
+    assert rebuilt["trainableParameterCount"] == 442_368
+    assert rebuilt["trainingParameterCount"] == 135_000_000
+
+    # Inference-only packages legitimately have neither: the key is present and null, not absent.
+    inference_only = build_manifest(
+        PKG, variants, base_model_id=m["baseModelId"], report={}, default_variant=m["defaultVariant"]
+    )
+    assert inference_only["trainableParameterCount"] is None
+    assert inference_only["trainingParameterCount"] is None
+
+
 # --- dual-engine sanity -----------------------------------------------------
 
 

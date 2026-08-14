@@ -31,7 +31,8 @@ rewrite path.
     x86_64}` (was a stale 3 MB build missing the 0.14 generator symbols). Vendored fork header
     `cpp/onnxruntime-genai/ort_genai_c.h` replaced with the AAR's clean upstream header. A `packaging {
     jniLibs { pickFirsts } }` dedupe resolves the AAR-vs-jniLibs `.so` collision. The dead
-    `ORTGenAITokenizer.kt` (old genai Java API) was reduced to a compiling stub (DECOMPOSE(#11)).
+    `ORTGenAITokenizer.kt` (old genai Java API) was reduced to a compiling stub (DECOMPOSE(#11)),
+    and **deleted outright 2026-08-14** together with its unused `LLMRepository` field.
 
 ## How to run the swap smokes
 

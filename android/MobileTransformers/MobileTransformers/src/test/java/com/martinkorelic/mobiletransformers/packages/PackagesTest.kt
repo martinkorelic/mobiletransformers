@@ -159,4 +159,37 @@ class PackagesTest {
         assertFalse(entry.hasManifest)
         assertNull(entry.baseModelId)
     }
+
+    // --- supportedEngines reaches the engine selector (#13) --------------------
+
+    @Test
+    fun supportedEnginesComesFromTheNamedVariant() {
+        val m = MobileTransformersManifest.load(
+            File(tinyPackage(), PackageFormat.MANIFEST_FILENAME),
+        )
+        assertEquals(setOf("native", "genai"), m.supportedEnginesFor("cpu-int4"))
+        // The native-only variant must NOT offer genai — this is the whole point: `create` was called
+        // with a hard-coded setOf("native","genai") regardless of what the package declared.
+        assertEquals(setOf("native"), m.supportedEnginesFor("cpu-fp16"))
+    }
+
+    @Test
+    fun supportedEnginesFallsBackToTheDefaultVariant() {
+        val m = MobileTransformersManifest.load(
+            File(tinyPackage(), PackageFormat.MANIFEST_FILENAME),
+        )
+        // No variant named -> the manifest's defaultVariant (cpu-int4).
+        assertEquals(setOf("native", "genai"), m.supportedEnginesFor())
+    }
+
+    @Test
+    fun supportedEnginesIsNullWhenThePackageDeclaresNone() {
+        // An older export, or a variant with an empty list: null means "unknown", and the caller keeps
+        // its permissive default rather than silently narrowing to native-only.
+        val undeclared = MobileTransformersManifest.parse(
+            """{"defaultVariant":"v","variants":[{"id":"v","supportedEngines":[]}]}""",
+        )
+        assertNull(undeclared.supportedEnginesFor())
+        assertNull(MobileTransformersManifest.parse("""{"variants":[]}""").supportedEnginesFor())
+    }
 }

@@ -18,9 +18,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC = REPO_ROOT / "src" / "mobiletransformers"
 
 #: Top-level packages that live at the repo root and are NOT shipped in the wheel.
+#:
+#: `config` was added 2026-08-14: the root `config.py` deprecation shim was NOT in this set, so the
+#: gate did not catch `evaluation/mobile/recommendation_eval.py`'s `from config import AZURE_*` — an
+#: installed wheel raised `ModuleNotFoundError: config`. The shim is now deleted, and the name stays
+#: listed so a re-introduced root `config.py` cannot reopen the hole.
 LEGACY_ROOTS = frozenset(
-    {"trainer", "artifact", "inference", "tools", "peft_models", "evaluation", "database", "research"}
+    {
+        "trainer",
+        "artifact",
+        "inference",
+        "tools",
+        "peft_models",
+        "evaluation",
+        "database",
+        "research",
+        "config",
+    }
 )
+
+#: The subset scanned for lazy dotted-path STRING literals (see `_dotted_string_references`).
+DOTTED_ROOTS = LEGACY_ROOTS - {"config"}
 
 #: `src/`-relative module path -> the legacy roots it may still import. ENTRIES MAY ONLY BE REMOVED.
 #:
@@ -70,7 +88,9 @@ def _dotted_string_references() -> dict[str, list[str]]:
     import re
 
     # Non-capturing group: findall must return the FULL dotted path, not just the root.
-    pattern = re.compile(rf'"((?:{"|".join(sorted(LEGACY_ROOTS))})\.[\w.]+)"')
+    # Scans DOTTED_ROOTS, not LEGACY_ROOTS: `config` is a legacy *import* root but a terrible
+    # dotted-literal root — `"config.yml"` / `"config.json"` are filenames, not module paths.
+    pattern = re.compile(rf'"((?:{"|".join(sorted(DOTTED_ROOTS))})\.[\w.]+)"')
     offenders: dict[str, list[str]] = {}
     for path in sorted(SRC.rglob("*.py")):
         hits = pattern.findall(path.read_text(encoding="utf-8"))

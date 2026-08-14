@@ -37,7 +37,13 @@ from mobiletransformers.training.data import preload_dataset
 
 from peft.peft_model import PEFT_TYPE_TO_MODEL_MAPPING
 from peft import PeftType
-from config import TASK_EPOCHS, BATCH_SIZE, PER_DEVICE_BATCH_SIZE, GRADIENT_ACCUMULATION, EXPERIMENT_RANKS
+from mobiletransformers.config.constants import (
+    TASK_EPOCHS,
+    BATCH_SIZE,
+    PER_DEVICE_BATCH_SIZE,
+    GRADIENT_ACCUMULATION,
+    EXPERIMENT_RANKS,
+)
 from mobiletransformers.peft.lora_xs.initialization_utils import find_and_initialize
 
 def add_peft_type(name, value):

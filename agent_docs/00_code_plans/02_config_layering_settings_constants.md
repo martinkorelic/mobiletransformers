@@ -32,6 +32,8 @@ New:
 Modified (shims, not full migration):
 - Root `config.py` → thin re-export from `mobiletransformers.config.settings` + `mobiletransformers.config.constants` with a `DeprecationWarning` (non-circular: the shim's module name `config` differs from the package path it imports).
 - `tools/parser_config.py` → thin re-export from `mobiletransformers.config.constants` with a `DeprecationWarning`.
+  **Both shims this plan created are now deleted** (`tools/parser_config.py` with the `tools/` root in
+  S9; root `config.py` on 2026-08-14). The constants live only in `mobiletransformers.config.constants`.
 
 ## Data contracts / interfaces
 

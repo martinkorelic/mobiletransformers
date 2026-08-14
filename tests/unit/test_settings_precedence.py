@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import importlib
-import warnings
+from pathlib import Path
 
 import pytest
 
 from mobiletransformers.config import resolve
 from mobiletransformers.config import settings as settings_module
 from mobiletransformers.config.settings import Settings, get_settings
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 # --- precedence: CLI > env > YAML > default ---------------------------------------
@@ -87,20 +88,19 @@ def test_require_hf_token_raises_when_missing(monkeypatch):
 
 
 # --- legacy import compatibility (deprecation shims) ------------------------------
-def test_legacy_config_shim_imports_and_warns():
-    import config as legacy_config
-
-    importlib.reload(legacy_config)  # ensure the DeprecationWarning path runs
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        importlib.reload(legacy_config)
-    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
-    # experiment constants still resolve through the shim
-    assert legacy_config.TASK_EPOCHS["boolq"] == 2
-    assert legacy_config.BATCH_SIZE == 32
-    assert hasattr(legacy_config, "AZURE_API_VERSION")
+# Both shims are GONE. `tools/parser_config.py` went with the `tools/` root in S9;
+# the root `config.py` was deleted 2026-08-14 once its last two importers were repointed
+# (`evaluation/mobile/recommendation_eval.py` -> `get_settings()`, which also fixed a
+# ModuleNotFoundError from an installed wheel, and `research/offline_train_eval.py` ->
+# `mobiletransformers.config.constants`). The constants they re-exported are covered by the
+# symbol golden; the secrets are covered by the precedence tests above.
+def test_no_root_config_shim_remains():
+    """The root `config.py` must stay deleted — it shadowed the package name and was not in the wheel."""
+    assert not (REPO_ROOT / "config.py").exists()
 
 
-# `test_legacy_parser_config_shim_imports_and_warns` was deleted with the `tools/` shim in S9.
-# The constants it guarded now live in `mobiletransformers.config.constants`, covered by the
-# symbol golden. The root `config.py` shim tested above is a different thing and stays.
+def test_experiment_constants_resolve_from_the_package():
+    from mobiletransformers.config.constants import BATCH_SIZE, TASK_EPOCHS
+
+    assert TASK_EPOCHS["boolq"] == 2
+    assert BATCH_SIZE == 32

@@ -31,9 +31,19 @@ DISPATCH_PATTERNS = (
 )
 
 #: Legacy roots still outside the new package. **EMPTY — S9 deleted all seven.** Kept as a named
-#: constant (rather than deleted) so the scan below still has a defined subject and so re-introducing a
-#: root outside `src/` is a one-line, visible change rather than an invisible omission.
+#: constant (rather than deleted) so re-introducing a root outside `src/` is a one-line, visible
+#: change rather than an invisible omission.
 LEGACY_ROOTS: tuple[str, ...] = ()
+
+#: First-party Python that lives OUTSIDE the wheel and is therefore ungated by ruff/mypy: the paper
+#: experiments, the shell/Python helpers, and the gate spikes.
+#:
+#: 2026-08-14: this replaces `LEGACY_ROOTS` as the dispatch guard's subject. With `LEGACY_ROOTS`
+#: empty, `test_legacy_dispatch_debt_only_shrinks` and `test_allowlist_entries_still_exist` scanned
+#: NOTHING — 2 of the 7 guards asserted nothing at all while reading as if they were enforcing. These
+#: directories are the real remaining un-gated first-party Python, and `research/` genuinely carries
+#: the debt below.
+NON_PACKAGE_PY_ROOTS: tuple[str, ...] = ("research", "scripts", "spikes")
 
 #: repo-relative path -> the number of dispatch hits currently tolerated. ENTRIES MAY ONLY SHRINK.
 #:
@@ -46,9 +56,20 @@ LEGACY_ROOTS: tuple[str, ...] = ()
 #: This sat at 14 for months behind "the module is unimportable under every declared profile". The real
 #: cause was one renamed ORT import (see `export/quantizer_compat.py`).
 #:
-#: An empty allow-list makes the test below an assertion rather than a ratchet: ANY string-literal
-#: dispatch in a legacy root now fails.
-DISPATCH_ALLOWLIST: dict[str, int] = {}
+#: Within `src/` this is closed and stays closed — `tests/unit/test_registries.py` asserts it there.
+#:
+#: The counts below are `research/`'s, measured 2026-08-14 when this guard was re-pointed at
+#: `NON_PACKAGE_PY_ROOTS`. They are the paper's ablation scripts: `offline_train_eval.py` branches over
+#: the PEFT methods it compares, which is what an experiment harness legitimately does — it is out of
+#: the wheel and out of ruff/mypy for the same reason. The ratchet's job here is that **no new**
+#: dispatch appears, and that these numbers only fall (e.g. if a script is retired).
+#:
+#: Owner: `research/` is the paper's, not the library's — it is excluded from the wheel, from ruff and
+#: from mypy by `pyproject.toml`, and its READMEs record why it is kept. No plan owns migrating it.
+DISPATCH_ALLOWLIST: dict[str, int] = {
+    "research/offline_train_eval.py": 10,
+    "research/pytorch_experiments/dynamic_model_training.py": 3,
+}
 
 # --- #33/#6: architecture-name literals -------------------------------------------------------
 
@@ -95,7 +116,9 @@ SECRET_LITERAL_PATTERN = (
     r'(?i)\b(api_?key|secret|password|access_token|auth_token)\s*=\s*["\'][A-Za-z0-9_\-]{16,}["\']'
 )
 
-SCAN_DIRS = ("src", "tests", *LEGACY_ROOTS)
+#: 2026-08-14: widened from `("src", "tests")` — the secret guard could not see `research/`,
+#: `scripts/` or `spikes/`, which is precisely where a quick experiment script would paste a key.
+SCAN_DIRS = ("src", "tests", *LEGACY_ROOTS, *NON_PACKAGE_PY_ROOTS)
 
 
 def _is_in_comment(line_text: str, pattern: str) -> bool:
@@ -154,8 +177,8 @@ def test_no_dispatch_literals_in_cpp() -> None:
 
 
 def test_legacy_dispatch_debt_only_shrinks() -> None:
-    """Ratchet over the legacy roots: no NEW dispatch literals, and known ones must decrease."""
-    roots = [REPO_ROOT / r for r in LEGACY_ROOTS]
+    """Ratchet over first-party Python outside the wheel: no NEW dispatch, known ones only decrease."""
+    roots = [REPO_ROOT / r for r in (*LEGACY_ROOTS, *NON_PACKAGE_PY_ROOTS)]
     counts: dict[str, int] = {}
     for hit in _grep(DISPATCH_PATTERNS, roots, ("*.py",)):
         counts[_relative(hit)] = counts.get(_relative(hit), 0) + 1

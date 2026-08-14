@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.martinkorelic.mobiletransformers.InferenceProgress
 import com.martinkorelic.mobiletransformers.MobileTransformersException
-import com.martinkorelic.mobiletransformers.ORTGenAITokenizer
 import com.martinkorelic.mobiletransformers.ORTGenerationConfig
 import com.martinkorelic.mobiletransformers.ORTRagArguments
 import com.martinkorelic.mobiletransformers.runtime.ModelRuntime
@@ -29,6 +28,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.martinkorelic.mobiletransformers.packages.MobileTransformersManifest
+import com.martinkorelic.mobiletransformers.packages.PackageFormat
 import com.martinkorelic.mobiletransformers.packages.PackagePaths
 
 enum class LLMState {
@@ -148,7 +149,6 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
     var ortTrainerNative : ORTTrainerNative? = null
 
     // Tokenizer capabilities
-    private var ortGenAITokenizer : ORTGenAITokenizer? = null
     var ortTokenizerNative : ORTTokenizerNative? = null
 
     // Inference capabilities (#11): the selected engine (Native floor or GenAI) behind ModelRuntime.
@@ -335,9 +335,27 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         // Assuming the training session has been saved prior to this
         ortTrainerNative?.destroySession(false)
 
-        // supportedEngines would come from the manifest variant (#13); until wired here, offer both and let
-        // config.engine + GenAiSupport.available() drive selection (Native remains the guaranteed floor).
-        return ModelRuntimeFactory.create(cacheDir, ortTokenizerNative!!, generationArgs)
+        // #13: supportedEngines comes from the installed variant's manifest declaration. A package that
+        // declares none (an older export, or a manifest-less legacy dir) keeps the permissive default —
+        // narrowing an unknown declaration would break packages that work today.
+        val declaredEngines = installedSupportedEngines()
+        return if (declaredEngines != null) {
+            ModelRuntimeFactory.create(cacheDir, ortTokenizerNative!!, generationArgs, declaredEngines)
+        } else {
+            ModelRuntimeFactory.create(cacheDir, ortTokenizerNative!!, generationArgs)
+        }
+    }
+
+    /** The installed package's declared engines, or null when it declares none (see [makeModelRuntime]). */
+    private fun installedSupportedEngines(): Set<String>? {
+        val manifestFile = File(
+            PackagePaths.forCache(cacheDir, _modelName).root,
+            PackageFormat.MANIFEST_FILENAME,
+        )
+        if (!manifestFile.isFile) return null
+        return runCatching { MobileTransformersManifest.load(manifestFile).supportedEnginesFor() }
+            .onFailure { Log.w(LOG_TAG, "unreadable manifest at ${manifestFile.path}: ${it.message}") }
+            .getOrNull()
     }
 
     private suspend fun makeOrtRag(ortArgs : ORTRagConfig) : ORTRetriever {

@@ -186,3 +186,132 @@ def test_validate_rejects_a_directory_without_a_manifest(tmp_path, capsys):
     args = build_parser().parse_args(["validate", "--package", str(tmp_path / "empty")])
     assert args.func(args) == 1
     assert "no mobiletransformers_manifest.json" in capsys.readouterr().out
+
+
+# --- package-model: was a stub that printed "not yet wired" and returned 0 --------------------
+
+
+def test_package_model_fails_closed_on_a_missing_package(tmp_path, capsys):
+    """The whole point of the rewrite: a package that does not exist must NOT report success."""
+    code = main(["package-model", "--package", str(tmp_path / "nope")])
+    assert code == 1
+    assert "not a package directory" in capsys.readouterr().out
+
+
+def test_package_model_fails_closed_without_a_manifest(tmp_path, capsys):
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    code = main(["package-model", "--package", str(bare)])
+    assert code == 1
+    assert "mobiletransformers_manifest.json" in capsys.readouterr().out
+
+
+def test_package_model_requires_a_package_argument(capsys):
+    assert main(["package-model"]) == 2
+    assert "--package" in capsys.readouterr().out
+
+
+def test_package_model_dry_run_writes_nothing(tmp_path, capsys):
+    pkg = tmp_path / "pkg"
+    shutil.copytree(PKG, pkg)
+    before = json.loads((pkg / "mobiletransformers_manifest.json").read_text())
+    assert main(["package-model", "--package", str(pkg), "--dry-run"]) == 0
+    assert json.loads((pkg / "mobiletransformers_manifest.json").read_text()) == before
+    assert "would re-emit" in capsys.readouterr().out
+
+
+def test_package_model_reemits_the_integrity_block(tmp_path):
+    """Re-emitting over an unchanged tree is a no-op; over a changed one it re-hashes."""
+    pkg = tmp_path / "pkg"
+    shutil.copytree(PKG, pkg)
+    manifest_path = pkg / "mobiletransformers_manifest.json"
+    original = json.loads(manifest_path.read_text())
+
+    assert main(["package-model", "--package", str(pkg)]) == 0
+    unchanged = json.loads(manifest_path.read_text())
+    assert unchanged["sha256"] == original["sha256"]
+    assert unchanged["baseModelId"] == original["baseModelId"]
+
+    # Change a file the manifest hashes; the re-emit must notice.
+    target = next(rel for rel in original["sha256"] if rel.endswith("generation_config.json"))
+    (pkg / target).write_text('{"max_length": 999}\n')
+    assert main(["package-model", "--package", str(pkg)]) == 0
+    rehashed = json.loads(manifest_path.read_text())
+    assert rehashed["sha256"][target] != original["sha256"][target]
+    assert rehashed["fileSizes"][target] == (pkg / target).stat().st_size
+
+
+# --- agent-dataset (#37): import a tool-call corpus, or synthesise a per-user one -------------
+
+AGENT_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "agent" / "mobile_actions_sample.jsonl"
+
+
+def test_agent_dataset_imports_a_corpus(tmp_path, capsys):
+    code = main(["agent-dataset", "--source", str(AGENT_FIXTURE), "--output", str(tmp_path)])
+    assert code == 0
+
+    rows = [json.loads(line) for line in (tmp_path / "mobile_actions.jsonl").read_text().splitlines()]
+    assert rows and all(set(r) == {"prompt", "completion"} for r in rows)
+
+    schema = json.loads((tmp_path / "action_schema.json").read_text())
+    assert {a["actionName"] for a in schema} >= {"send_email", "show_map"}
+
+    out = capsys.readouterr().out
+    assert "wrote" in out
+    # Unmapped actions are announced, not silently emitted with an empty intent.
+    assert "no Android intent mapped" in out and "flashlight" in out
+
+
+def test_agent_dataset_dry_run_writes_nothing(tmp_path, capsys):
+    assert (
+        main(["agent-dataset", "--source", str(AGENT_FIXTURE), "--output", str(tmp_path), "--dry-run"]) == 0
+    )
+    assert not list(tmp_path.iterdir())
+    assert "[dry-run]" in capsys.readouterr().out
+
+
+def test_agent_dataset_limit_is_deterministic(tmp_path):
+    def build(where):
+        main(["agent-dataset", "--source", str(AGENT_FIXTURE), "--output", str(where), "--limit", "2"])
+        return (where / "mobile_actions.jsonl").read_text()
+
+    assert build(tmp_path / "a") == build(tmp_path / "b")
+    assert len(build(tmp_path / "c").strip().splitlines()) == 2
+
+
+def test_agent_dataset_generated_requires_an_allowlist(tmp_path, capsys):
+    assert main(["agent-dataset", "--source", "generated", "--output", str(tmp_path)]) == 1
+    assert "requires --allowlist" in capsys.readouterr().out
+
+
+def test_agent_dataset_generated_round_trips_through_the_schema(tmp_path):
+    """The imported schema drives the synthetic generator — the per-user layer on the same boundary."""
+    main(["agent-dataset", "--source", str(AGENT_FIXTURE), "--output", str(tmp_path / "corpus")])
+    schema = tmp_path / "corpus" / "action_schema.json"
+
+    code = main(
+        [
+            "agent-dataset",
+            "--source",
+            "generated",
+            "--allowlist",
+            str(schema),
+            "--output",
+            str(tmp_path / "user"),
+            "--per-action",
+            "2",
+        ]
+    )
+    assert code == 0
+    rows = [
+        json.loads(line) for line in (tmp_path / "user" / "mobile_actions.jsonl").read_text().splitlines()
+    ]
+    assert len(rows) == 2 * len(json.loads(schema.read_text()))
+
+
+def test_agent_dataset_reports_an_empty_result_instead_of_writing_nothing(tmp_path, capsys):
+    assert (
+        main(["agent-dataset", "--source", str(AGENT_FIXTURE), "--output", str(tmp_path), "--split", "nope"])
+        == 1
+    )
+    assert "no rows produced" in capsys.readouterr().out

@@ -89,7 +89,8 @@ ort-training-local = [
   # in the generated optimizer/training graphs. Pin to the build-paired line (manifest: onnx 1.18.0).
   "onnx<1.19; python_version == '3.12'",
 ]
-# ROCm/CUDA export experiment surface (from requirements-or.txt). Deferred: the ROCm wheels
+# ROCm/CUDA export experiment surface (from the retired root `requirements-or.txt`, deleted
+# 2026-08-14 once its content was superseded by these groups). Deferred: the ROCm wheels
 # (onnxruntime-rocm==1.18.0, torch*+rocm) require a dedicated AMD/ROCm package index, not PyPI,
 # so wiring them into a resolvable group is out of scope for this foundation pass. Kept as a
 # declared-but-empty group so `uv lock` stays clean; populated when the ROCm index is configured.
@@ -126,9 +127,9 @@ src = ["src", "tests"]
 # ANCHORED to the repository root. A bare directory name here matches ANY path component, so
 # "inference"/"evaluation" also excluded src/mobiletransformers/{inference,evaluation}/ — code landing
 # there during the migration would have been silently ungated by both ruff and mypy.
-# S9: the seven legacy roots are DELETED, so only `research/` and the root `config.py` shim remain
-# outside the gate. Every line of migrated code is now linted and type-checked.
-extend-exclude = ["/research/", "/config.py", "tests/fixtures/tiny_trainable.onnx"]
+# S9: the seven legacy roots are DELETED. The root `config.py` shim followed 2026-08-14, so
+# `research/` is the ONLY thing outside the gate. Every line of migrated code is linted+type-checked.
+extend-exclude = ["/research/", "tests/fixtures/tiny_trainable.onnx"]
 
 [tool.ruff.lint.per-file-ignores]
 # MIGRATION RATCHET — lint debt carried in by the Migration Map. Entries may only SHRINK; delete a

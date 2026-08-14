@@ -28,6 +28,12 @@ and `.../src/main/cpp/` and are **not** covered by this project's copyright.
 | [Kotlin stdlib / coroutines](https://kotlinlang.org/) | Apache-2.0 |
 | [Gson](https://github.com/google/gson) | Apache-2.0 |
 
+## Redistributed data
+
+| Component | Licence | Notes |
+| --- | --- | --- |
+| [`google/mobile-actions`](https://huggingface.co/datasets/google/mobile-actions) | CC-BY-4.0 | © Google. **Five records** are committed verbatim as `tests/fixtures/agent/mobile_actions_sample.jsonl` so the #37 importer tests run offline; see that directory's `README.md`. The full corpus is not vendored — `mobiletransformers agent-dataset` fetches it on demand. |
+
 ## Python dependencies
 
 | Component | Licence |

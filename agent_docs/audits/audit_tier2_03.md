@@ -1,5 +1,34 @@
 # Tier 2 — 03_code_plans audit
 
+> ## ⚠️ SNAPSHOT — 2026-08-07, at HEAD `54e0a8e`. NOT a live defect list. (Banner added 2026-08-14.)
+>
+> This audit is a **point-in-time photograph**, and it carries **no closure annotations of its own** —
+> nothing in this file was ever struck out as findings were fixed. Six later cycles of work landed on
+> top of it (the 2026-08-07 remediation pass, then 08-08 / 08-09 / 08-10 device acceptance, then the
+> 08-14 cleaning phase). **Reading it as a to-do list generates phantom work**, which is the specific
+> failure this banner exists to prevent.
+>
+> Spot-verification on 2026-08-14 found the audits materially **over-report** what is open. Every one
+> of these, recorded here as a defect, is fixed in the tree with the fix documented at the site:
+>
+> | Audit finding | Where it is fixed |
+> | --- | --- |
+> | #21 "installer deletes live cache before rename" | `ModelPackageInstaller.kt:47-75` — renames aside, publishes, rolls back on failure ("#21 crash safety") |
+> | #17 "`ORT*` leak in public `TrainingResult`" | `runtime/Results.kt:25-26` records the retype |
+> | #27 "config override applies only on the FIRST retrieve" | `RagRepository.kt:36` — "A changed config now always applies" |
+> | #24 "GenAI carries its own private method map with silent-greedy fallback" | `ORTGeneratorGenAI.kt:78` uses the shared `SamplingMethod.fromWire(...).nativeOrdinal` |
+> | #26 "`maxTextLength` silently dropped" | threaded through `ConfigMappers.kt:135` / `ORTRagConfig.kt:45` |
+> | #34 "`ORTScheduler.kt` TODO still open" | fixed; `ORTScheduler.kt:161-162` records it |
+> | #25 "`SearchType` String→enum swap never landed" | done 2026-08-07 |
+> | #6 "grep-guard DoD fails, `build_adapter_mapping` missing" | done 2026-08-07 (see #6's self-check) |
+> | #22 "Mode-1 never writes `adapter_model.safetensors`" | fixed; see #22's self-check |
+> | #15 "`--validate` missing entirely" | it exists |
+>
+> **The authoritative list of what is actually open is `agent_docs/HANDOFF.md`**, whose numbers are
+> re-measured each cycle. Use this file for its *reasoning* — why a finding mattered, what the failure
+> shape was — not for its verdicts.
+
+
 Scope: `agent_docs/03_code_plans/01..05` = global plans #23–#27. Verified against the tree at
 `android/MobileTransformersApp/MobileTransformers/src/` (branch `restructure`, working tree clean).
 All paths below are relative to

@@ -11,10 +11,11 @@ from pathlib import Path
 import numpy as np
 import onnx
 import torch
-import yaml
 from onnx import TensorProto, helper, numpy_helper
 from optimum.exporters.onnx import export
 from peft import LoraConfig, PeftModel, PeftType, get_peft_model
+
+from mobiletransformers.utils.yaml import load_config_from_file
 
 # peft renamed its PeftType -> tuner-class registry in 0.15 (`PEFT_TYPE_TO_MODEL_MAPPING` ->
 # `PEFT_TYPE_TO_TUNER_MAPPING`). The `ort-training-local` group floats `peft>=0.13` while
@@ -738,11 +739,16 @@ def parse_extra_options(extra_options: list[str]) -> dict[str, str]:
     return options_dict
 
 
-def load_config_from_file(config_file: str):
-    """Load configurations from a YAML file into a dictionary."""
-    with open(config_file) as file:
-        config = yaml.safe_load(file)
-    return config[TRAIN_CONFIG]
+def load_train_config_from_file(config_file: str):
+    """Load a config YAML and return **only its train section**.
+
+    This is the one `load_config_from_file` copy that was never the shared helper: it pre-indexes into
+    ``config[TRAIN_CONFIG]``, so a caller expecting the whole document gets the train section instead.
+    That difference is exactly what `00_code_plans/02`'s deferral note warned about — silently
+    repointing this name at `utils.yaml.load_config_from_file` would have changed what every call site
+    receives. Renamed rather than merged, so the two shapes can no longer be confused.
+    """
+    return load_config_from_file(config_file)[TRAIN_CONFIG]
 
 
 def parse_arguments():
@@ -832,7 +838,7 @@ def parse_arguments():
     config_dict = None
 
     if args.config_file:
-        config_dict = load_config_from_file(args.config_file)
+        config_dict = load_train_config_from_file(args.config_file)
 
         args.peft_config = config_dict["peft_config"]
         setattr(args, config_dict["train_method"], config_dict[config_dict["train_method"]])

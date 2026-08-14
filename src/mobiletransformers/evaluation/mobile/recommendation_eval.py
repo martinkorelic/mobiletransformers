@@ -3,19 +3,13 @@ import time
 from datetime import datetime
 from typing import Any
 
-# Import configuration from config module
-from config import (
-    AZURE_API_VERSION,
-    AZURE_DEPLOYMENT_NAME,
-    AZURE_MODEL_NAME,
-    AZURE_OPENAI_API_KEY,
-    AZURE_OPENAI_ENDPOINT,
-)
 from deepeval import evaluate
 from deepeval.metrics import ArenaGEval, GEval
 from deepeval.models.base_model import DeepEvalBaseLLM
 from deepeval.test_case import ArenaTestCase, LLMTestCase, LLMTestCaseParams
 from langchain_openai import AzureChatOpenAI
+
+from mobiletransformers.config.settings import get_settings
 
 
 class AzureOpenAIModel(DeepEvalBaseLLM):
@@ -72,35 +66,43 @@ class RecommendationEvaluator:
 
     def __init__(
         self,
-        azure_endpoint: str = AZURE_OPENAI_ENDPOINT,
-        api_key: str = AZURE_OPENAI_API_KEY,
-        deployment_name: str = AZURE_DEPLOYMENT_NAME,
-        model_name: str = AZURE_MODEL_NAME,
-        api_version: str = AZURE_API_VERSION,
+        azure_endpoint: str | None = None,
+        api_key: str | None = None,
+        deployment_name: str | None = None,
+        model_name: str | None = None,
+        api_version: str | None = None,
     ):
         """
-        Initialize the evaluator with Azure OpenAI configuration from config module.
+        Initialize the evaluator with Azure OpenAI configuration.
+
+        Any argument left ``None`` is resolved at call time from ``Settings`` — the single owner of
+        secrets (``00_code_plans/02``). These used to default to module-level constants imported from
+        the repo-root ``config.py`` shim, which is not part of the wheel: importing this module from
+        an installed ``mobiletransformers`` raised ``ModuleNotFoundError: config``. Resolving lazily
+        also keeps the env read out of import time.
 
         Args:
-            azure_endpoint: Azure OpenAI endpoint URL (from config)
-            api_key: Azure OpenAI API key (from config)
-            deployment_name: Azure deployment name (from config)
-            model_name: Model name (from config)
-            api_version: API version (from config)
+            azure_endpoint: Azure OpenAI endpoint URL (default: ``AZURE_OPENAI_ENDPOINT``)
+            api_key: Azure OpenAI API key (default: ``AZURE_OPENAI_API_KEY``)
+            deployment_name: Azure deployment name (default: ``AZURE_DEPLOYMENT_NAME``)
+            model_name: Model name (default: ``AZURE_MODEL_NAME``)
+            api_version: API version (default: ``AZURE_API_VERSION``)
         """
-        self.azure_endpoint = azure_endpoint
-        self.api_key = api_key
-        self.deployment_name = deployment_name
-        self.model_name = model_name
-        self.api_version = api_version
+        settings = get_settings()
+        self.azure_endpoint = azure_endpoint or settings.azure_openai_endpoint
+        self.api_key = api_key or settings.azure_openai_api_key
+        self.deployment_name = deployment_name or settings.azure_deployment_name
+        self.model_name = model_name or settings.azure_model_name
+        self.api_version = api_version or settings.azure_api_version
 
-        # Initialize Azure OpenAI model for evaluation
+        # Initialize Azure OpenAI model for evaluation (resolved values, never the raw arguments —
+        # those may be None and are filled in from Settings above).
         self.evaluation_model = AzureOpenAIModel(
-            azure_endpoint=azure_endpoint,
-            api_key=api_key,
-            deployment_name=deployment_name,
-            model_name=model_name,
-            api_version=api_version,
+            azure_endpoint=self.azure_endpoint,
+            api_key=self.api_key,
+            deployment_name=self.deployment_name,
+            model_name=self.model_name,
+            api_version=self.api_version,
         )
 
         # Create evaluation metrics

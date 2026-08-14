@@ -77,7 +77,7 @@ def test_placeholder_subpackages_stay_empty_until_they_are_migrated() -> None:
     When one gains content it must also gain a `MODULE_LOCATIONS` entry in `test_symbol_golden.py`;
     this catches code landing there without the move being recorded.
     """
-    from tests.fixtures.gen_legacy_symbol_golden import public_symbols
+    from tests.fixtures.symbol_tools import public_symbols
     from tests.unit.test_symbol_golden import MIGRATED_PATHS, MODULE_LOCATIONS
 
     targets = ("peft", "training", "inference", "rag", "evaluation")

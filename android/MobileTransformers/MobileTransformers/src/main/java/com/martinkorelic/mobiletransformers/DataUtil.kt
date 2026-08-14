@@ -107,6 +107,7 @@ fun getPreprocessFunctionForTask(
         "mini_recommendation" -> MiniRecommendationPreprocessor
         "cola" -> CoLAPreprocessor
         "cola_cls" -> CoLAClassificationPreprocessor
+        "mobile_actions" -> MobileActionsPreprocessor
         else -> throw IllegalArgumentException("Unsupported task: $taskName. Please provide a customPreprocess function.")
     }
 }
@@ -220,4 +221,28 @@ object CoLAClassificationPreprocessor : TaskPreprocessor {
         json.optString("sentence", "") to ""
 
     override fun classLabel(json: JSONObject): Int = json.optInt("label", 0)
+}
+/**
+ * The #37 tool-call objective: a natural-language instruction in, a function call as JSON out.
+ *
+ * Reads the rows `mobiletransformers agent-dataset` writes — from `google/mobile-actions`, from any
+ * corpus in that shape, or synthesised per-user from an app's own allowlist. All three paths emit the
+ * same two keys, which is what lets one preprocessor serve the imported corpus and the personalized
+ * set alike.
+ *
+ * The completion is **the exact JSON `FunctionCallValidator.validate` parses**, not a prose rendering
+ * of it. That is deliberate and is the whole design: what the model is supervised to emit and what the
+ * app will accept are the same object, so a model that has learned the task produces output that
+ * passes validation by construction rather than after a repair step.
+ *
+ * Prompt/answer split and `-100` masking are handled by [ORTDataCurator]; this only names the halves.
+ */
+object MobileActionsPreprocessor : TaskPreprocessor {
+    override fun preprocess(json: JSONObject): Pair<String, String> {
+        val prompt = json.optString("prompt", "")
+        val completion = json.optString("completion", "")
+        // Both blank-checked by the curator, which drops the row. A row missing either half is a
+        // generator bug rather than untrusted input, so it is not worth failing the whole run over.
+        return prompt to completion
+    }
 }
