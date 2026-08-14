@@ -19,7 +19,7 @@ Consumes #6: adapter role vocabulary from ``PEFTMethodSpec.component_schema`` an
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +39,73 @@ HANDOFF_MAP_READER_VERSION = "1.1"
 #: Deterministic role order within an entry (JSON is additionally sort_keys=True for byte-stability).
 ROLE_ORDER = ("weight", "weight_quantized", "scale", "zero_point")
 _QUANTIZED_ROLES = ("weight_quantized", "scale", "zero_point")
+
+#: The on-disk inference weight is stored in the SAME orientation the merger computes in.
+NO_TRANSPOSE = "no_transpose"
+#: The on-disk inference weight is the TRANSPOSE of the merger's orientation, so a merged tensor must
+#: be transposed before it is written back.
+ALREADY_TRANSPOSED = "already_transposed_for_inference"
+
+
+def derive_transpose_policy(
+    weight_shape: tuple[int, ...],
+    adapter_shapes: dict[str, tuple[int, ...]],
+) -> str:
+    """Which orientation the on-disk inference weight is in, relative to the merger's.
+
+    **This replaces a field that was never assigned.** ``ObservedInit.transposed`` defaulted to
+    ``False`` and nothing in the codebase ever set it, so every package ever produced declared
+    ``no_transpose`` by omission — including packages where it was demonstrably wrong. The merge
+    honoured that value and wrote every weight transposed; see the 2026-08-14 entry in
+    ``agent_docs/IMPLEMENTATION_ORDER.md``.
+
+    The orientation is *observable*, so it is observed rather than declared. The merger computes
+    ``base + scale * (adapter_B @ adapter_A)``, whose shape is ``(B.rows, A.cols)``. If that equals the
+    on-disk weight shape the two orientations agree; if it equals its reverse, the on-disk tensor is
+    the transpose.
+
+    Square weights are genuinely ambiguous from shape alone — ``[576,576]`` satisfies both — which is
+    exactly why the defect survived: the adapted decoder layers are ``q_proj`` (square) and ``v_proj``
+    (not). Callers should resolve a package-wide policy from the entries that *can* be decided; see
+    :func:`resolve_package_transpose_policy`.
+    """
+    a = adapter_shapes.get("adapter_A")
+    b = adapter_shapes.get("adapter_B")
+    if not a or not b or len(a) != 2 or len(b) != 2 or len(weight_shape) != 2:
+        # Nothing to observe (no adapters described, or not a 2-D weight): keep the historical value
+        # rather than inventing one.
+        return NO_TRANSPOSE
+    delta = (b[0], a[1])
+    if tuple(weight_shape) == delta:
+        return NO_TRANSPOSE
+    if tuple(weight_shape) == delta[::-1]:
+        return ALREADY_TRANSPOSED
+    raise ValueError(
+        f"adapter factors {b} @ {a} produce a {delta} delta, which is neither the on-disk weight "
+        f"shape {tuple(weight_shape)} nor its transpose. The merge would add tensors that cannot be "
+        f"added; refusing to describe this layer."
+    )
+
+
+def resolve_package_transpose_policy(entries: Sequence[HandoffEntry]) -> str:
+    """One orientation for the whole package, decided by the entries that are not square.
+
+    A single export uses one convention throughout, so an unambiguous layer settles it for the
+    ambiguous (square) ones. Fails closed when non-square layers disagree with each other — that would
+    mean the package mixes conventions, which no consumer could honour.
+    """
+    decided = {
+        e.transpose_policy
+        for e in entries
+        if len(e.shape) == 2 and e.shape[0] != e.shape[1] and e.adapter_shapes
+    }
+    if len(decided) > 1:
+        raise ValueError(
+            f"handoff entries disagree about weight orientation ({sorted(decided)}); a package must "
+            "use one convention throughout"
+        )
+    return decided.pop() if decided else NO_TRANSPOSE
+
 
 #: Inference-graph initializer suffix -> handoff role. The (deferred) inference-export accumulation
 #: uses this to tag each observed initializer; recorded here so both sides share one mapping.
@@ -76,7 +143,14 @@ class ObservedInit:
     dtype: str
     shape: tuple[int, ...]
     role: str
-    transposed: bool = False
+
+    # NOTE: a `transposed: bool = False` field used to live here and was the sole input to
+    # `transposePolicy`. **Nothing in the codebase ever assigned it**, so every package ever produced
+    # declared `no_transpose` by omission, the on-device merge honoured that, and every merged weight
+    # was written transposed (2026-08-14; see IMPLEMENTATION_ORDER "Magnitude-based checks cannot
+    # detect a permutation"). It is deliberately NOT re-added: the orientation is observable from the
+    # adapter and weight shapes, so `derive_transpose_policy` observes it instead of trusting a flag
+    # someone must remember to set.
 
 
 @dataclass
@@ -544,11 +618,39 @@ class TrainableTensorCodec:
                     inference_initializer_names=dict(inference_names),
                     external_data_location={role: f"{name}.bin" for role, name in inference_names.items()},
                     quantization=quantization,
-                    transpose_policy=(
-                        "already_transposed_for_inference" if weight_like.transposed else "no_transpose"
-                    ),
+                    transpose_policy=derive_transpose_policy(weight_like.shape, adapter_shapes),
                 )
             )
+
+        # Fail closed on total adapter-spec drift. Every role above is looked up by a DERIVED
+        # initializer name, and a miss leaves the role merely "undescribed" — deliberate, since a
+        # partially-described entry is still usable. But if specs were supplied and NOT ONE entry
+        # matched, the derivation is not lenient, it is broken: `adapter_shapes` is empty everywhere,
+        # so orientation becomes unobservable and the whole package silently reverts to
+        # `no_transpose`. That is precisely the defect this field was rebuilt to prevent, reached by
+        # a name spelling drift instead of by an unassigned field. Name the lookup that missed.
+        if trainable_tensor_specs and entries and not any(e.adapter_shapes for e in entries):
+            probe = entries[0]
+            attempted = [
+                f"{to_checkpoint_name(path)}.weight"
+                for role, path in probe.checkpoint_names.items()
+                if role != "weight"
+            ]
+            raise HandoffError(
+                f"{len(trainable_tensor_specs)} trainable tensor specs were supplied but none matched "
+                f"any adapter role across {len(entries)} entries — for example "
+                f"{probe.training_base_layer_name!r} looked for {attempted}. The training-graph "
+                "initializer spelling has drifted from `to_checkpoint_name`. Refusing to emit a map "
+                "that describes no adapter factors: weight orientation would be unobservable and the "
+                "package would silently declare 'no_transpose'."
+            )
+
+        # One convention per package. A square weight cannot decide its own orientation, so the
+        # entries that CAN decide settle it for the ones that cannot — otherwise `q_proj` (square) and
+        # `v_proj` (not) would describe the same export two different ways.
+        package_policy = resolve_package_transpose_policy(entries)
+        for entry in entries:
+            entry.transpose_policy = package_policy
         return entries
 
 

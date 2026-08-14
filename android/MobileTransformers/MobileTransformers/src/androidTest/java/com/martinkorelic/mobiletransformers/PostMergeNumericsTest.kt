@@ -10,6 +10,7 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -33,29 +34,33 @@ import org.junit.runner.RunWith
  * **Both assertions are relative**, per the standing rule that an absolute threshold encodes one model
  * and silently measures the wrong thing when the fixture changes.
  *
- * ## Package-mutation hazard — read before running this class
+ * ## Package mutation — handled by [PristinePackageRule], no longer the caller's problem
  *
- * These tests train, so each stashes and restores `train/checkpoint` + `training_state.json` and
- * deletes its own dataset fixture, exactly as `ScheduledTrainingDeviceTest` does.
+ * Every test here trains and merges, which rewrites `train/checkpoint`, `training_state.json` and the
+ * per-tensor weight blobs under `inference/` (spelled without a leading slash-star on purpose: Kotlin
+ * block comments NEST, so `/`+`*` inside KDoc opens a nested comment and eats the closing delimiter).
  *
- * **What is NOT restored is `inference/*.bin`**: a merge rewrites the per-tensor weights in place, and
- * stashing ~60 tensors on device per test would cost more than re-pushing. So **every test here needs a
- * freshly pushed package**, and running the class end to end leaves later tests reading whatever the
- * earlier ones merged. That is not hypothetical — it produced a confusing failure on 2026-08-14, where
- * `aLargeAdapterDeltaSurvivedTheMerge`'s pristine control tripped on a graph the *previous* test had
- * already merged.
+ * **This KDoc previously said those weight blobs are NOT restored and that every test here needs a
+ * freshly pushed package.** That was true when written and is now false: [PristinePackageRule]
+ * captures and restores them around each test, including when the test fails. The per-test
+ * `stashInto`/`restoreFrom` calls below are the older, narrower mechanism and are kept as an inner
+ * belt — they are redundant with the rule, not in conflict with it.
  *
- * The controls fail loudly rather than silently mis-measuring, which is the intended behaviour. Run
- * one test at a time against a fresh package:
- *
- * ```
- * adb shell "rm -rf <dest> && mkdir -p <dest>" && adb push build/device_cache/. <dest>
- * ./gradlew :MobileTransformers:connectedDebugAndroidTest \
- *   -Pandroid.testInstrumentationRunnerArguments.class=…PostMergeNumericsTest#<oneTest>
- * ```
+ * The cost of the old position was measured on 2026-08-14: a full-suite run reported **3 failures**
+ * that were all this contamination, including `TrainConvergenceTest` seeing `NaN` losses because this
+ * class had memorised one sentence to a training loss of 0.0028 before it ran. All three pass against
+ * a pristine package. Restoring the fixture is cheaper than a suite whose results cannot be read.
  */
 @RunWith(AndroidJUnit4::class)
 class PostMergeNumericsTest {
+
+    /**
+     * Restore the package after every test in this class. It trains and/or merges, which rewrites the
+     * checkpoint and the `inference/` weight blobs in place — see [PristinePackageRule] for the three
+     * suite failures this prevents.
+     */
+    @get:Rule
+    val pristinePackage = PristinePackageRule()
 
     private companion object {
         /**
@@ -63,14 +68,26 @@ class PostMergeNumericsTest {
          *
          * Relative, and generous in the direction that matters: a few LoRA steps may move the loss
          * either way by a little, but a merge that corrupted the weights lands at or above the
-         * uniform-prediction floor `ln(vocab_size)` — for this tokenizer ~10.8 against a healthy ~3-4,
-         * i.e. multiples away rather than percents. This bound excludes that regime without pretending
-         * to know which direction a one-step fine-tune moves a held-out probe.
+         * uniform-prediction floor `ln(vocab_size)` — ~10.8 here against a healthy ~4.65 on
+         * [PROBE_TEXT], i.e. multiples away rather than percents.
+         *
+         * This bound only means something because the probe is REAL text. Against the arbitrary token
+         * ids it used to score, a healthy model already sat at ~10.19 nats — at chance — so "within 2x"
+         * held no matter what the merge did.
          */
         const val MAX_LOSS_RATIO = 2.0
 
-        /** Fixed probe tokens. Small ids, inside every supported vocabulary, deliberately constant. */
-        val PROBE = intArrayOf(1, 338, 263, 1243, 310, 278, 1904, 29889)
+        /**
+         * Text the probes score. **Real English, tokenized by the package's own tokenizer** — not a
+         * hand-written array of token ids.
+         *
+         * This used to be `intArrayOf(1, 338, 263, 1243, 310, 278, 1904, 29889)`: ids chosen to be
+         * "inside every supported vocabulary", which for this tokenizer spell nothing. A healthy model
+         * scores them at ~10.19 nats against a 10.80 uniform floor, i.e. at chance — so the ratio bound
+         * below was comparing two near-uniform numbers and could not fail. That is one of the four
+         * reasons the transposed-merge defect survived for months (2026-08-14).
+         */
+        const val PROBE_TEXT = "The history of the printing press begins in the fifteenth century."
 
         const val TRAIN_FILE = "mt_post_merge_cola"
 
@@ -101,7 +118,8 @@ class PostMergeNumericsTest {
         )
 
         try {
-            val before = probeMergedGraph(root, repoId)
+            val probeTokens = tokenizeWithPackage(root, repoId, PROBE_TEXT)
+            val before = probeMergedGraph(root, repoId, probeTokens)
 
             val model = MobileTransformers.fromPretrained(
                 context = ctx,
@@ -125,7 +143,7 @@ class PostMergeNumericsTest {
                 model.close()
             }
 
-            val after = probeMergedGraph(root, repoId)
+            val after = probeMergedGraph(root, repoId, probeTokens)
 
             android.util.Log.i(
                 "PostMergeNumericsTest",
@@ -196,17 +214,7 @@ class PostMergeNumericsTest {
         )
 
         try {
-            val tokenizer = ORTTokenizerNative(PackagePaths.forCache(root, repoId).tokenizer.absolutePath)
-            tokenizer.createTokenizerModel()
-            val text: IntArray
-            try {
-                text = tokenizer.tokenize(
-                    "The history of the printing press begins in the fifteenth century.",
-                    prependBos = true,
-                )
-            } finally {
-                tokenizer.destroySession()
-            }
+            val text = tokenizeWithPackage(root, repoId, PROBE_TEXT)
 
             val before = probeMergedGraph(root, repoId, text).crossEntropyNats
 
@@ -261,10 +269,22 @@ class PostMergeNumericsTest {
      * run, the learning rate, the scale, or the dataset — the only thing left is how the weights are
      * read and written.
      *
-     * That makes this a **decisive** discriminator, and it costs no training at all. It exists because
-     * two rounds of investigation on 2026-08-14 chased the delta (step count, then the LoRA scale) when
-     * the corruption turned out to be independent of the delta's magnitude: a 3-step merge damaged the
-     * model exactly as much as a 100-step one.
+     * That makes this a **decisive** discriminator. It exists because two rounds of investigation on
+     * 2026-08-14 chased the delta (step count, then the LoRA scale) when the corruption turned out to
+     * be independent of the delta's magnitude: a 3-step merge damaged the model exactly as much as a
+     * 100-step one.
+     *
+     * **The merge must be FORCED to run, and this test must prove that it did.** As first written it
+     * called `merge()` on a freshly loaded model and asserted nothing changed — which passed, but
+     * vacuously: `merge()` with no prior training in the same session never executes a merge at all,
+     * so it was comparing the package with itself. It was reported as a passing control before the
+     * logs were checked, and that wrong control cost a round of investigation.
+     *
+     * The fix is a real training run whose optimizer never fires (`maxSteps = 3` at the default
+     * `gradientAccumulationSteps = 4`), with `mergeAtEnd = true`. The merge then genuinely runs while
+     * `B` is still at its zero initialization, so the delta is exactly zero — and the `.bin`
+     * modification times are checked to confirm the write path actually executed. **Without that
+     * check this test silently reverts to measuring nothing.**
      *
      * Self-calibrating: it compares the graph against itself, so it encodes no model's numbers.
      */
@@ -277,23 +297,29 @@ class PostMergeNumericsTest {
 
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
         val trainDir = File(root, "$repoId/train")
+        val trainFile = "mt_zero_merge"
         val stash = File(root, "$repoId/.zero_merge_stash").apply { mkdirs() }
         stashInto(stash, File(trainDir, "checkpoint"), File(trainDir, "training_state.json"))
 
+        File(trainDir, "$trainFile.jsonl").writeText(
+            (1..8).joinToString("\n") { i ->
+                """{"sentence": "The cat sat on the mat number $i.", "label": ${i % 2}}"""
+            } + "\n",
+        )
+
         try {
-            val tokenizer = ORTTokenizerNative(PackagePaths.forCache(root, repoId).tokenizer.absolutePath)
-            tokenizer.createTokenizerModel()
-            val text: IntArray
-            try {
-                text = tokenizer.tokenize(
-                    "The history of the printing press begins in the fifteenth century.",
-                    prependBos = true,
-                )
-            } finally {
-                tokenizer.destroySession()
-            }
+            val text = tokenizeWithPackage(root, repoId, PROBE_TEXT)
 
             val before = probeMergedGraph(root, repoId, text).crossEntropyNats
+
+            // Modification times of the tensors the merge writes. A merge that runs rewrites these
+            // atomically (temp + rename), so mtime moves even though a zero delta leaves the BYTES
+            // identical -- which is why bytes cannot be used to prove the merge happened here.
+            val weights = File(root, "$repoId/inference")
+                .listFiles { f -> f.name.endsWith(".MatMul.weight.bin") }
+                .orEmpty()
+            assertTrue("package has no per-tensor trainable .bin files", weights.isNotEmpty())
+            val mtimesBefore = weights.associate { it.name to it.lastModified() }
 
             val model = MobileTransformers.fromPretrained(
                 context = ctx,
@@ -302,13 +328,38 @@ class PostMergeNumericsTest {
                 features = setOf(ModelFeature.Inference, ModelFeature.Training),
             )
             try {
-                model.merge() // NO training: the adapter is still at its initialization, B = 0.
+                model.train(
+                    DatasetConfig(
+                        trainFile = trainFile,
+                        task = "cola",
+                        maxSequenceLength = 64,
+                        maxDatasetLength = 8,
+                        datasetBatchSize = 4,
+                    ),
+                    // 3 steps at the DEFAULT gradientAccumulationSteps = 4 -> the optimizer never
+                    // fires, so B stays at zero and the delta this merge applies is exactly zero.
+                    TrainConfig(maxSteps = 3, batchSize = 2, mergeAtEnd = true),
+                )
+                model.merge()
             } finally {
                 model.close()
             }
 
+            val rewritten = weights.count { it.lastModified() != mtimesBefore[it.name] }
+            assertTrue(
+                "no merge actually ran: all ${weights.size} trainable .bin files have their original " +
+                    "modification time, so this test compared the package with itself and proved " +
+                    "NOTHING. That is exactly how the original version of this test passed while the " +
+                    "merge was corrupting every weight. Check logcat for 'Starting weight merging " +
+                    "process' before trusting any result from this class.",
+                rewritten > 0,
+            )
+
             val after = probeMergedGraph(root, repoId, text).crossEntropyNats
-            android.util.Log.i(LOG_TAG, "zero-adapter merge: before=$before after=$after")
+            android.util.Log.i(
+                LOG_TAG,
+                "zero-adapter merge: before=$before after=$after ($rewritten/${weights.size} rewritten)",
+            )
 
             val drift = kotlin.math.abs(after - before) / before
             assertTrue(
@@ -322,6 +373,7 @@ class PostMergeNumericsTest {
                 after.isFinite() && drift < 0.01,
             )
         } finally {
+            File(trainDir, "$trainFile.jsonl").delete()
             restoreFrom(stash, File(trainDir, "checkpoint"), File(trainDir, "training_state.json"))
             stash.deleteRecursively()
         }
@@ -376,24 +428,8 @@ class PostMergeNumericsTest {
         )
 
         try {
-            val tokenizer = ORTTokenizerNative(PackagePaths.forCache(root, repoId).tokenizer.absolutePath)
-            // The constructor reads the configs (so `vocabSize` is set) but does NOT open the native
-            // tokenizer session. Calling `tokenize` first passes a 0 handle straight into
-            // `tokenizeString`, which dereferences it — a SIGSEGV rather than an error. Noted as a
-            // separate fail-open defect in the JNI layer; here we simply open the session first.
-            tokenizer.createTokenizerModel()
-            val memorised: IntArray
-            val unrelated: IntArray
-            try {
-                memorised = tokenizer.tokenize(prompt + completion, prependBos = true)
-                unrelated = tokenizer.tokenize(
-                    "The history of the printing press begins in the fifteenth century.",
-                    prependBos = true,
-                )
-            } finally {
-                tokenizer.destroySession()
-            }
-            assertTrue("tokenizer reported no vocabulary size", tokenizer.vocabSize > 0)
+            val memorised = tokenizeWithPackage(root, repoId, prompt + completion)
+            val unrelated = tokenizeWithPackage(root, repoId, PROBE_TEXT)
 
             // CONTROL, before anything is trained: is the pristine inference graph a language model at
             // all? Nothing in the repo asserted this. `mergedWeightsChangeTheComputationAndStayNumericallySane`
@@ -401,7 +437,7 @@ class PostMergeNumericsTest {
             // from the start would satisfy every existing bound. If this fails, the merge is innocent
             // and the defect is in the inference graph or the prefill inputs (attention mask, position
             // ids) — a completely different investigation.
-            val uniformFloor = kotlin.math.ln(tokenizer.vocabSize.toDouble())
+            val uniformFloor = kotlin.math.ln(vocabSizeOf(root, repoId).toDouble())
             val baseline = probeMergedGraph(root, repoId, unrelated).crossEntropyNats
             android.util.Log.i(
                 LOG_TAG,
@@ -496,10 +532,28 @@ class PostMergeNumericsTest {
      * text-level comparison cannot distinguish "the merge is numerically wrong" from "greedy decoding
      * happened to pick the same eight tokens" — the exact ambiguity `TrainMergeGenerateTest` documents.
      */
+    /** The package's declared vocabulary size, for the `ln(vocab)` uniform-prediction floor. */
+    private fun vocabSizeOf(root: File, repoId: String): Int {
+        val tokenizer = ORTTokenizerNative(PackagePaths.forCache(root, repoId).tokenizer.absolutePath)
+        assertTrue("tokenizer reported no vocabulary size", tokenizer.vocabSize > 0)
+        return tokenizer.vocabSize
+    }
+
+    /** Tokenize [text] with the package's tokenizer, opening and closing the native session. */
+    private suspend fun tokenizeWithPackage(root: File, repoId: String, text: String): IntArray {
+        val tokenizer = ORTTokenizerNative(PackagePaths.forCache(root, repoId).tokenizer.absolutePath)
+        tokenizer.createTokenizerModel()
+        return try {
+            tokenizer.tokenize(text, prependBos = true)
+        } finally {
+            tokenizer.destroySession()
+        }
+    }
+
     private suspend fun probeMergedGraph(
         root: File,
         repoId: String,
-        tokens: IntArray = PROBE,
+        tokens: IntArray,
     ): ORTGeneratorNative.InferenceMetrics {
         val paths = PackagePaths.forCache(root, repoId)
         val tokenizer = ORTTokenizerNative(paths.tokenizer.absolutePath)

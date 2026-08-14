@@ -464,6 +464,16 @@ class ORTTokenizerNative (private val tokenizerDir : String) {
                  appendSep : Boolean = false,
                  dropZero : Boolean = false) : IntArray {
 
+        // Fail closed on an unopened session. `tokenizeString` dereferences this handle in native
+        // code, so a 0 here is a SIGSEGV that takes down the whole instrumentation run and names
+        // nothing — the constructor reads the configs but deliberately does NOT open the native
+        // session, so calling tokenize() before createTokenizerModel() is an easy and silent mistake.
+        // (It cost a device run on 2026-08-14.)
+        check(tokenizerModel != 0L) {
+            "tokenizer session is not open: call createTokenizerModel() before tokenize(). " +
+                "The constructor only loads the JSON configs."
+        }
+
         var tokens = tokenizeString(tokenizerModel, sequence)
 
         // Drop trailing zeros if requested

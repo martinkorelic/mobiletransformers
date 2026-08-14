@@ -4,17 +4,16 @@ This index orders every feature code-plan under `agent_docs/00_code_plans/` … 
 
 The high-level "what & why" lives in the six tier docs (`00_repository_restructure_plan.md`, `01_tier0_foundation_decisions.md`, `02_tier1_hf_integrated_core.md`, `03_tier2_inference_and_rag.md`, `04_tier3_reach_extensions.md`, `05_cross_cutting_release_modernization.md`). These code plans are the "how" — concrete enough for another agent to implement.
 
-> **Status as of 2026-08-14: 35 / 37 plans done · 107 of 111 self-check boxes ticked.**
+> **Status as of 2026-08-14: 36 / 37 plans done · 108 of 111 self-check boxes ticked.**
 >
 > ⚠️ **The block that stood here was stale in four separate claims** and is corrected above rather than
 > appended to, per this file's own rule ("record the correction next to the claim"). It read
 > *"31 / 37 plans · 102 of 111"* and described **#35's simulation and #37's architecture gate as
-> blocked**. All four are false: the tables below read 35/37, a `grep -c` over this file's self-check
-> boxes returns **107 `[x]` / 4 `[ ]`**, #35's 4-client × 3-round simulation passed 2026-08-09 (eval
-> loss falling 8.7353 → 8.5258 → 8.2579) and #37's architecture gate passed 2026-08-09. The counts
-> below are measured, not carried forward.
+> blocked**. All four are false: #35's 4-client × 3-round simulation passed 2026-08-09 (eval loss
+> falling 8.7353 → 8.5258 → 8.2579) and #37's architecture gate passed 2026-08-09. The counts here are
+> a measured `grep -c` over this file's self-check boxes (**108 `[x]` / 3 `[ ]`**), not carried forward.
 >
-> **The 4 open boxes are #32's three and #37's one.** Of these, exactly one is engineering:
+> **The 3 open boxes are all of #32's, and none of them is engineering:**
 >
 > 1. the **relicense** — CC-BY-NC-4.0 → Apache-2.0, a rights-holders decision (both authors in
 >    `CITATION.cff`), and the one genuine v1.0 blocker;
@@ -22,10 +21,17 @@ The high-level "what & why" lives in the six tier docs (`00_repository_restructu
 >    (`tests/unit/test_version_sites.py`, which as of 2026-08-14 also pins the manifest's
 >    `mobiletransformersVersion`, the 5th site, which had been unguarded); this closes when v1.0.0 is
 >    tagged, i.e. it is the release act, not work;
-> 3. the **full release gate**, which needs (1), a tag, and the CI-trigger decision;
-> 4. **#37's differentiation demo** (self-check 3) — the only open engineering item in the project.
+> 3. the **full release gate**, which needs (1), a tag, and the CI-trigger decision.
 >
-> Everything else technical the release gate was waiting behind is finished.
+> **#37's differentiation demo — the last open engineering box in the project — closed 2026-08-14**
+> on the S21 FE, after the merge transpose defect that had been silently corrupting it was found and
+> fixed. See "The #37 demo run". Every technical item the release gate was waiting behind is finished;
+> what remains is a licensing decision and the release act itself.
+>
+> **One standing caveat on the `Done` column:** device results recorded *before* 2026-08-14 were
+> measured against a merge that wrote every weight transposed. Anything whose evidence depends on
+> post-merge numerics — the 15/15 device suite, #18/#19's train→merge→generate — was re-validated after
+> the fix; see "Re-validation after the transpose fix" below for what was re-run and what was not.
 >
 > A six-agent audit (`agent_docs/audits/`) found several `[x]` marks overstated; a 2026-08-07
 > remediation pass closed most of what it found, and a 2026-08-09 pass de-drifted the `Done` column
@@ -884,18 +890,62 @@ epochs, scheduler type + LR) as **data**, and `TrainingScheduler.schedule` **rej
 `customPreprocess` lambda up front** — a lambda cannot survive process death, so a scheduled job must
 name a registered task. Failing at schedule time beats failing hours later in a rebuilt worker.
 
-### A device-suite hazard worth knowing
+### The device-suite mutation hazard — fixed systemically 2026-08-14, after it recurred
 
-The training suites **mutate the package in place** and require a pristine one. `TrainMergeGenerateTest`
-says so in its own failure message — *"the merge rewrites these files IN PLACE, so a package that has
-already been merged re-merges to identical bytes. Re-push a pristine package (`make device-package`)
-before re-running this suite."*
+The training suites **mutate the package in place**: training rewrites `train/checkpoint` and
+`training_state.json`, and the merge rewrites the per-tensor weight blobs under `inference/`. Tests
+that assert about a clean package then read whatever an earlier test left behind.
 
-`ScheduledTrainingDeviceTest` trains the package too, and sorts **before** both `TrainConvergenceTest`
-and `TrainMergeGenerateTest`, so its first version turned two unrelated suites red (a NaN initial loss
-and a no-op merge). It now stashes and restores `train/checkpoint` + `training_state.json` around
-itself, and deletes its own dataset fixture. **A new device test that trains must do the same, or run a
-`make device-package` first.**
+**This bit twice, with the same two symptoms both times.**
+
+1. *First occurrence.* `ScheduledTrainingDeviceTest` sorts before `TrainConvergenceTest` and
+   `TrainMergeGenerateTest`, and its first version turned both red — **a NaN initial loss and a no-op
+   merge**. Fixed by having that one class stash and restore `train/checkpoint` +
+   `training_state.json`, with a note telling future authors to do likewise.
+2. *Second occurrence, 2026-08-14.* Three new mutating `PostMergeNumericsTest` cases landed and the
+   full suite came back **3 failures / 23 tests** — `TrainConvergenceTest` ×2 (**NaN initial losses**)
+   and `TrainMergeGenerateTest` (**"merge wrote no new weights"**). The same two symptoms, from the
+   same cause, in the same two victims. All three pass against a freshly pushed package.
+
+**The lesson is about the shape of the first fix, not about the tests.** A per-class convention that
+new authors must remember is not a fix for a suite-wide invariant; it postpones the recurrence until
+someone adds a class without reading the note. The second fix is structural: `PristinePackageRule`, a
+JUnit `TestRule` applied to every class that trains or merges, which captures the mutable artifacts
+before each test and restores them afterwards **including on failure** — so one genuine failure no
+longer cascades into misleading ones. It also recovers from an orphaned stash left by a test that died
+before its `finally`, which would otherwise make the rule preserve corruption rather than prevent it.
+
+Note what the first fix left uncovered even for its own class: it restored the checkpoint but not the
+merged weights, because stashing ~60 tensors per test looked more expensive than re-pushing. That
+trade was wrong — it cost a full suite run plus the investigation to re-derive a known cause.
+
+**And the replacement got it wrong too, in a way worth recording.** `PristinePackageRule`'s first
+version only copied stashed files *back*, skipping anything with no saved copy. But
+`training_state.json` **does not exist in a freshly exported package** — training CREATES it, and its
+presence makes the next training run RESUME instead of starting fresh. So the file survived every
+restore, and `TrainConvergenceTest` kept reporting `NaN` initial losses while `TrainMergeGenerateTest`
+(whose weight blobs pre-exist) was fixed. **Restoring state means restoring absence too**: a file that
+was absent before a test and present after is restored by *deleting* it.
+
+That is the same fail-open-by-omission shape as the transpose defect itself — `ObservedInit.transposed`
+was honoured though never produced; here absence was state and was not treated as state. The pattern to
+watch for is a restore/compare/validate that iterates over *what is there* and has no branch for *what
+should not be*.
+
+**The verification of that fix went wrong twice before it went right, and that is the more useful
+lesson.** Two runs pairing a mutating class with `TrainConvergenceTest` came back green and were
+reported as confirmation. Both were vacuous: the rule logs `captured N / restored M`, and both read
+`181/181`, meaning the delete path never executed — the chosen "mutating" class did not write
+`training_state.json`, so the failure could not occur. Guessing the writer twice cost two 10-minute
+runs; reading it out of the previous suite's logcat (`ToolCallDeviceTest` writes at 18:54,
+`TrainConvergenceTest` loads at 18:57) took one command. The real run reads **`captured 181 / restored
+182`** — the 182nd artifact is the deletion — and the consumer logs "No existing training state found"
+where it previously logged "Loading training state from:". **A fixture rule needs a counter that
+distinguishes "did nothing" from "did the right thing", or its green is unreadable.**
+
+**A new device test that trains or merges gets `@get:Rule val pristinePackage = PristinePackageRule()`.
+Do not re-invent a per-test stash.** The precondition that survives: push a fresh package before a
+suite run. What no longer holds is that the package degrades during one.
 
 ### What the device leg deliberately does NOT prove
 
@@ -1256,14 +1306,36 @@ seam, **not** multi-device convergence (that is #35's simulation, which trains r
 ### #37 — FunctionGemma architecture gate & intents (`04_code_plans/05`) · checkpoint
 - [x] Did the architecture gate pass — Gemma-3 **inference**-graph export added as a registry entry? *(**GATE 1 PASSES 2026-08-09.** `google/gemma-3-270m` exports end to end through the normal front door and `mobiletransformers export --validate` produces a #13-valid package: 18 layers, canonical `logits` + 36 `present.N.key/value` + 36 `past_key_values.N.key/value`, optimum's own validation max-diff ~1e-4. It took a dependency fork AND a real registry defect fix — see "The #37 architecture gate" below. `inference_model_class` stays `None` by design: that field is the vendored GenAI-builder path, while the shipping inference export goes through optimum's `main_export`.)*
 - [x] Does it **never** execute raw model output (allowlist + dry-run + validated tool calls)? *(**2026-08-10**: `agent/FunctionCallValidator.kt` + `agent/IntentBinder.kt`, **16 JVM tests**. The guarantee is structural rather than procedural: `IntentBinder.dryRun` accepts only a `ValidatedCall`, which nothing but the validator can construct, so raw model text cannot reach it; and the intent action is read from the app's `ActionSpec.allowedIntent`, never from model output — **a model selects an action, it cannot name an intent**, so the reachable intent set is fixed when the allowlist is built. `IntentBinder` holds no `Context` and has no `startActivity` call site; executing is the caller's decision with the caller's own `Context`, deliberately not offered as a convenience. Undeclared parameters are refused (so an `allowedIntent` cannot be smuggled in as one), missing ones are refused rather than defaulted, an **unrecognised validation rule rejects rather than passing by default** (a typo in the app's allowlist must not silently disable the check it was written to perform), and a duplicated action name fails at construction instead of `associateBy` silently keeping the last.)*
-- [ ] Does the train → validated-tool-call → dry-run-intent demo show ≥2 differentiators? *(**RUN 2026-08-14 on the S21 FE `SM-G990B` / Android 15 / arm64-v8a — it FAILS, and the failure is now characterised rather than guessed at. See "The #37 demo run" below.** Previously: four of the five pieces in place, demo never executed.*
-- *Everything except the demo remains as recorded below.)*
+- [x] Does the train → validated-tool-call → dry-run-intent demo show ≥2 differentiators? *(**PASSES 2026-08-14 on the S21 FE `SM-G990B` / Android 15 / arm64-v8a**, `ToolCallDeviceTest` 2/2, 754 s. The chain runs end to end on hardware: a per-user action set generated from the app's own allowlist → 108 on-device LoRA steps (loss drop 99.5%) → merge → greedy generation → `{"actionName": "set_alarm", "parameters": {"time": "07:30"}}` for `wake me at 07:30`, **Accepted** by the app's own validator → bound to a dry-run intent. Three differentiators are demonstrated, not merely present: **personalized per-user action sets** (the dataset is derived from the allowlist, so accepted completions are accepted by construction), **privacy-preserving local data** (the corpus is generated on-device from a declaration and never leaves it), and **local validated tool-call generation with structural non-execution** (the second test, `theAllowlistStillRefusesAnActionTheAppNeverDeclared`, confirms an undeclared action is still refused after fine-tuning). This run was only a fair test after the transpose defect below was fixed; the first two attempts measured a broken merge.)*
+- *This box was open for the whole project and is the last engineering item in it. Everything except the demo remains as recorded below.*
 
-### The #37 demo run — MEASURED 2026-08-14. Root cause FOUND and FIXED: the merge wrote every weight transposed
+### The #37 demo run — PASSES 2026-08-14, after a root cause FOUND and FIXED: the merge wrote every weight transposed
 
-> **Superseded header.** This section first read "FAILS, root cause narrowed to merge numerics" and
-> advised against spending a cycle on more steps. The narrowing was right; the diagnosis took three
-> more rounds and two wrong hypotheses (see below). **The defect is found, fixed and verified.**
+> **Superseded header, twice.** This section first read "FAILS, root cause narrowed to merge numerics"
+> and advised against spending a cycle on more steps. The narrowing was right; the diagnosis took three
+> more rounds and two wrong hypotheses (see below). **The defect is found, fixed and verified — and the
+> gate it was blocking now passes.**
+
+**The gate result (S21 FE `SM-G990B` / Android 15 / arm64-v8a, 2026-08-14, `ToolCallDeviceTest` 2 tests
+/ 0 failures / 754.4 s, against a freshly pushed pristine package):**
+
+```
+ToolCallDeviceTest: steps=108 lossDrop=99.5%
+ToolCallDeviceTest: instruction='wake me at 07:30'
+                    raw='{"actionName": "set_alarm", "parameters": {"time": "07:30"}}<|im_end|>'
+                    -> Accepted
+```
+
+Compare the identical run before the fix, which emitted token 198 (newline) 48 times. Same package,
+same corpus, same 108 steps, same 99.5% loss drop — **the only thing that changed is that the merged
+weights are now stored in the orientation the inference graph reads them in.** The model was learning
+the task correctly the whole time; the merge was destroying the result on the way out. Note also that
+the emitted `<|im_end|>` is the EOS fix landing: the completion terminates rather than running to
+`maxNewTokens`.
+
+The second test (`theAllowlistStillRefusesAnActionTheAppNeverDeclared`, 2 ms) matters more than its
+runtime suggests: it confirms fine-tuning a model to emit calls did **not** widen the reachable action
+set. Refusal of an undeclared action is structural — it holds whatever the model emits.
 
 **The bug:** `weight_merger.cpp` wrote merged weights in the merger's own convention
 (`[out_features, in_features]`, PyTorch `nn.Linear` / checkpoint layout) into an ONNX `MatMul`
@@ -1304,16 +1376,53 @@ error was claimed to "fit the measurements exactly" — disproved by experiment,
 a prior training run **never executes a merge at all**, so the control was vacuous. The general lesson
 — magnitude-based checks cannot detect a permutation — is in Operational knowledge.
 
-**What the fix does NOT yet cover:** every previously recorded training result in this project was
-measured against the broken merge, including the 15/15 device suite and #18/#19's train→merge→generate
-checkpoints. They describe a system that no longer exists and need re-running.
+### Re-validation after the transpose fix
 
-### Original narrowing (kept — the elimination was sound)
+Every training result recorded before 2026-08-14 was measured against the broken merge, so none of it
+was evidence for the current code. Re-run on the S21 FE `SM-G990B` / Android 15 / arm64-v8a, each
+against a **freshly pushed pristine package** (the merge rewrites the device copy in place, so a
+re-used package re-merges to identical bytes and proves nothing):
 
-`ToolCallDeviceTest` had never executed (written 2026-08-14 with no device attached). It has now run
+| leg | result |
+| --- | --- |
+| **FULL DEVICE SUITE** | **23 tests / 0 failures / 3 assumption-skips / 3219 s, 2026-08-14.** The first end-to-end pass this suite has ever had — see "The device-suite mutation hazard" for why it could not run in one pass before. Skips are the encoder-package and federation-disabled assumptions, both by design. |
+| **#37** `ToolCallDeviceTest` | **PASS** 2/2 — accepted `set_alarm` call, see above. Passed in three separate runs (754 s, 1018 s standalone, and within the suite). |
+| **#18/#19** `TrainMergeGenerateTest` | **PASS**. `merged 60/90 tensors`, and generation after the merge reads `< the city of Paris, a city of>` — coherent English, identical to the pre-training baseline. Before the fix this leg produced 48 newlines and still passed, because its only assertion was `isNotEmpty()`. |
+| **#9** `PostMergeNumericsTest` large-delta | **PASS** — 1.295 nats memorised vs 5.529 unrelated (table above). **Reproduced to the last digit in three independent runs** (`1.2951252753772409` / `5.529056724499491`), so the result is not a fixture artefact. |
+| **#9** zero-delta merge identity | **PASS** — `zero-adapter merge: before=4.651482603007065 after=4.6514830258392115 (60/90 rewritten)`. A merge that genuinely ran (the rewrite count proves the write path executed) with an exactly-zero delta is the identity to float round-trip precision. This is the control that was reported vacuously earlier the same day and had to be retracted; it now measures what it claims. |
+
+**On `TrainMergeGenerateTest`'s output being *unchanged* by training:** that is correct and expected,
+not a weak result. One LoRA step at the default learning rate does not move a greedy argmax over 8
+tokens; the test's evidence is the 60 changed `.bin` files, not the text. What the text now proves is
+the thing that was silently false for months — that the model still *works* after a merge.
+
+**The offline Python merger was never affected.** `merge_validators.py` computes merged tensors in
+memory for validation and never writes `.bin` files, so exported packages always carried correct
+weights. Only device merges corrupted them. (The `write_raw_tensor_atomic` comment asserting
+offline/device byte-identity was describing a comparison nobody had run; corrected.)
+
+**Cross-language agreement, now pinned by a test.** `derive_transpose_policy` run over a real export's
+shapes resolves the package to `already_transposed_for_inference` — the same orientation
+`weight_merger.cpp` independently *observes* from the tensors at merge time (`merge orientation:
+transpose_for_inference=1 (observed=1)`). Two implementations, two languages, real data, same answer;
+`test_the_derivation_agrees_with_a_real_exported_package` fails if either side drifts. The earlier
+tests used synthetic fixtures, which is precisely how the original defect hid — the fixtures agreed
+with the broken code because both said `no_transpose`.
+
+**Still not re-validated:** the encoder-package legs (`EncoderTrainStepDeviceTest` and the 19-test
+encoder suite) exercise a different package, and #9's atomic-overwrite-under-kill has never been
+tested at all.
+
+### Original narrowing from the PRE-FIX runs (kept — the elimination was sound)
+
+*Everything in this subsection describes the two runs made **before** the transpose fix. It is kept
+because the elimination it performed is what located the defect; read it as history, not as status.*
+
+`ToolCallDeviceTest` had never executed (written 2026-08-14 with no device attached). It then ran
 twice on a pristine `TRAIN=1` SmolLM2-135M-Instruct package, S21 FE / Android 15 / arm64-v8a.
 
-**The result: the model does not emit an accepted call. It emits token 198 (newline) 48 times.**
+**The result at that point: the model did not emit an accepted call. It emitted token 198 (newline)
+48 times.**
 
 What the run proves, and this is the useful part — *the failure is not where the handoff predicted*:
 
@@ -1356,7 +1465,7 @@ first run asked for 120 steps and took 54 (108 rows / batch 2). The corpus is no
 
 *(Original status, still accurate for the other four links:* Present: local validated tool-call generation + Android intent binding (above), personalized per-user action sets (`agent/mobile_actions.py` generates a user's dataset FROM their app's allowlist, so completions are by construction calls the validator accepts — 8 tests pin that seam), and privacy-preserving local data (the dataset is generated on-device from a declaration and never leaves it). On-device training is device-proven for decoders generally. It remains blocked for FunctionGemma specifically by `ort-training-local`'s `transformers==4.46.2` — a #2/#3 dependency decision, not a #37 one.
 
-**Superseded 2026-08-14:** this paragraph used to end "what is missing is the demo itself wired end to end … that has not been done". The demo **has** now been wired and run on a trainable decoder — see the section above. What is missing is no longer the wiring but the merge-numerics defect the run exposed.)*
+**Superseded 2026-08-14, twice:** this paragraph used to end "what is missing is the demo itself wired end to end … that has not been done", then was corrected to "what is missing is no longer the wiring but the merge-numerics defect the run exposed". Both are now closed: the demo is wired, the defect is fixed, and the run passes on hardware. Nothing in #37 is outstanding.)*
 
 ---
 
@@ -1477,6 +1586,18 @@ The `pyproject.toml` caps mirror upstream's own ceilings — they are **not** st
 15. **`android.content.Intent` and `org.json.JSONObject` are stubbed in plain JVM unit tests**, and
     `isReturnDefaultValues = false` makes the stubs **throw** rather than return null. Tests touching
     either need `@RunWith(RobolectricTestRunner::class)`; Robolectric is already on the test classpath.
+16. **Kotlin block comments NEST.** Writing a path glob such as `inference` + slash + star inside a
+    KDoc opens a *nested* comment that swallows the closing delimiter, and the compiler reports
+    **"Unclosed comment" at the end of the file** — pointing nowhere near the cause. Name such files in
+    prose. Cost two builds on 2026-08-14, the second one in `PristinePackageRule.kt` *after* the same
+    gotcha had already been written down in `PostMergeNumericsTest.kt` — a note only helps in the file
+    someone is editing, so it now lives in both.
+17. **Gradle reports `UP-TO-DATE` as success.** A JVM suite that never executed produces the same
+    `BUILD SUCCESSFUL` as one that passed. Use `--rerun-tasks`, and read counts out of
+    `build/test-results/**/*.xml` rather than the console.
+18. **`set -o pipefail` before piping a `make` target to `tail`.** Without it the pipeline reports the
+    exit status of `tail`, so a failing gate reads as a pass. This masked a `ruff format` failure
+    inside an otherwise-green `make check` on 2026-08-14.
 
 ## Never touch the venv while an export is running
 
@@ -1578,12 +1699,74 @@ compare element order — against a reference, a known element, or the same comp
 other graph. Prefer "does the model behave" (cross-entropy on **real tokenized text**) over "do the
 numbers look plausible".
 
-**Second-order cause, still open:** `ObservedInit.transposed` in `artifacts/handoff_map.py` is a
-declared field that **nothing ever assigns**, so `transposePolicy` is hard-coded to `"no_transpose"` by
-omission across all 60 entries (and in the test fixtures). The contract meant to describe the layout was
+*All six gates above were repaired 2026-08-14.* The two that carried the assertion —
+`PostMergeNumericsTest` (now `PROBE_TEXT`, real tokenized English, plus a large-delta test that
+asserts memorised text scores **below** unrelated text) and `TrainMergeGenerateTest` (now rejects
+blank output and degenerate single-character repetition) — were each verified able to fail before
+being trusted. **A gate that cannot be shown to fail has not been tested, it has been assumed.**
+
+**Second-order cause — a declared contract nobody implemented, now CLOSED.** `ObservedInit.transposed`
+was a field that **nothing ever assigned**, so `transposePolicy` read `"no_transpose"` by omission
+across all 60 entries *and in the test fixtures*. The contract meant to describe weight layout was
 never implemented on the producing side, and the consumer faithfully honoured a value nobody computed.
-Owned by #8. The device fix does not trust the field: it transposes and then verifies the result
-against the map's declared on-disk shape, failing closed on disagreement.
+
+The generalisable trap: **the fixtures agreed with the broken code because both were derived from the
+same unimplemented default.** Synthetic test data written by the same author as the code under test
+cannot detect an assumption they share. The fix is a test that reads a *real* artifact
+(`test_the_derivation_agrees_with_a_real_exported_package`).
+
+Fixed on both sides, differently and deliberately:
+
+- **Producer** (`artifacts/handoff_map.py`): the dead field is deleted and replaced by
+  `derive_transpose_policy()`, which *observes* orientation — the merger computes
+  `base + scale·(B @ A)`, whose shape is `(B.rows, A.cols)`; if that equals the on-disk weight shape
+  the conventions agree, if it equals the reverse the on-disk tensor is the transpose, and anything
+  else is incoherent and refused. `resolve_package_transpose_policy()` settles the package from its
+  non-square layers, because **a square layer cannot decide its own orientation** — which is exactly
+  why `q_proj` hid the defect.
+- **Consumer** (`weight_merger.cpp`): does **not** trust the field, and observes orientation itself
+  from the non-square tensors at write time. This is intentional. Every package already exported and
+  already on a device declares `no_transpose` wrongly, so a consumer that honoured the declaration
+  would re-break them all. A field is only safe to honour once no artifact in the wild carries a wrong
+  value for it.
+
+The two implementations agree on real data (`transpose_for_inference=1` ⟺
+`already_transposed_for_inference`), and a test fails if either drifts.
+
+**Three fail-open paths in the FIX ITSELF, found by reviewing it rather than by a test**, and worth
+listing because each would have re-introduced silent corruption in a narrower case:
+
+1. *The orientation scan stopped at the first decidable layer.* A package that mixed conventions would
+   have been half-corrupted according to iteration order. It now checks **every** non-square layer and
+   **fails closed** on disagreement, naming the layer — mirroring
+   `resolve_package_transpose_policy` on the Python side.
+2. *An unobservable package fell back to a hardcoded `transpose = true`.* Reachable, not theoretical:
+   an MHA model without GQA adapts `q_proj`/`v_proj` at identical shapes, so **every** adapted weight
+   is square and orientation cannot be observed at all. A guess would corrupt half of such packages,
+   and the shape check cannot catch it because a square tensor's transpose still matches the declared
+   shape. It now falls back to the map's declaration and logs loudly that it is doing so.
+3. *`write_raw_tensor_atomic`'s last two parameters were defaulted* to "skip the shape verification"
+   and "transpose". A new call site would have got an unverified transpose **by omission** — the same
+   shape as the unassigned field that caused the original defect. Both are now required.
+
+The general point: a fix for a fail-open bug is itself a good place to look for fail-open defaults.
+
+**Is there another field like it? Checked — no.** An AST sweep over all 267 dataclass fields in `src/`
+found 39 never assigned by name; every one is either set positionally, or never read, or both. The
+seven that cross a process boundary (`FederatedTensor.aggregation`, `SupportRow.*`, `TaskDiscovery.*`)
+are all constructed positionally and, in the federated case, validated fail-closed against
+`SUPPORTED_AGGREGATIONS`. **`ObservedInit.transposed` was the only instance of the pattern.** Recording
+the negative so the sweep is not repeated from scratch; the query is "declared, honoured by a consumer,
+never produced".
+
+**A second route to the same defect was found and closed while testing the fix.** Adapter roles are
+looked up by a *derived* training-graph initializer name, and a miss left the role merely
+"undescribed" — tolerable individually, but if nothing matches, every entry loses its `adapterShapes`,
+orientation becomes unobservable, and the package silently declares `no_transpose` again. Reached not
+by an unassigned field this time but by a **name spelling drift** — the fifth spelling of one layer,
+the same family as the layer-identity problem above. `from_peft_mapping` now raises when specs were
+supplied and not one entry matched, naming the lookup that missed. Found because a test written from
+the docstring used the wrong spelling and passed vacuously; the test now pins the behaviour.
 
 ## The recurring failure shape (worth internalising)
 

@@ -242,3 +242,130 @@ def test_candidate_seeds_are_deduped_when_the_module_is_already_attn():
         "model.layers.0.attn.q_proj.base_layer", _ArchSpec(attention_module_name="attn")
     )
     assert seeds == ("model.layers.0.attn.q_proj.MatMul",)
+
+
+# --- transpose policy: observed, not declared (2026-08-14) -------------------------------------
+
+
+def test_transpose_policy_is_observed_from_the_adapter_and_weight_shapes() -> None:
+    """The orientation of the on-disk weight must be *derived*, never defaulted.
+
+    Regression guard for the most expensive defect this project has had. ``ObservedInit.transposed``
+    was a declared field nothing ever assigned, so ``transposePolicy`` was ``no_transpose`` by
+    omission on every package ever produced. The on-device merge honoured it and wrote every merged
+    weight TRANSPOSED, which is invisible to shape checks (``q_proj`` is square), to element counts
+    (``v_proj`` has the same count either way) and to L2/absmax (both transpose-invariant).
+
+    The shapes below are the real ones from a SmolLM2-135M export.
+    """
+    from mobiletransformers.artifacts.handoff_map import (
+        ALREADY_TRANSPOSED,
+        NO_TRANSPOSE,
+        derive_transpose_policy,
+    )
+
+    lora = {"adapter_A": (8, 576), "adapter_B": (192, 8)}
+    # v_proj: B @ A is (192, 576) while the graph stores (576, 192) -> the on-disk tensor IS the
+    # transpose. This is the case that was silently wrong.
+    assert derive_transpose_policy((576, 192), lora) == ALREADY_TRANSPOSED
+    # ... and the same factors against a weight already in merger orientation need no conversion.
+    assert derive_transpose_policy((192, 576), lora) == NO_TRANSPOSE
+
+    # Square weights genuinely cannot decide their own orientation; the function must not pretend to.
+    square = {"adapter_A": (8, 576), "adapter_B": (576, 8)}
+    assert derive_transpose_policy((576, 576), square) == NO_TRANSPOSE
+
+    # Undescribed adapters -> nothing observable, keep the historical value rather than invent one.
+    assert derive_transpose_policy((4, 3), {}) == NO_TRANSPOSE
+
+
+def test_a_delta_that_cannot_be_added_to_its_weight_is_refused() -> None:
+    """Factors whose product is neither the weight shape nor its transpose are incoherent.
+
+    The merge would be adding tensors that cannot be added, so the map must refuse to describe the
+    layer rather than emit a contract no consumer can honour.
+    """
+    from mobiletransformers.artifacts.handoff_map import derive_transpose_policy
+
+    with pytest.raises(ValueError, match="neither the on-disk weight shape"):
+        derive_transpose_policy((10, 20), {"adapter_A": (8, 576), "adapter_B": (192, 8)})
+
+
+def test_one_package_cannot_mix_two_weight_orientations() -> None:
+    """A square layer inherits the orientation the non-square layers prove; disagreement fails closed."""
+    from mobiletransformers.artifacts.handoff_map import (
+        ALREADY_TRANSPOSED,
+        NO_TRANSPOSE,
+        HandoffEntry,
+        resolve_package_transpose_policy,
+    )
+
+    def entry(shape: tuple[int, int], policy: str, adapters: bool = True) -> HandoffEntry:
+        return HandoffEntry(
+            training_base_layer_name="l",
+            dtype="float32",
+            shape=shape,
+            tensor_dtypes={"weight": "float32"},
+            tensor_shapes={"weight": shape},
+            checkpoint_names={"weight": "w"},
+            adapter_dtypes={},
+            adapter_shapes={"adapter_A": (8, 576), "adapter_B": (192, 8)} if adapters else {},
+            merger_output_names={"weight": "merged_weight"},
+            merged_tensor_names={"weight": "w"},
+            inference_initializer_names={"weight": "w"},
+            external_data_location={"weight": "w.bin"},
+            transpose_policy=policy,
+        )
+
+    # One decidable (non-square) entry settles the package, including for the square one.
+    decided = [entry((576, 192), ALREADY_TRANSPOSED), entry((576, 576), NO_TRANSPOSE)]
+    assert resolve_package_transpose_policy(decided) == ALREADY_TRANSPOSED
+
+    # Two non-square entries that disagree cannot both be right.
+    with pytest.raises(ValueError, match="disagree about weight orientation"):
+        resolve_package_transpose_policy(
+            [entry((576, 192), ALREADY_TRANSPOSED), entry((192, 576), NO_TRANSPOSE)]
+        )
+
+    # Nothing decidable -> the historical default, not a guess.
+    assert resolve_package_transpose_policy([entry((576, 576), NO_TRANSPOSE, adapters=False)]) == NO_TRANSPOSE
+
+
+def test_the_derivation_agrees_with_a_real_exported_package() -> None:
+    """Run the derivation over a REAL export's shapes, not a fixture the same author invented.
+
+    The three tests above use synthetic shapes, so they prove the function is self-consistent — not
+    that it describes a package this project actually produces. That gap is how the original defect
+    survived: the fixtures agreed with the broken code because both said ``no_transpose``.
+
+    This reads whatever export is on disk (skipping when there is none, so it never blocks a clean
+    checkout) and asserts the derivation reaches ``already_transposed_for_inference`` — the same
+    answer ``weight_merger.cpp`` independently *observes* at merge time from the tensors themselves
+    (logged as ``merge orientation: transpose_for_inference=1``). Two implementations in two languages
+    agreeing on real data is the assertion; a change that breaks either side breaks the agreement.
+    """
+    import json
+
+    maps = sorted(Path("build").glob("**/weight_handoff_map.json"))
+    if not maps:
+        pytest.skip("no exported package on disk (run scripts/device_package.sh)")
+
+    entries = json.loads(maps[0].read_text())["entries"]
+    assert entries, f"{maps[0]} declares no entries"
+
+    from mobiletransformers.artifacts.handoff_map import (
+        ALREADY_TRANSPOSED,
+        derive_transpose_policy,
+    )
+
+    # The square layers (q_proj, [576,576]) genuinely cannot be decided alone and must NOT be
+    # over-claimed; the non-square ones (v_proj) are what settles the package.
+    decidable = {
+        e["inferenceInitializerNames"]["weight"]: derive_transpose_policy(e["shape"], e["adapterShapes"])
+        for e in entries
+        if e["shape"][0] != e["shape"][1]
+    }
+    assert decidable, "export has no non-square adapted weight, so orientation is unobservable"
+    assert set(decidable.values()) == {ALREADY_TRANSPOSED}, (
+        f"derivation disagrees with the orientation the device merge observes: {decidable}"
+    )

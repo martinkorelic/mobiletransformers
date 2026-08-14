@@ -22,16 +22,33 @@ This file is **only what is left to do**. Completed work is not recorded here �
 
 ## Where the project stands
 
-**35 / 37 plans done · 107 / 111 self-check boxes.** The two open plans are **#32 (licence-gated, not
-work)** and **#37**, whose one open box is the differentiation demo. **One known defect is now
-outstanding** — the #37 merge-numerics failure in §1a, which is characterised but not fixed.
+**36 / 37 plans done · 108 / 111 self-check boxes.** The one open plan is **#32, which is
+licence-gated rather than work**: a relicense decision only the two rights-holders can make, a version
+tag, and the release gate that waits on both. **There is no open engineering item and no known
+outstanding defect.**
 
-**Host gates (measured 2026-08-14 after the app rewrite — do not copy forward, re-measure):**
+**#37 closed 2026-08-14** (§1a) when its differentiation demo passed on hardware, after the merge
+transpose defect that had been silently corrupting every on-device merge was found and fixed. The
+remaining work is verification breadth, not features — see §2.
+
+**Host gates (measured 2026-08-14 after the merge-transpose fix — do not copy forward, re-measure):**
 
 ```
-Python 552 passed / 11 skipped · C++ 39 · Kotlin JVM 252 (library) + 6 (app) · guard 8 · parity OK
+Python 558 passed / 11 skipped · C++ 39 · Kotlin JVM 252 (library) + 6 (app) · guard 8 · parity OK
 uv lock --check clean · make android-build / publish-local / consumer-app all pass
 ```
+
+**Device gate — the full instrumented suite now runs end to end for the first time:**
+
+```
+23 tests / 0 failures / 3 assumption-skips / 3219 s
+S21 FE SM-G990B · Android 15 · arm64-v8a · pristine TRAIN=1 SmolLM2-135M-Instruct
+skips: encoder package not installed, FEDERATION_ENABLED=false (both by design)
+```
+
+Read the JVM counts out of `build/test-results/**/*.xml`, never off the console: Gradle reports
+`UP-TO-DATE` as success, so a suite that never executed looks identical to one that passed. Use
+`--rerun-tasks`.
 
 ```bash
 uv sync --frozen --group dev --python 3.10 && make check    # ALWAYS reset the profile first
@@ -49,12 +66,19 @@ installed, and the cache holds one:
 
 | package on device | result |
 | --- | --- |
-| SmolLM2-135M `TRAIN=1 RAG=1` (decoder) | 15 / 15 pass, 798.0 s |
-| all-MiniLM-L6-v2 `TASK=text-classification TRAIN=1` (encoder) | 19 tests, 0 failures, 16 skipped |
+| SmolLM2-135M `TRAIN=1 RAG=1` (decoder) | **23 tests, 0 failures, 3 skipped, 3219 s (2026-08-14, post-transpose-fix)**. Supersedes the earlier "15 / 15, 798.0 s", which predates both the transpose fix and the three `PostMergeNumericsTest` cases — that run measured a system where every merged weight was stored transposed. |
+| all-MiniLM-L6-v2 `TASK=text-classification TRAIN=1` (encoder) | 19 tests, 0 failures, 16 skipped — **not re-run since the transpose fix.** The encoder legs train but the recorded run predates the fix; re-measure before relying on it. |
 
 **The device currently holds the train-capable SmolLM2-135M-Instruct DECODER package** (pushed
-2026-08-14). It has been mutated by the `ToolCallDeviceTest` runs — re-push before any run that needs a
-pristine package.
+2026-08-14). **Push a fresh one before a suite run** — that precondition still stands, and the recorded
+15/15 above predates both the transpose fix and the three mutating `PostMergeNumericsTest` cases, so
+re-measure rather than copying it forward.
+
+What *no longer* applies: the package used to degrade **during** a run, so a suite of 23 tests came
+back with 3 failures that were all one earlier test contaminating later ones. `PristinePackageRule`
+now captures and restores the mutable artifacts around every class that trains or merges, so a suite
+that starts clean stays clean and also **ends** clean. See "The device-suite mutation hazard" in
+`IMPLEMENTATION_ORDER.md` — it had bitten once before and the per-class fix did not hold.
 
 **You do not need a full re-export to re-push.** `build/pkg` holds the exported decoder; steps 2–4 of
 `scripts/device_package.sh` (reshape → `adb push` → `chmod -R 777` → stage `mt_genai_spike`) are pure
@@ -66,79 +90,59 @@ reached, so prefer the short path unless you are testing the export itself.
 
 ## 1. Code — what is actually left
 
-### 1a. #37's differentiation demo (the only open plan-level item)
+### 1a. #37's differentiation demo — **CLOSED 2026-08-14. The last open engineering box in the project.**
 
-The chain is **per-user action set → on-device fine-tune → validated tool call → dry-run intent**.
-**Every link is now built.** What is left is one thing: *running it*.
+The chain is **per-user action set → on-device fine-tune → validated tool call → dry-run intent**, and
+it now runs end to end on hardware.
 
-| link | state |
-| --- | --- |
-| dataset (import a corpus **or** synthesise per-user) | done — `mobiletransformers agent-dataset` |
-| training-data bridge (`MobileActionsPreprocessor`, task `mobile_actions`) | done |
-| tool-call validator / dry-run binder | done — `agent/FunctionCallValidator.kt`, `agent/IntentBinder.kt` |
-| generated text → validator | done — `MobileTransformerModel.generateToolCall()` → `ToolCallResult` |
-| the instrumented test | **RUN 2026-08-14 — FAILS at generation** (`ToolCallDeviceTest`); root cause narrowed to merge numerics, see below |
+> ### ✅ `ToolCallDeviceTest` PASSES — S21 FE `SM-G990B` / Android 15 / arm64-v8a, 2026-08-14
+>
+> 2 tests / 0 failures / 754 s, against a freshly pushed pristine `TRAIN=1` SmolLM2-135M-Instruct
+> package:
+>
+> ```
+> steps=108 lossDrop=99.5%
+> instruction='wake me at 07:30'
+> raw='{"actionName": "set_alarm", "parameters": {"time": "07:30"}}<|im_end|>' -> Accepted
+> ```
+>
+> The second test confirms an action the app never declared is **still refused** after fine-tuning —
+> training the model to emit calls did not widen the reachable action set.
+>
+> This was only a fair test after the merge transpose defect was fixed. Two earlier runs on the same
+> package with the same 99.5% loss drop emitted token 198 (newline) 48 times: **the model had learned
+> the task all along and the merge was destroying the result on the way out.** The `<|im_end|>` in the
+> output is the EOS fix landing — the completion terminates instead of running to `maxNewTokens`.
+>
+> Full history — the transpose root cause, the uninitialized LoRA scale found alongside it, the two
+> wrong hypotheses, and the sound elimination that located it — is in `IMPLEMENTATION_ORDER.md` →
+> "The #37 demo run". Read that before touching merge code.
+>
+> *(This block has been corrected twice in place. It previously read "compiles but has NOT been
+> executed on hardware", then "ran 2026-08-14 and FAILED … has NOT been re-run since the fix". Both
+> are now false.)*
 
-> ### ✅ `ToolCallDeviceTest` ran 2026-08-14 and FAILED — and the defect it exposed is now FIXED.
->
-> **The merge wrote every weight TRANSPOSED.** Root-caused, fixed and verified the same day; full
-> detail in `IMPLEMENTATION_ORDER.md` → "The #37 demo run". `PostMergeNumericsTest`'s new large-delta
-> test **PASSES** post-fix: memorised text 1.295 nats vs unrelated 5.529, against a 4.651 pristine
-> baseline and a 10.803 uniform floor. Before the fix both were *above* the floor.
->
-> **`ToolCallDeviceTest` itself has NOT been re-run since the fix** — that is the next device run, and
-> it is now a fair test for the first time.
->
-> The original failure analysis is kept below because its elimination was sound.
->
-> *(This block previously read "compiles but has NOT been executed on hardware". That is no longer
-> true; it ran twice on the S21 FE `SM-G990B` / Android 15 / arm64-v8a.)*
->
-> **Result: the model emits token 198 (newline) 48 times instead of a call.** But the run excludes
-> every cause the old advice pointed at:
->
-> * training **converges**: loss 5.85 → 0.006 over 108 steps (99.5% drop);
-> * the merge **completes** over all 60 q_proj/v_proj tensors;
-> * merged weights **reach inference** — 60 "Loaded merged initializer" lines, and **zero** "loading
->   base weights" fallbacks;
-> * the prompt **matches training** — generation input logged as `[1, 42037, …]`, i.e. BOS + the
->   instruction, the same sequence the curator builds.
->
-> **So do NOT spend the next cycle on more steps or a smaller corpus** — that advice was right, and
-> the pointer to the weight-space mapping was the right neighbourhood. The defect turned out to be one
-> step further out: not the `B·A` delta's orientation but the **entire merged weight's** orientation on
-> write, which is why it corrupted the model even with a zero delta. **Fixed.**
->
-> `PostMergeNumericsTest` passing does not contradict this — it asserts the merge *changes* the
-> computation and stays finite, not that the delta is correct.
->
-> Full detail, including the two real defects fixed along the way (BOS parity, missing EOS) and one
-> latent one (the chat template lives in `chat_template.jinja`, which `ORTTokenizerNative` never
-> reads, so `chatTemplate` is null for this package), is in `IMPLEMENTATION_ORDER.md` →
-> "The #37 demo run".
-
-Build the data with either or both sources:
+Rebuild the demo data with either or both sources:
 
 ```bash
 mobiletransformers agent-dataset --source google/mobile-actions --output build/agent
 mobiletransformers agent-dataset --source generated --allowlist build/agent/action_schema.json --output build/user
 ```
 
-What a demo still has to solve — **revised 2026-08-14 against the measurement above**:
+Notes that survive the close, for anyone extending the demo:
 
-- **the merge delta's correctness.** This is the whole remaining problem. Everything upstream of it is
-  now measured working: the decoder package is on the device, `mobile_actions` dispatches at runtime,
-  training converges to 0.006 loss, the merge completes, and the merged tensors load at inference;
-- ~~the assertion is convergence-dependent, so plan a long device run~~ — **wrong, and measured
-  wrong.** 108 steps reached a 99.5% loss drop and the model still emitted newline. Convergence is not
-  the blocker. `gradAccumSteps = 1` remains correct and is pinned in the test;
-- **the two dataset sources answer different halves**, which is why both exist. The corpus (5,794 rows
-  from `google/mobile-actions`) teaches the JSON tool-call *format* — the generic, data-hungry part.
-  The generated per-user set is a short pass on top that teaches *this user's* actions, and is what the
-  personalization differentiator rests on. **Neither is worth running until the merge is fixed**: a
-  model that cannot express what it learned will not express more of it;
-- a demo that "passes" via the **refusal** path shows nothing — the validator rejecting garbage is
-  already covered by 15 JVM tests. Assert on an *accepted* call reaching `IntentBinder.dryRun`.
+- **`gradAccumSteps = 1` is pinned in the test deliberately.** At the default 4 a bounded run applies
+  no optimizer update at all and trains nothing. Do not "tidy" it.
+- **The two dataset sources answer different halves.** The 5,794-row `google/mobile-actions` corpus
+  teaches the JSON tool-call *format* — the generic, data-hungry part. The generated per-user set is a
+  short pass on top that teaches *this user's* actions, and is what the personalization differentiator
+  rests on. The passing run uses only the second; the first is the lever if a larger action set is
+  added and format fidelity drops.
+- **A demo that "passes" via the refusal path would show nothing** — the validator rejecting garbage is
+  already covered by JVM tests. The assertion is on an *accepted* call reaching `IntentBinder.dryRun`,
+  and it stays that way.
+- **`maxSteps` is an upper bound, not a target**: training stops at the end of the epoch. 216 rows at
+  batch 2 gives the 108 steps above.
 
 For FunctionGemma specifically, on-device training stays blocked by `ort-training-local`'s
 `transformers==4.46.2` — a **#2/#3 dependency decision, not a #37 one**; floating that pin has broken
@@ -206,31 +210,34 @@ runs it as a named step.)*
 
 ## 2. Device / manual test legs still open
 
-- ~~**`ToolCallDeviceTest` has never been run**~~ — **RUN 2026-08-14**, fails at generation; see §1a.
-  Still the open #37 checkpoint, but the open question is now merge numerics, not convergence.
+- ~~**`ToolCallDeviceTest` has never been run**~~ → ~~**RUN 2026-08-14, fails at generation**~~ —
+  **PASSES 2026-08-14 post-fix.** See §1a. #37 is closed.
 - ~~**`PostMergeNumericsTest` has never appeared in a recorded suite run**~~ — **CLOSED 2026-08-14.**
   `mergedWeightsChangeTheComputationAndStayNumericallySane` **PASSES in 87.07 s** against a pristine
   `TRAIN=1` SmolLM2-135M-Instruct package on the S21 FE `SM-G990B` / Android 15 / arm64-v8a, run
-  before any training suite touched the package. Note what it does *not* assert: that the merged
-  delta is the *correct* one — see §1a.
-- **RE-VALIDATE EVERY RECORDED TRAINING RESULT.** The merge wrote transposed weights until 2026-08-14,
-  so the recorded device suite (15/15, 798 s) and #18/#19's train→merge→generate checkpoints were all
-  measured against a system that no longer exists. They are not evidence for the current code. Highest
-  priority device work.
-- **Re-run `ToolCallDeviceTest`** — the #37 gate. Never run since the merge fix; now a fair test.
-- #9: on-device atomic-overwrite-under-kill, and offline-vs-device byte-identical `.bin` parity.
-  **Note:** `write_raw_tensor_atomic`'s comment claims offline and device merges are byte-identical.
-  Given the device side transposed everything, that claim was untrue and unchecked — verify whether the
-  offline Python merger has the same defect before trusting exported packages.
-- **#8: `ObservedInit.transposed` is never assigned anywhere**, so `transposePolicy` is `"no_transpose"`
-  by omission on all 60 entries and in the test fixtures. The contract describing weight layout was
-  declared and never implemented. The device fix deliberately does not trust the field (it transposes
-  and verifies against the declared shape); whether the exporter should emit
-  `already_transposed_for_inference` is #8's call.
-- **Strengthen the assertions that let the transpose hide for months** — `TrainMergeGenerateTest`'s
-  `isNotEmpty()` (passes on 48 newlines) and `PostMergeNumericsTest`'s arbitrary-token-id `PROBE`
-  (near-uniform by construction). See Operational knowledge → "Magnitude-based checks cannot detect a
-  permutation".
+  before any training suite touched the package. It has since been joined by
+  `aLargeAdapterDeltaSurvivesTheMergeIntoTheInferenceGraph`, which *does* assert the delta is the
+  correct one (1.295 nats memorised vs 5.529 unrelated, 4.651 pristine baseline) — that is the test
+  the old one was missing, and the one that proves the fix.
+- ~~**Verify whether the offline Python merger has the same defect**~~ — **CHECKED 2026-08-14: it does
+  not, because it never writes `.bin` files at all.** `merge_validators.py` keeps merged results in
+  memory for validation only. **Exported packages were therefore never corrupted; only device merges
+  were.** The `write_raw_tensor_atomic` comment claiming offline/device byte-identity was describing a
+  comparison nobody had made, and has been corrected.
+- ~~**`ObservedInit.transposed` is never assigned anywhere**~~ — **CLOSED 2026-08-14.** The dead field
+  is deleted (with a comment saying why it must not come back) and replaced by
+  `derive_transpose_policy()`, which *observes* orientation from the adapter and weight shapes, plus
+  `resolve_package_transpose_policy()`, which settles the package from its non-square layers because a
+  square layer cannot decide its own. Fails closed if non-square layers disagree. 3 falsifiable tests.
+  **The device side still does not trust the field** and observes orientation itself at write time —
+  deliberately, because every package already on a device declares `no_transpose` wrongly, and
+  honouring a stale declaration would re-break them.
+- ~~**Strengthen the assertions that let the transpose hide for months**~~ — **DONE 2026-08-14.**
+  `TrainMergeGenerateTest` now also rejects blank output and degenerate single-character repetition
+  (the two shapes a corrupted merge actually produces); `PostMergeNumericsTest`'s arbitrary-token
+  `PROBE` is now real tokenized English. See Operational knowledge → "Magnitude-based checks cannot
+  detect a permutation" for why every numeric probe was blind.
+- #9: on-device atomic-overwrite-under-kill remains untested.
 - #21: Kotlin `VariantSelector` parity + the on-device load leg. #22: a real authenticated adapter
   upload with a checkpoint factor read.
 - **The rewritten showcase app has never been run on hardware** (§1b). It compiles and its pure state

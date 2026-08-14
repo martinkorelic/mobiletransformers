@@ -10,6 +10,7 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -34,6 +35,14 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class TrainConvergenceTest {
+
+    /**
+     * Restore the package after every test in this class. It trains and/or merges, which rewrites the
+     * checkpoint and the `inference/` weight blobs in place — see [PristinePackageRule] for the three
+     * suite failures this prevents.
+     */
+    @get:Rule
+    val pristinePackage = PristinePackageRule()
 
     private companion object {
         const val LOG_TAG = "TrainConvergenceTest"

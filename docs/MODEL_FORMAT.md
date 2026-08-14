@@ -145,7 +145,7 @@ Each `entries[]` element is one trainable layer's full identity:
 | `sha256` | role → integrity hash of the **shipped** (pre-merge) bytes — see "Checksum precedence". |
 | `genaiInputNames` | role → GenAI input name (when GenAI consumes the tensor as an input). |
 | `quantization` | optional `{ weightQuantizedName, scaleName, zeroPointName }`. |
-| `transposePolicy` | `no_transpose` \| `already_transposed_for_inference`. |
+| `transposePolicy` | `no_transpose` \| `already_transposed_for_inference` — how the on-disk weight is oriented relative to the training checkpoint. See "Weight orientation" below; **do not honour it without reading that section.** |
 
 Roles are drawn from the fixed order `("weight", "weight_quantized", "scale", "zero_point")`.
 
@@ -180,6 +180,33 @@ for a single non-quantized role, which is why `validate()` rejects a quantized e
 The device loader (`session_cache.h::load_tensor_raw`) **constructs** the tensor from this declaration
 rather than checking a parsed header against it, and fails closed when the file size is not exactly
 `numel × element_size`.
+
+### Weight orientation
+
+Two conventions meet at the merge, and they disagree:
+
+| side | convention |
+| --- | --- |
+| training checkpoint (`base_layer.weight`, a PyTorch `nn.Linear`) | `[out_features, in_features]` |
+| inference initializer (an ONNX `MatMul` right-hand side) | `[in_features, out_features]` |
+
+`transposePolicy` records which one the on-disk `.bin` uses, relative to the checkpoint. It is
+**observed, not declared**: the merger computes `base + scale · (adapter_B @ adapter_A)`, whose shape
+is `(adapter_B.rows, adapter_A.cols)`. If that equals the weight's on-disk shape the two agree
+(`no_transpose`); if it equals the reverse, the on-disk tensor is the transpose
+(`already_transposed_for_inference`); anything else describes a delta that cannot be added to its own
+weight and is refused at export.
+
+**A square weight cannot decide its own orientation** — `[576,576]` satisfies both readings — so the
+policy is resolved **package-wide** from the entries that are not square. One export uses one
+convention throughout, and mixed conventions fail closed.
+
+> ⚠️ **Consumers: derive the orientation, do not trust this field yet.** Every package exported before
+> 2026-08-14 declares `no_transpose` unconditionally, because the producing side never assigned it —
+> and that is wrong for all of them. The on-device merger deliberately observes orientation from the
+> tensors themselves rather than reading this field, so that packages already in the wild keep working.
+> The field became meaningful for packages exported after that date. A declaration is only safe to
+> honour once no artifact in circulation carries a wrong value for it.
 
 ### Checksum precedence: the sidecar wins
 

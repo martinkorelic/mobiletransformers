@@ -18,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -56,6 +57,14 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class ToolCallDeviceTest {
+
+    /**
+     * Restore the package after every test in this class. It trains and/or merges, which rewrites the
+     * checkpoint and the `inference/` weight blobs in place — see [PristinePackageRule] for the three
+     * suite failures this prevents.
+     */
+    @get:Rule
+    val pristinePackage = PristinePackageRule()
 
     private companion object {
         const val LOG_TAG = "ToolCallDeviceTest"

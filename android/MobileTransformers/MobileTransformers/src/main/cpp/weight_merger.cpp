@@ -134,10 +134,19 @@ size_t dtype_byte_size(ONNXTensorElementDataType t) {
 }
 
 // Write the tensor's raw bytes (external-data layout) atomically: temp -> fsync -> rename, then a
-// sibling ".sha256". This matches the per-tensor .bin the inference graph references and the offline
-// exporter's checksum, so offline and device merges are byte-identical.
+// sibling ".sha256". This matches the per-tensor .bin the inference graph references.
+//
+// This comment used to end "...and the offline exporter's checksum, so offline and device merges are
+// byte-identical". That was never verified and was false for as long as the transpose defect existed.
+// It is also not comparable: the offline merger (`merge_validators.py`) keeps merged tensors in memory
+// for validation and writes no `.bin` at all, which is why exported packages were never corrupted.
+//
+// Both trailing parameters are REQUIRED, deliberately. They previously defaulted to `{}` (skip the
+// shape verification) and `true` (transpose), so a new call site got an unverified transpose by
+// omission — the same shape of mistake as the field that caused the defect in the first place.
 bool write_raw_tensor_atomic(const std::string& final_path, const Ort::Value& tensor,
-                             const std::vector<int64_t>& declared_shape = {}) {
+                             const std::vector<int64_t>& declared_shape,
+                             bool transpose_for_inference) {
     auto info = tensor.GetTensorTypeAndShapeInfo();
     size_t count = info.GetElementCount();
     size_t bytes = count * dtype_byte_size(info.GetElementType());
@@ -165,15 +174,22 @@ bool write_raw_tensor_atomic(const std::string& final_path, const Ort::Value& te
     //   * `TrainMergeGenerateTest` asserts only that generation is non-empty, and
     //     `PostMergeNumericsTest` compared two near-uniform cross-entropies over arbitrary token ids.
     //
-    // NOTE for the owner of `artifacts/handoff_map.py`: this package declares
-    // `transposePolicy = "no_transpose"`, which describes what the code did and is contradicted by the
-    // measurement above. The policy field is therefore NOT used as the authority here; the transpose is
-    // applied and then VERIFIED against the map's declared on-disk shape, which fails closed. Whether
-    // the exporter should be emitting `already_transposed_for_inference` is a #8 decision, not one to
-    // make silently inside the merge.
+    // `transpose_for_inference` is decided ONCE per package by the caller
+    // (`save_merged_parameters`), by OBSERVING the shapes of the non-square adapted weights — not by
+    // reading the map's `transposePolicy`. That field read `no_transpose` on every package ever
+    // produced, because `ObservedInit.transposed` was declared and never assigned, and those packages
+    // are still on devices; honouring the declaration would keep corrupting them. The exporter now
+    // observes the same thing on its own side
+    // (`artifacts/handoff_map.py::derive_transpose_policy`), and a test pins the two answers together.
+    //
+    // The transpose is still VERIFIED against the declared on-disk shape below, so a wrong orientation
+    // fails closed rather than corrupting weights silently — except for square weights, where both
+    // orders satisfy the check. That is why orientation is settled package-wide by the layers that
+    // CAN be checked, rather than per tensor.
     std::vector<float> transposed;
     auto shape = info.GetShape();
-    if (shape.size() == 2 && info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+    if (transpose_for_inference && shape.size() == 2 &&
+        info.GetElementType() == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
         const int64_t rows = shape[0], cols = shape[1];
         const float* src = tensor.GetTensorData<float>();
         transposed.resize(static_cast<size_t>(rows) * static_cast<size_t>(cols));
@@ -1147,6 +1163,79 @@ bool WeightMerger::save_merged_parameters(const std::string& output_directory) {
     LOGI("Saving merged parameters to: %s", output_directory.c_str());
     std::filesystem::create_directories(output_directory);
 
+    // #37: decide the package's weight orientation ONCE, by observation, before writing anything.
+    //
+    // The merger computes in checkpoint convention (`[out, in]`); the inference initializer is an ONNX
+    // MatMul right-hand side (`[in, out]`). Which of those the on-disk `.bin` holds is *observable*
+    // wherever the weight is non-square: exactly one of the two orientations matches the shape the
+    // handoff map declares.
+    //
+    // Observation beats `transposePolicy` here because every package exported before 2026-08-14
+    // declares `no_transpose` — the field it was derived from was never assigned — and those packages
+    // are still on devices. Trusting the declaration would keep corrupting them. A square weight
+    // (`q_proj`) cannot decide its own orientation, so the non-square ones (`v_proj`) settle it for the
+    // whole package, mirroring `handoff_map.py::resolve_package_transpose_policy`.
+    // Every non-square layer is checked, not just the first: a package that mixed conventions would
+    // otherwise be silently half-corrupted by whichever layer the map happened to iterate first.
+    // Disagreement is unresolvable, so it fails closed rather than picking a side.
+    bool transpose_for_inference = false;
+    bool orientation_observed = false;
+    const char* orientation_source = "declared";
+    for (const auto& [base_layer_name, output] : merged_outputs_) {
+        const HandoffEntry* e = find_handoff_entry(base_layer_name);
+        if (!e || !output.has_weight || !output.merged_weight) continue;
+        auto s = output.merged_weight->GetTensorTypeAndShapeInfo().GetShape();
+        const std::vector<int64_t>& declared = e->shape_for("weight");
+        if (s.size() != 2 || declared.size() != 2 || s[0] == s[1]) continue;  // square decides nothing
+
+        bool layer_transposed;
+        if (declared[0] == s[0] && declared[1] == s[1]) {
+            layer_transposed = false;
+        } else if (declared[0] == s[1] && declared[1] == s[0]) {
+            layer_transposed = true;
+        } else {
+            LOGE("merge orientation: layer %s has merged shape [%lld,%lld] but the handoff map "
+                 "declares [%lld,%lld] on disk — neither that shape nor its transpose. Refusing to "
+                 "write a weight whose layout cannot be established.",
+                 base_layer_name.c_str(), (long long) s[0], (long long) s[1],
+                 (long long) declared[0], (long long) declared[1]);
+            return false;
+        }
+
+        if (orientation_observed && layer_transposed != transpose_for_inference) {
+            LOGE("merge orientation: layer %s disagrees with earlier layers about weight orientation "
+                 "(this layer says transpose=%d, the package so far says %d). A package must use one "
+                 "convention throughout; refusing to merge.",
+                 base_layer_name.c_str(), static_cast<int>(layer_transposed),
+                 static_cast<int>(transpose_for_inference));
+            return false;
+        }
+        transpose_for_inference = layer_transposed;
+        orientation_observed = true;
+        orientation_source = "observed";
+    }
+
+    if (!orientation_observed) {
+        // Every adapted layer is square (an MHA model with no GQA adapts q_proj/v_proj at identical
+        // shapes), so orientation is not observable and the declaration is the only source left.
+        // This is strictly better than the hardcoded guess that stood here: a guess would corrupt half
+        // of all such packages, and `write_raw_tensor_atomic`'s shape check cannot catch it either,
+        // because a square tensor's transpose still matches the declared shape.
+        for (const auto& [base_layer_name, output] : merged_outputs_) {
+            const HandoffEntry* e = find_handoff_entry(base_layer_name);
+            if (e && output.has_weight) {
+                transpose_for_inference = (e->transposePolicy == "already_transposed_for_inference");
+                break;
+            }
+        }
+        LOGW("merge orientation: no non-square adapted weight, so orientation is UNOBSERVABLE and the "
+             "map's transposePolicy is being trusted. Packages exported before 2026-08-14 declare "
+             "'no_transpose' unconditionally and are wrong; if this model was exported before then, "
+             "re-export it.");
+    }
+    LOGI("merge orientation: transpose_for_inference=%d (source=%s)",
+         static_cast<int>(transpose_for_inference), orientation_source);
+
     bool all_ok = true;
     for (auto& [base_layer_name, output] : merged_outputs_) {
         try {
@@ -1176,9 +1265,11 @@ bool WeightMerger::save_merged_parameters(const std::string& output_directory) {
                     return;
                 }
                 std::string path = output_directory + "/" + loc->second;
-                // Pass the map's declared on-disk shape so the write can verify the layout it produces
-                // is the one the inference graph will read (#37).
-                if (write_raw_tensor_atomic(path, *val, entry->shape_for(role))) {
+                // Pass the map's declared on-disk shape plus the package-wide orientation observed
+                // above, so the write both produces the layout the inference graph will read and
+                // verifies that it did (#37).
+                if (write_raw_tensor_atomic(path, *val, entry->shape_for(role),
+                                            transpose_for_inference)) {
                     LOGI("merged %s [%s] -> %s", layer_name.c_str(), role.c_str(), loc->second.c_str());
                 } else {
                     LOGE("failed writing merged %s [%s]", layer_name.c_str(), role.c_str());

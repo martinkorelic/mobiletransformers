@@ -10,6 +10,7 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -19,6 +20,14 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class TrainMergeGenerateTest {
+
+    /**
+     * Restore the package after every test in this class. It trains and/or merges, which rewrites the
+     * checkpoint and the `inference/` weight blobs in place — see [PristinePackageRule] for the three
+     * suite failures this prevents.
+     */
+    @get:Rule
+    val pristinePackage = PristinePackageRule()
 
     @Test
     // Explicit `: Unit`. With expression-body syntax the return type is inferred from the block's
@@ -92,16 +101,42 @@ class TrainMergeGenerateTest {
             }
             assertTrue(
                 "merge wrote no new weights: all " + binNames.size + " trainable .bin files are " +
-                    "unchanged. NOTE: the merge rewrites these files IN PLACE, so a package that has " +
-                    "already been merged re-merges to identical bytes. Re-push a pristine package " +
-                    "(make device-package) before re-running this suite.",
+                    "unchanged. The merge rewrites these files IN PLACE, so a package that has " +
+                    "already been merged re-merges to identical bytes — this test therefore needs a " +
+                    "package no earlier test has merged. PristinePackageRule restores it around every " +
+                    "mutating class, so if you are seeing this, either the rule is not applied to a " +
+                    "class that merges, or the merge genuinely wrote nothing (check logcat for " +
+                    "'Starting weight merging process').",
                 changed > 0,
             )
 
             // Generation must still work off the merged weights. The text is reported rather than
-            // asserted different: after a single step the argmax may legitimately be unchanged.
+            // asserted *different*: after a single step the argmax may legitimately be unchanged.
             val after = model.generate("The capital of France is", gen).text
+
+            // `after.isNotEmpty()` was the whole assertion here until 2026-08-14, and it is far too
+            // weak: a model whose weights the merge had destroyed emitted 48 consecutive newlines,
+            // which is non-empty. That is not a hypothetical — the merge was writing every weight
+            // TRANSPOSED for months and this test passed throughout.
+            //
+            // Still deliberately behavioural rather than exact: this suite trains ONE step, so the
+            // output legitimately varies. What a corrupted model does is degenerate — a single
+            // character or token repeated, or pure whitespace — so that is what is excluded.
+            // `PostMergeNumericsTest` owns the numerical assertion; this one owns "did the text
+            // survive at all".
             assertTrue("generation returned nothing after merge", after.isNotEmpty())
+            assertTrue(
+                "generation after merge produced only whitespace (${after.length} chars) — the classic " +
+                    "signature of a model whose merged weights are corrupt. Raw: <$after>",
+                after.isNotBlank(),
+            )
+            val distinctNonSpace = after.filterNot { it.isWhitespace() }.toSet().size
+            assertTrue(
+                "generation after merge produced $distinctNonSpace distinct non-whitespace character(s) " +
+                    "in ${after.length} chars — a degenerate repeated token, not text. This is what a " +
+                    "corrupted merge looks like, and what `isNotEmpty()` used to accept. Raw: <$after>",
+                distinctNonSpace >= 2,
+            )
             android.util.Log.i(
                 "TrainMergeGenerateTest",
                 "merged " + changed + "/" + binNames.size + " tensors; baseline=<" + baseline + "> after=<" + after + ">",
