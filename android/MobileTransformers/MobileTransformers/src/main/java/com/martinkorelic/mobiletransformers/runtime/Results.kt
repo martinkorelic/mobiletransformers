@@ -69,6 +69,35 @@ data class IngestResult(
     val chunkCount: Int,
 )
 
+/** One class the head predicts, with the probability assigned to it. */
+data class LabelScore(
+    /** The package's own name for this class, from `id2label`. */
+    val label: String,
+    /** Softmax probability in `0.0..1.0`. */
+    val score: Double,
+    /** The class index, kept because a label name need not be unique or stable across exports. */
+    val index: Int,
+)
+
+/**
+ * Result of sequence classification (#33).
+ *
+ * Encoder fine-tuning worked end to end and the resulting model could not be *run* — the facade had
+ * generate/retrieve/ingest/train and nothing that returns a class. Training a classifier and then
+ * being unable to ask it anything is what this closes.
+ */
+data class ClassificationResult(
+    /** Every class, highest probability first. */
+    val scores: List<LabelScore> = emptyList(),
+    /** How many entries a caller asked to see; [top] is capped by it. */
+    val topK: Int = 5,
+) {
+    /** The predicted class, or `null` for a head with no labels. */
+    val best: LabelScore? get() = scores.firstOrNull()
+
+    val top: List<LabelScore> get() = scores.take(topK.coerceAtLeast(1))
+}
+
 /** Result of grounded generation (#27): the answer, the retrieved matches, and the exact assembled prompt. */
 data class GroundedResult(
     val text: String,

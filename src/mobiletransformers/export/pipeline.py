@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mobiletransformers.config.constants import PEFTMethod
+from mobiletransformers.config.constants import PEFTMethod, TaskType
 from mobiletransformers.config.registry.architecture import import_from_path
 from mobiletransformers.config.registry.task import get_task_spec
 from mobiletransformers.exceptions import ConfigValidationError
@@ -544,20 +544,28 @@ def _build_inference_stage(
     # that actually shipped, so the two can never silently diverge again.
     from mobiletransformers.artifacts.parameter_budget import describe_graph_precision
 
-    _write_json(
-        inf / "optimum_config.json",
-        {
-            "modelId": plan.model_id,
-            "task": result.task,
-            "modelType": result.model_type,
-            "optimumOnnxVersion": result.optimum_onnx_version,
-            "transformersVersion": result.transformers_version,
-            "trustRemoteCode": result.trust_remote_code,
-            "quantization": plan.quant,
-            "inferenceGraphPrecision": describe_graph_precision(inf / "model.onnx"),
-            "supportedEngines": list(plan.supported_engines),
-        },
-    )
+    optimum_config: dict[str, Any] = {
+        "modelId": plan.model_id,
+        "task": result.task,
+        "modelType": result.model_type,
+        "optimumOnnxVersion": result.optimum_onnx_version,
+        "transformersVersion": result.transformers_version,
+        "trustRemoteCode": result.trust_remote_code,
+        "quantization": plan.quant,
+        "inferenceGraphPrecision": describe_graph_precision(inf / "model.onnx"),
+        "supportedEngines": list(plan.supported_engines),
+    }
+
+    # A classification head predicts an INDEX, and an index is not an answer. Without the label names
+    # the device can run the graph and report `LABEL_3` — a number in a costume — so #33's encoder
+    # support stopped one step short of being usable: a model could be fine-tuned on device and then
+    # never asked anything meaningful. The names live in the source model's own config and cost a few
+    # bytes to carry.
+    id2label = _read_id2label(plan, token=token, log=log)
+    if id2label:
+        optimum_config["id2label"] = id2label
+
+    _write_json(inf / "optimum_config.json", optimum_config)
     return StageOutput(
         stage_dirs={"inference": inf, "tokenizer": tok},
         report={k: v for k, v in report.items() if v is not None},
@@ -636,6 +644,43 @@ def _emit_chat_template(plan: ExportPlan, tok: Path, *, token: str | None, log: 
 #: ONNX custom-metadata keys the Android Native engine reads to size its KV cache
 #: (`session_cache.h::loadModelMetadata`). Names are the contract; do not rename one side only.
 RUNTIME_METADATA_KEYS = ("head_dim", "num_kv_heads", "num_layers")
+
+
+def _read_id2label(plan: ExportPlan, *, token: str | None, log: Any) -> dict[str, str]:
+    """The classification head's label names, keyed by stringified class index.
+
+    A classification graph predicts an **index**, and an index is not an answer. Without the names the
+    device can run the model and report ``LABEL_3``, so #33's encoder support stopped one step short of
+    usable: a classifier could be fine-tuned on device and then never asked anything meaningful.
+
+    Keys are strings because that is how HF writes them and how JSON carries them; the Kotlin reader
+    (``packages/PackageTask.kt``) parses them back to ints.
+
+    Best-effort by design. A model whose config omits ``id2label``, or a config that cannot be reached,
+    must not fail an otherwise-good export — the names are a convenience for one task, and every other
+    task ignores them entirely.
+    """
+    try:
+        spec = get_task_spec(plan.task)
+    except Exception:  # noqa: BLE001 - an unknown task simply has no labels to record
+        return {}
+    if spec.task is not TaskType.SEQUENCE_CLASSIFICATION:
+        # Not a classification objective. A decoder's `id2label` is either absent or a leftover from
+        # some other head, and recording it would tell the device this package classifies.
+        return {}
+
+    try:
+        from transformers import AutoConfig
+
+        cfg = AutoConfig.from_pretrained(plan.model_id, token=token, trust_remote_code=False)
+    except Exception as exc:  # noqa: BLE001 - a missing side-car must not fail the export
+        log.warning("id2label not recorded (config unreadable): %s", exc)
+        return {}
+
+    mapping = getattr(cfg, "id2label", None)
+    if not isinstance(mapping, dict) or not mapping:
+        return {}
+    return {str(index): str(name) for index, name in mapping.items()}
 
 
 def _model_dims(plan: ExportPlan, result: Any, *, token: str | None) -> dict[str, int]:

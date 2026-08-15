@@ -32,4 +32,27 @@ data class RuntimeCapabilities(
      * so offering an engine from this set and then being refused it would be a bug in one of them.
      */
     val availableEngines: Set<InferenceEngine> = setOf(InferenceEngine.NATIVE),
-)
+    /**
+     * What objective this package's inference graph was exported for.
+     *
+     * Until this existed, capabilities answered only "can it train / retrieve / run GenAI" and never
+     * "what kind of model is it", so a sequence-classification encoder was indistinguishable from a
+     * chat decoder to every caller. An app could only find out by asking for generation and reading
+     * the failure. Read from the `inference/optimum_config.json` the exporter has always written —
+     * see [com.martinkorelic.mobiletransformers.packages.PackageTask].
+     */
+    val task: com.martinkorelic.mobiletransformers.packages.PackageTask =
+        com.martinkorelic.mobiletransformers.packages.PackageTask.UNKNOWN,
+) {
+    /** This package predicts a class per input rather than generating tokens. */
+    val isClassifier: Boolean get() = task.isClassifier
+
+    /**
+     * `classify()` will work: the package is a classifier **and** it names its labels.
+     *
+     * Both halves are required. A classification graph whose labels are unknown can still be run,
+     * but every prediction comes back as `LABEL_3` — which is a number in a costume, not an answer,
+     * so the honest report is that the capability is not usable on this package.
+     */
+    val supportsClassification: Boolean get() = task.isClassifier && task.labelCount > 0
+}

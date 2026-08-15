@@ -13,16 +13,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MobileTransformersApp"
         tools:targetApi="31">
-        <activity
-            android:name=".TrainingScreen"
-            android:exported="false"
-            android:label="@string/title_activity_training_screen"
-            android:theme="@style/Theme.MobileTransformersApp" />
-        <activity
-            android:name=".InferenceScreen"
-            android:exported="false"
-            android:label="@string/title_activity_inference_screen"
-            android:theme="@style/Theme.MobileTransformersApp" />
+        <!--
+          `.TrainingScreen` and `.InferenceScreen` were declared here long after the classes behind
+          them were deleted in the facade rewrite. A manifest naming activities that do not exist is
+          a crash waiting for whoever first tries to start one, and it misdescribes the app: this is
+          a single-activity Compose app, and its screens are composables, not activities.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true">

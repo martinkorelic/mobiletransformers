@@ -24,6 +24,8 @@ object ModelPackageInstaller {
      *   the copy it avoids is over a gigabyte. Defaults to `false` because the staged tree is not
      *   generally the installer's to destroy: the JVM suite installs the same checked-in
      *   `tiny_package` fixture twice, and a hand-provisioned directory is a legitimate source.
+     * @param features the feature groups this install was pulled with, recorded for display. Purely
+     *   descriptive — what a package can actually do is detected from the artifacts on disk.
      */
     @JvmOverloads
     fun install(
@@ -32,6 +34,7 @@ object ModelPackageInstaller {
         repoId: String,
         variantId: String,
         consumeSource: Boolean = false,
+        features: Set<String> = emptySet(),
     ): Installed {
         val sanitized = PackageFormat.sanitizeRepoId(repoId)
         val stagingRoot = File(cacheDir, ".staging/$sanitized").apply { deleteRecursively(); mkdirs() }
@@ -48,6 +51,20 @@ object ModelPackageInstaller {
             val src = File(stagedPackageDir, name)
             if (src.isFile) src.copyTo(File(stagingRoot, File(name).name), overwrite = true)
         }
+
+        // Written into the staging tree, so the record is published by the same rename that publishes
+        // the package: an installed tree is never missing its record, and a rolled-back install does
+        // not leave one behind describing a package that is not there. Without it the cache cannot
+        // answer "which repo id installed this?" — see [InstallRecord] for what that broke.
+        InstallRecord.write(
+            stagingRoot,
+            InstallRecord(
+                repoId = repoId,
+                variantId = variantId,
+                features = features.sorted(),
+                installedAtEpochMs = System.currentTimeMillis(),
+            ),
+        )
 
         // #21 crash safety: rename the OLD install aside first, put the new one in place, and only
         // then delete the old. The previous order deleted the live package before the new tree

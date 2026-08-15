@@ -1,7 +1,9 @@
 package com.martinkorelic.mobiletransformers.app
 
 import com.martinkorelic.mobiletransformers.config.DatasetConfig
+import com.martinkorelic.mobiletransformers.config.DeviceConfig
 import com.martinkorelic.mobiletransformers.config.GenerationConfig
+import com.martinkorelic.mobiletransformers.config.PeftConfig
 import com.martinkorelic.mobiletransformers.config.RagConfig
 import com.martinkorelic.mobiletransformers.config.TrainConfig
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +32,29 @@ object AppConfig {
     private val _dataset = MutableStateFlow(DatasetConfig())
     val dataset: StateFlow<DatasetConfig> = _dataset.asStateFlow()
 
+    /**
+     * Execution-provider and memory settings, applied to every config that carries them.
+     *
+     * `DeviceConfig` is a field on `GenerationConfig`, `TrainConfig` **and** `RagConfig`, and no
+     * screen edited any of the three — so the execution provider, core profile and memory profile
+     * were part of the public surface and completely unreachable from the app that exists to
+     * demonstrate it. Held once and fanned out on write, because "run inference on XNNPACK but train
+     * on CPU" is not a distinction a showcase should invite by accident; a caller that genuinely
+     * wants it sets the field per config, which the SDK still allows.
+     */
+    private val _device = MutableStateFlow(DeviceConfig())
+    val device: StateFlow<DeviceConfig> = _device.asStateFlow()
+
+    /**
+     * The PEFT method to apply before the next training run.
+     *
+     * `MobileTransformerModel.applyPeft` validates a selection against what the installed package
+     * supports, and nothing in the app ever called it — so the one API that reports a PEFT mismatch
+     * before a run rather than during it had no worked example.
+     */
+    private val _peft = MutableStateFlow<PeftConfig>(PeftConfig.Lora())
+    val peft: StateFlow<PeftConfig> = _peft.asStateFlow()
+
     fun updateGeneration(block: (GenerationConfig) -> GenerationConfig) {
         _generation.value = block(_generation.value)
     }
@@ -46,11 +71,26 @@ object AppConfig {
         _dataset.value = block(_dataset.value)
     }
 
+    /** Set the device options and fan them out to every config that carries a [DeviceConfig]. */
+    fun updateDevice(block: (DeviceConfig) -> DeviceConfig) {
+        val next = block(_device.value)
+        _device.value = next
+        _generation.value = _generation.value.copy(device = next)
+        _train.value = _train.value.copy(device = next)
+        _rag.value = _rag.value.copy(device = next)
+    }
+
+    fun updatePeft(value: PeftConfig) {
+        _peft.value = value
+    }
+
     /** Restore every section to the SDK's own defaults. */
     fun reset() {
         _generation.value = GenerationConfig()
         _train.value = TrainConfig()
         _rag.value = RagConfig()
         _dataset.value = DatasetConfig()
+        _device.value = DeviceConfig()
+        _peft.value = PeftConfig.Lora()
     }
 }

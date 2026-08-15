@@ -1,15 +1,29 @@
 package com.martinkorelic.mobiletransformers.app.viewmodels
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.martinkorelic.mobiletransformers.Tasks
 import com.martinkorelic.mobiletransformers.app.AppConfig
+import com.martinkorelic.mobiletransformers.app.AppSnackbar
+import com.martinkorelic.mobiletransformers.app.ModelHolder
+import com.martinkorelic.mobiletransformers.app.ModelState
 import com.martinkorelic.mobiletransformers.config.DatasetConfig
+import com.martinkorelic.mobiletransformers.config.DeviceConfig
 import com.martinkorelic.mobiletransformers.config.GenerationConfig
+import com.martinkorelic.mobiletransformers.config.PeftConfig
 import com.martinkorelic.mobiletransformers.config.RagConfig
 import com.martinkorelic.mobiletransformers.config.TrainConfig
+import com.martinkorelic.mobiletransformers.constants.CoreConfigId
+import com.martinkorelic.mobiletransformers.constants.ExecutionProvider
+import com.martinkorelic.mobiletransformers.constants.MemoryConfigId
 import com.martinkorelic.mobiletransformers.constants.SamplingMethod
 import com.martinkorelic.mobiletransformers.constants.SchedulerType
 import com.martinkorelic.mobiletransformers.constants.SearchType
+import com.martinkorelic.mobiletransformers.packages.PackageFormat
+import com.martinkorelic.mobiletransformers.packages.PackagePaths
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 /**
  * The ~45 knobs, expressed through the **public** config types only.
@@ -26,6 +40,69 @@ class ConfigurationViewModel : ViewModel() {
     val train: StateFlow<TrainConfig> = AppConfig.train
     val rag: StateFlow<RagConfig> = AppConfig.rag
     val dataset: StateFlow<DatasetConfig> = AppConfig.dataset
+    val device: StateFlow<DeviceConfig> = AppConfig.device
+    val peft: StateFlow<PeftConfig> = AppConfig.peft
+
+    val modelState: StateFlow<ModelState> = ModelHolder.state
+
+    /** The task names the trainer actually dispatches on — not a list retyped into the UI. */
+    val taskOptions: List<Tasks.Task> = Tasks.TASKS
+
+    /**
+     * The `.jsonl` files present in the loaded package's `train/` stage.
+     *
+     * `DatasetConfig.trainFile` names a file the trainer opens at
+     * `<cacheDir>/<repoId>/train/<trainFile>.jsonl`, and the field was free text — so the only way to
+     * discover a wrong name was a failed run. Listing what is actually there turns it into a choice,
+     * and shows an empty list when the answer is "you have not installed a dataset yet", which is the
+     * real diagnosis in the common case.
+     */
+    fun availableTrainFiles(context: Context): List<String> {
+        val model = (ModelHolder.state.value as? ModelState.Loaded)?.model ?: return emptyList()
+        val trainDir = PackagePaths.forCache(
+            context.filesDir,
+            PackageFormat.sanitizeRepoId(model.repoId),
+        ).train
+        if (!trainDir.isDirectory) return emptyList()
+        return trainDir.listFiles()
+            .orEmpty()
+            .filter { it.isFile && it.name.endsWith(".jsonl") }
+            .map { it.name.removeSuffix(".jsonl") }
+            .sorted()
+    }
+
+    // --- device -------------------------------------------------------------------------------
+    fun setExecutionProvider(v: ExecutionProvider) = AppConfig.updateDevice { it.copy(executionProvider = v) }
+
+    fun setCoreConfig(v: CoreConfigId) = AppConfig.updateDevice { it.copy(coreConfigId = v) }
+
+    fun setMemoryConfig(v: MemoryConfigId) = AppConfig.updateDevice { it.copy(memoryConfigId = v) }
+
+    fun setProfiling(v: Boolean) = AppConfig.updateDevice { it.copy(enableProfiling = v) }
+
+    // --- peft ---------------------------------------------------------------------------------
+
+    /**
+     * Select a PEFT method and validate it against the installed package.
+     *
+     * `applyPeft` is the SDK's own check that the requested method matches what the package was
+     * exported with — PEFT topology is baked in at export time, so a mismatch is a fact about the
+     * package, not something the device can fix. Reporting it here, at selection, is the difference
+     * between a clear refusal and a training run that fails for a reason recorded in a config file.
+     */
+    fun setPeft(v: PeftConfig) {
+        AppConfig.updatePeft(v)
+        val model = (ModelHolder.state.value as? ModelState.Loaded)?.model ?: return
+        viewModelScope.launch {
+            runCatching { model.applyPeft(v) }
+                .onSuccess { AppSnackbar.success("PEFT set to ${v.label}") }
+                .onFailure { AppSnackbar.error(it.message ?: "this package does not support ${v.label}") }
+        }
+    }
+
+    fun setPeftRank(rank: Int) = setPeft(AppConfig.peft.value.withRank(rank))
+
+    fun setPeftAlpha(alpha: Int) = setPeft(AppConfig.peft.value.withAlpha(alpha))
 
     // --- generation ---------------------------------------------------------------------------
     fun setMaxNewTokens(v: Int) = AppConfig.updateGeneration { it.copy(maxNewTokens = v.coerceAtLeast(1)) }
@@ -100,4 +177,42 @@ class ConfigurationViewModel : ViewModel() {
         AppConfig.updateDataset { it.copy(maxDatasetLength = v.coerceAtLeast(1)) }
 
     fun reset() = AppConfig.reset()
+}
+
+/**
+ * The PEFT methods as a pickable list.
+ *
+ * `PeftConfig` is a sealed class with per-variant fields, which is right for the API and awkward for
+ * a picker. This flattens it to the choice a user actually makes — which method — while preserving
+ * the current rank and alpha across a switch, so changing method does not silently reset them.
+ */
+val peftOptions: List<String> = listOf("lora", "mars-opt0", "mars-opt1", "mars-quantized")
+
+val PeftConfig.label: String
+    get() = when (this) {
+        is PeftConfig.Lora -> "lora"
+        is PeftConfig.MarsOpt0 -> "mars-opt0"
+        is PeftConfig.MarsOpt1 -> "mars-opt1"
+        is PeftConfig.MarsQuantized -> "mars-quantized"
+    }
+
+/** Build the named method, carrying [rank]/[alpha] over so a method switch is not also a reset. */
+fun peftOf(label: String, rank: Int, alpha: Int): PeftConfig = when (label) {
+    "mars-opt0" -> PeftConfig.MarsOpt0(rank = rank, alpha = alpha)
+    "mars-opt1" -> PeftConfig.MarsOpt1(rank = rank, alpha = alpha)
+    "mars-quantized" -> PeftConfig.MarsQuantized(rank = rank, alpha = alpha)
+    else -> PeftConfig.Lora(rank = rank, alpha = alpha)
+}
+
+fun PeftConfig.withRank(rank: Int): PeftConfig = peftOf(label, rank, alpha)
+
+fun PeftConfig.withAlpha(alpha: Int): PeftConfig = peftOf(label, rank, alpha)
+
+/** What each method costs and requires, shown under the picker. */
+fun peftDescription(label: String): String = when (label) {
+    "lora" -> "low-rank adapters on the attention projections; the default and the widest support"
+    "mars-opt0" -> "MARS, fully trainable, no quantization"
+    "mars-opt1" -> "MARS, partially trainable (frozen + fused down-proj), no quantization"
+    "mars-quantized" -> "MARS with 8- or 4-bit weights; smallest memory, narrowest package support"
+    else -> ""
 }

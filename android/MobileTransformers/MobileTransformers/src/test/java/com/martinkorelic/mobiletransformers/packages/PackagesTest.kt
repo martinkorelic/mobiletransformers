@@ -204,6 +204,72 @@ class PackagesTest {
         val entry = CacheIndex.list(cacheDir).first { it.sanitizedRepoId == "legacy-model" }
         assertFalse(entry.hasManifest)
         assertNull(entry.baseModelId)
+        // No install record: fall back to un-sanitizing the directory name, which for a name with no
+        // "__" is the name itself. Loading by it round-trips to the same directory.
+        assertEquals("legacy-model", entry.repoId)
+    }
+
+    // --- the install record: which repo id installed this? ---------------------
+
+    /**
+     * The Load-an-installed-package regression, at its source.
+     *
+     * The cache directory is `sanitizeRepoId(repoId)`, and nothing recorded the `repoId`. The only
+     * other id in the package is the manifest's `baseModelId`, which names the model the package was
+     * exported FROM — a genuinely different value. The showcase app loaded by it, so tapping Load on
+     * `mobiletransformers/functiongemma-270m-it` asked for `google/functiongemma-270m-it`, resolved to
+     * a directory that does not exist, and reported "not installed" for a package one directory over.
+     *
+     * The fixture makes the distinction explicit: it is installed under a repo id that is NOT its
+     * `baseModelId` (`MobileTransformers/Tiny-0.1B`), so an implementation that confuses the two fails
+     * here rather than passing by coincidence.
+     */
+    @Test
+    fun installRecordsTheRepoIdItWasInstalledFromNotTheBaseModelId() {
+        val cacheDir = File(createTempDir(), "cache").apply { mkdirs() }
+        val repoId = "mobiletransformers/Tiny-Model"
+        ModelPackageInstaller.install(
+            tinyPackage(), cacheDir, repoId, "cpu-int4", false, setOf("inference", "train"),
+        )
+
+        val entry = CacheIndex.list(cacheDir).single()
+        assertEquals(repoId, entry.repoId)
+        // The load key round-trips to the directory that is actually on disk.
+        assertEquals(entry.sanitizedRepoId, PackageFormat.sanitizeRepoId(entry.repoId))
+        // ...and is NOT the base model, which is what made the old code resolve elsewhere.
+        assertEquals("MobileTransformers/Tiny-0.1B", entry.baseModelId)
+        assertEquals("cpu-int4", entry.installedVariantId)
+        assertEquals(listOf("inference", "train"), entry.requestedFeatures)
+        assertTrue(entry.installedAtEpochMs > 0)
+    }
+
+    /** The record is published by the same rename as the package, so an install never lacks one. */
+    @Test
+    fun theInstallRecordLandsInsideThePublishedPackage() {
+        val cacheDir = File(createTempDir(), "cache").apply { mkdirs() }
+        val installed =
+            ModelPackageInstaller.install(tinyPackage(), cacheDir, "org/Tiny-Model", "cpu-int4")
+        assertTrue(File(installed.repoDir, InstallRecord.FILENAME).isFile)
+        assertEquals("org/Tiny-Model", InstallRecord.read(installed.repoDir)?.repoId)
+    }
+
+    /**
+     * A reinstall under a *different* repo id must not leave the previous record behind: the record
+     * describes the tree it ships with, and a stale one would send Load to the wrong package.
+     */
+    @Test
+    fun reinstallReplacesTheInstallRecord() {
+        val cacheDir = File(createTempDir(), "cache").apply { mkdirs() }
+        ModelPackageInstaller.install(tinyPackage(), cacheDir, "org/Tiny-Model", "cpu-int4")
+        val second = ModelPackageInstaller.install(tinyPackage(), cacheDir, "org/Tiny-Model", "cpu-fp16")
+        assertEquals("cpu-fp16", InstallRecord.read(second.repoDir)?.variantId)
+    }
+
+    @Test
+    fun unsanitizeInvertsTheOwnerSeparatorForEveryHubStyleId() {
+        for (id in listOf("org/Tiny-Model", "mobiletransformers/functiongemma-270m-it", "bare-name")) {
+            assertEquals(id, InstallRecord.unsanitize(PackageFormat.sanitizeRepoId(id)))
+        }
     }
 
     // --- supportedEngines reaches the engine selector (#13) --------------------

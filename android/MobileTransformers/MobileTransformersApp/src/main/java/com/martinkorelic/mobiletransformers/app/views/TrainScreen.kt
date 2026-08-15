@@ -2,12 +2,13 @@ package com.martinkorelic.mobiletransformers.app.views
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -15,106 +16,195 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.martinkorelic.mobiletransformers.MobileTransformerModel
 import com.martinkorelic.mobiletransformers.app.viewmodels.TrainViewModel
 
-/** #18/#19/#34 — the training lifecycle: status, events, cancel, resume, merge, and scheduling. */
+/** #18/#19/#34 — the training lifecycle: status, charts, events, cancel, resume, merge, scheduling. */
 @Composable
 fun TrainScreen(vm: TrainViewModel) {
-    val ui by vm.ui.collectAsState()
     val state by vm.modelState.collectAsState()
+    var tab by remember { mutableIntStateOf(0) }
 
     ModelGate(state, needs = "Training needs a package exported with TRAIN=1.") { model ->
         Column(Modifier.fillMaxSize()) {
-            ScreenIntro(
-                "Fine-tune on this device. Order: Install sample dataset -> Start -> Merge. Only the " +
-                    "LoRA adapter trains, so this is minutes rather than hours, but it is still " +
-                    "minutes — watch Events for per-step loss. Cancel is safe: it stops at the next " +
-                    "step boundary and writes a checkpoint you can resume from.",
-            )
-            if (!model.capabilities.supportsTraining) {
-                EmptyState(
-                    title = "This package cannot train",
-                    detail = "No train/ stage is installed. Pull or export one with TRAIN=1 — the " +
-                        "buttons below would fail closed.",
-                )
+            SubTabs(listOf("Run", "Progress", "Schedule"), tab) { tab = it }
+            when (tab) {
+                0 -> RunTab(vm, model)
+                1 -> ProgressTab(vm)
+                else -> ScheduleTab(vm, model)
             }
+        }
+    }
+}
 
-            Section("Data") {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Model packages ship no training data — the task belongs with the data, and " +
-                            "the data is yours. This installs a small tool-call set generated from the " +
-                            "same allowlist the Tool calls screen declares, so what the model learns " +
-                            "is exactly what the validator there accepts.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+@Composable
+private fun RunTab(vm: TrainViewModel, model: MobileTransformerModel) {
+    val ui by vm.ui.collectAsState()
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        ScreenIntro(
+            "Fine-tune on this device. Order: install the sample dataset, Start, then Merge. Only the " +
+                "LoRA adapter trains, so this is minutes rather than hours — but it is still minutes. " +
+                "Watch the loss curve on the Progress tab.",
+        )
+
+        if (!model.capabilities.supportsTraining) {
+            EmptyState(
+                title = "This package cannot train",
+                detail = "No train/ stage is installed. Pull or export one with TRAIN=1 — the buttons " +
+                    "below would fail closed.",
+            )
+        }
+
+        Section("Data") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Model packages ship no training data — the task belongs with the data, and the " +
+                        "data is yours. This installs a small tool-call set generated from the same " +
+                        "allowlist the Tool calls screen declares, so what the model learns is " +
+                        "exactly what the validator there accepts.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                ActionRow {
                     Button(
                         onClick = vm::installSampleDataset,
                         enabled = !ui.running && model.capabilities.supportsTraining,
                     ) { Text("Install sample dataset") }
-                    ui.datasetNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 }
+                ui.datasetNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
+        }
 
-            Section("Run") {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("status: ${ui.status}", style = MaterialTheme.typography.bodyMedium)
-                    if (ui.canResume) {
-                        Text(
-                            "A checkpoint exists — starting again resumes from it when " +
-                                "resumeFromState is on.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = vm::start,
-                            enabled = !ui.running && model.capabilities.supportsTraining,
-                        ) { Text(if (ui.running) "Training…" else "Start") }
-                        OutlinedButton(onClick = vm::cancel, enabled = ui.running) { Text("Cancel") }
-                        OutlinedButton(onClick = vm::merge, enabled = !ui.running) { Text("Merge") }
-                    }
+        Section("Run") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("status: ${ui.status}", style = MaterialTheme.typography.bodyMedium)
+                if (ui.canResume) {
                     Text(
-                        "Cancel is cooperative: the native loop breaks at the next step boundary and " +
-                            "a checkpoint is written, so cancelling is resumable rather than lossy.",
+                        "A checkpoint exists — starting again resumes from it while resumeFromState " +
+                            "is on (Configuration → Training).",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
+                ActionRow {
+                    Button(
+                        onClick = vm::start,
+                        enabled = !ui.running && model.capabilities.supportsTraining,
+                    ) { Text(if (ui.running) "Training…" else "Start") }
+                    OutlinedButton(onClick = vm::cancel, enabled = ui.running) { Text("Cancel") }
+                    OutlinedButton(onClick = vm::merge, enabled = !ui.running) { Text("Merge") }
+                }
+                Text(
+                    "Cancel is cooperative: the native loop breaks at the next step boundary and a " +
+                        "checkpoint is written, so cancelling is resumable rather than lossy. Merge " +
+                        "writes the learned adapter into the inference graph — until then, Chat is " +
+                        "still generating from the base weights.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
+        }
 
-            Section("Schedule (#34)") {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Runs in charging + idle chunks via WorkManager. Each chunk re-enters the " +
-                            "queue, so unplugging between chunks pauses the run instead of failing it.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+        ui.error?.let { Section("Error") { Text(it) } }
+    }
+}
+
+/**
+ * The curve and the log, in that order.
+ *
+ * The log is the chart's table view: every value the curve draws is also readable as a number, which
+ * is what keeps the chart an enhancement rather than the only way to read the run.
+ */
+@Composable
+private fun ProgressTab(vm: TrainViewModel) {
+    val ui by vm.ui.collectAsState()
+
+    Column(Modifier.fillMaxSize()) {
+        TrainingCharts(ui.points, Modifier.padding(top = 12.dp))
+
+        Text(
+            "Events",
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp),
+        )
+        if (ui.events.isEmpty()) {
+            Text(
+                "Nothing yet. Start a run on the Run tab.",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
+        }
+        LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+            items(ui.events) { e ->
+                Text(
+                    e,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScheduleTab(vm: TrainViewModel, model: MobileTransformerModel) {
+    val ui by vm.ui.collectAsState()
+    val scheduled by vm.scheduledRuns.collectAsState()
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        ScreenIntro(
+            "Hand the run to the system instead of running it now. Chunks execute only while the " +
+                "device is charging and idle, and each chunk re-checks that before starting — so " +
+                "unplugging pauses the run rather than failing it.",
+        )
+
+        Section("Schedule a run") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Each chunk re-enters the queue when it finishes, restoring globalStep, epoch and " +
+                        "the LR schedule from training_state.json — the same mechanism that survives " +
+                        "the app's process being killed.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                ActionRow {
                     Button(
                         onClick = vm::schedule,
                         enabled = model.capabilities.supportsScheduledTraining,
                     ) { Text("Schedule") }
-                    ui.scheduled?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    OutlinedButton(
+                        onClick = vm::cancelSchedule,
+                        enabled = scheduled.isNotEmpty(),
+                    ) { Text("Cancel scheduled") }
                 }
+                ui.scheduled?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
+        }
 
-            ui.error?.let { Section("Error") { Text(it) } }
-
-            Text(
-                "Events",
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.padding(start = 16.dp, top = 8.dp),
-            )
-            LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                items(ui.events) { e ->
+        Section("Queue") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (scheduled.isEmpty()) {
                     Text(
-                        e,
+                        "Nothing queued. A scheduled run appears here with its state, so " +
+                            "\"waiting for the charger\" is distinguishable from \"not scheduled\".",
                         style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
                     )
+                } else {
+                    scheduled.forEach { run ->
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(run.stateLabel, style = MaterialTheme.typography.bodyMedium)
+                            Text(run.detail, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
         }
+
+        ui.error?.let { Section("Error") { Text(it) } }
     }
 }

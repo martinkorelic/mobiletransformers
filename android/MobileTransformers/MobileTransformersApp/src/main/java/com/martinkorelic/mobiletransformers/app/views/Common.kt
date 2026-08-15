@@ -5,14 +5,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -92,27 +101,149 @@ fun LabeledSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) 
     }
 }
 
-/** A numeric field that refuses to write a malformed value rather than silently coercing it to 0. */
+/**
+ * A numeric field that refuses to write a malformed value rather than silently coercing it to 0.
+ *
+ * It now also **shows what you typed**. The previous version rendered `value.toString()` and dropped
+ * any keystroke that did not parse, which makes the field feel broken in the most ordinary editing
+ * there is: clearing "128" to type "256" produces an empty string, which does not parse, so the field
+ * snapped back to "128" and the keyboard appeared dead. The text is local state; the config is
+ * written only when the text parses and satisfies [range].
+ */
 @Composable
-fun IntField(label: String, value: Int, onChange: (Int) -> Unit) {
+fun IntField(label: String, value: Int, range: IntRange? = null, hint: String? = null, onChange: (Int) -> Unit) {
+    var text by remember(value) { mutableStateOf(value.toString()) }
+    val parsed = text.toIntOrNull()
+    val error = parsed == null || (range != null && parsed !in range)
+
     OutlinedTextField(
-        value = value.toString(),
-        onValueChange = { text -> text.toIntOrNull()?.let(onChange) },
+        value = text,
+        onValueChange = { new ->
+            text = new
+            new.toIntOrNull()?.let { if (range == null || it in range) onChange(it) }
+        },
         label = { Text(label) },
+        isError = error,
+        supportingText = {
+            when {
+                parsed == null && text.isNotBlank() -> Text("not a whole number")
+                range != null && parsed != null && parsed !in range ->
+                    Text("must be between ${range.first} and ${range.last}")
+                hint != null -> Text(hint)
+            }
+        },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
 }
 
 @Composable
-fun FloatField(label: String, value: Float, onChange: (Float) -> Unit) {
+fun FloatField(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>? = null,
+    hint: String? = null,
+    onChange: (Float) -> Unit,
+) {
+    var text by remember(value) { mutableStateOf(value.toString()) }
+    val parsed = text.toFloatOrNull()
+    val error = parsed == null || (range != null && parsed !in range)
+
     OutlinedTextField(
-        value = value.toString(),
-        onValueChange = { text -> text.toFloatOrNull()?.let(onChange) },
+        value = text,
+        onValueChange = { new ->
+            text = new
+            new.toFloatOrNull()?.let { if (range == null || it in range) onChange(it) }
+        },
         label = { Text(label) },
+        isError = error,
+        supportingText = {
+            when {
+                parsed == null && text.isNotBlank() -> Text("not a number")
+                range != null && parsed != null && parsed !in range ->
+                    Text("must be between ${range.start} and ${range.endInclusive}")
+                hint != null -> Text(hint)
+            }
+        },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
     )
+}
+
+/**
+ * A picker over a closed set.
+ *
+ * Several settings the SDK models as enums or as a fixed registry were rendered as free text, which
+ * turns a choice into a spelling test whose failure surfaces far from where it was made: mistyping
+ * `DatasetConfig.task` is accepted here and reported as `Unsupported task: …` minutes into a training
+ * run, on a different screen. Anything with a knowable set of values belongs here instead.
+ *
+ * @param describe optional second line per option, for sets whose names do not explain themselves.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun <T> Dropdown(
+    label: String,
+    options: List<T>,
+    selected: T?,
+    optionLabel: (T) -> String,
+    describe: (T) -> String? = { null },
+    onSelect: (T) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = selected?.let(optionLabel) ?: "",
+            onValueChange = { },
+            readOnly = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            supportingText = selected?.let(describe)?.let { { Text(it) } },
+            modifier = Modifier.menuAnchor().fillMaxWidth(),
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(optionLabel(option))
+                            describe(option)?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    },
+                    onClick = {
+                        onSelect(option)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** A row of chips over a closed set — the compact form of [Dropdown] for three or four options. */
+@Composable
+fun <T> ChipPicker(label: String, options: List<T>, selected: T?, optionLabel: (T) -> String, onSelect: (T) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { option ->
+                FilterChip(
+                    selected = option == selected,
+                    onClick = { onSelect(option) },
+                    label = { Text(optionLabel(option)) },
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -174,4 +305,40 @@ fun ScreenIntro(text: String) {
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
     )
+}
+
+/**
+ * Tabs *within* one drawer destination.
+ *
+ * Now that the drawer carries navigation, a tab row means one thing only: alternative views of the
+ * same subject. Configuration splits into the config objects it edits; Models splits into where a
+ * package comes from. Previously the tab row was the navigation, so it had to carry six unrelated
+ * destinations and could express neither grouping nor dependency.
+ */
+@Composable
+fun SubTabs(titles: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    TabRow(selectedTabIndex = selected) {
+        titles.forEachIndexed { index, title ->
+            Tab(
+                selected = index == selected,
+                onClick = { onSelect(index) },
+                text = { Text(title, style = MaterialTheme.typography.labelLarge) },
+            )
+        }
+    }
+}
+
+/**
+ * A row of actions with one primary.
+ *
+ * Buttons were previously laid out ad hoc per screen, so identical action rows had different spacing
+ * and no shared baseline — the "unaligned buttons" that read as sloppiness rather than as a bug.
+ */
+@Composable
+fun ActionRow(content: @Composable () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) { content() }
 }

@@ -42,8 +42,18 @@ class PackageDownloadWorker(context: Context, params: WorkerParameters) :
                 genai = genai,
                 endpoint = endpoint,
                 token = token,
-                onProgress = { done, total, path ->
-                    setProgressAsync(workDataOf(KEY_DONE to done, KEY_TOTAL to total, KEY_PATH to path))
+                onProgress = { p ->
+                    setProgressAsync(
+                        workDataOf(
+                            KEY_DONE to p.filesDone,
+                            KEY_TOTAL to p.filesTotal,
+                            KEY_PATH to p.path,
+                            KEY_PHASE to p.phase.name,
+                            KEY_BYTES_DONE to p.bytesDone,
+                            KEY_BYTES_TOTAL to (p.bytesTotal ?: -1L),
+                            KEY_BYTES_PER_SECOND to p.bytesPerSecond,
+                        ),
+                    )
                 },
             )
             Result.success()
@@ -120,5 +130,10 @@ class PackageDownloadWorker(context: Context, params: WorkerParameters) :
         const val KEY_TOTAL = "total"
         const val KEY_PATH = "path"
         const val KEY_ERROR = "error"
+        const val KEY_PHASE = "phase"
+        const val KEY_BYTES_DONE = "bytesDone"
+        /** `-1` when the manifest does not size its files, mirroring `DownloadProgress.bytesTotal == null`. */
+        const val KEY_BYTES_TOTAL = "bytesTotal"
+        const val KEY_BYTES_PER_SECOND = "bytesPerSecond"
     }
 }

@@ -91,6 +91,15 @@ class FacadeDelegationTest {
             return com.martinkorelic.mobiletransformers.runtime.IngestResult(0)
         }
 
+        override suspend fun classify(
+            text: String,
+            device: com.martinkorelic.mobiletransformers.config.DeviceConfig,
+            topK: Int,
+        ): com.martinkorelic.mobiletransformers.runtime.ClassificationResult {
+            calls += "classify:$text"
+            return com.martinkorelic.mobiletransformers.runtime.ClassificationResult()
+        }
+
         override suspend fun generateWithRag(
             query: String,
             rag: RagConfig,

@@ -12,6 +12,7 @@ import com.martinkorelic.mobiletransformers.packages.CacheIndex
 import com.martinkorelic.mobiletransformers.internal.runtime.RepositoryBackedModelSession
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
 import com.martinkorelic.mobiletransformers.packages.PackageFormat
+import com.martinkorelic.mobiletransformers.packages.PackageTask
 import com.martinkorelic.mobiletransformers.repository.LLMRepository
 import com.martinkorelic.mobiletransformers.runtime.GenAiSupport
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
@@ -70,9 +71,10 @@ object MobileTransformers {
                     totalMemMb = deviceMemoryMb(context),
                     endpoint = hubConfig?.endpoint ?: HubResolver.DEFAULT_ENDPOINT,
                     token = hubConfig?.token,
-                    onProgress = { done, total, path ->
-                        onDownloadProgress?.onProgress(DownloadProgress(done, total, path))
-                    },
+                    // Forwarded whole: the pull reports bytes, rate and phase, and re-deriving a
+                    // narrower triple here is what left the facade unable to say anything useful
+                    // about a multi-gigabyte transfer.
+                    onProgress = { progress -> onDownloadProgress?.onProgress(progress) },
                 )
             } catch (e: Exception) {
                 throw ModelNotInstalledException(
@@ -133,6 +135,12 @@ object MobileTransformers {
                 // a WorkManager wrapper over the same TrainingJob, with no extra package requirement.
                 supportsScheduledTraining = repo.isTrainingAvailable,
                 availableFeatures = detectFeatures(repo),
+                // What the package IS, not only what it can do. Without this a caller cannot tell a
+                // classification encoder from a chat decoder, and can only discover the difference by
+                // asking for generation and reading the failure.
+                task = PackageTask.read(
+                    PackagePaths.forCache(modelDir.parentFile, modelDir.name).inference,
+                ),
             )
 
         val session =

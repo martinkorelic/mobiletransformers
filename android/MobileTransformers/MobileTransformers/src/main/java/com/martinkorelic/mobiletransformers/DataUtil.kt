@@ -120,6 +120,41 @@ interface TaskPreprocessor {
     fun formatsPromptForGeneration(): Boolean = false
 }
 
+/**
+ * The task names [getPreprocessFunctionForTask] accepts, and what each one reads.
+ *
+ * ### Why this is public
+ *
+ * `DatasetConfig.task` is a free-form string that must match one of these exactly, and the only
+ * record of the valid set was the `when` below. So the showcase app's Configuration screen offered a
+ * text field with the names listed in a help paragraph beside it — a typo produced
+ * `Unsupported task: mobileactions` at the start of a training run, minutes after the mistake was
+ * made and on a different screen from where it was made.
+ *
+ * Exposing the registry lets a caller offer a picker instead of a spelling test, and keeps that
+ * picker from drifting: [TASKS] and the dispatch are checked against each other by
+ * `DataUtilParseTest`, so adding a preprocessor without listing it here fails the build.
+ */
+object Tasks {
+    /** One row per supported preprocessor: the wire name and what its JSONL rows must contain. */
+    data class Task(val name: String, val description: String)
+
+    val TASKS: List<Task> = listOf(
+        Task("logiqa", "multiple-choice reading comprehension: text, question, options, answer"),
+        Task("boolq", "yes/no questions over a passage: question, passage, answer"),
+        Task("mini_personalqa", "personal question/answer pairs"),
+        Task("mini_recommendation", "recommendation prompts and responses"),
+        Task("cola", "grammatical-acceptability judgements, as generation"),
+        Task("cola_cls", "the same data as a sequence-classification objective (#33)"),
+        Task("mobile_actions", "instruction -> tool call, matching the Tool calls allowlist"),
+    )
+
+    /** Just the names, in declaration order. */
+    val NAMES: List<String> get() = TASKS.map { it.name }
+
+    fun describe(name: String): String? = TASKS.firstOrNull { it.name == name }?.description
+}
+
 // Factory function using the interface
 fun getPreprocessFunctionForTask(
     taskName: String,

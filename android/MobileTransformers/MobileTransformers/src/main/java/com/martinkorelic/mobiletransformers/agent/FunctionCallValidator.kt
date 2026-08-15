@@ -48,8 +48,15 @@ data class ActionSpec(
     val required: Set<String> get() = requiredParameters ?: parameters.keys
 }
 
-/** The raw shape parsed out of model output. Untrusted until [FunctionCallValidator] accepts it. */
-internal data class ToolCall(
+/**
+ * The raw shape parsed out of model output. Untrusted until [FunctionCallValidator] accepts it.
+ *
+ * Public because the format a model speaks is a property of the model, not of the boundary: a
+ * [ToolCallParser] produces one of these from JSON, from FunctionGemma's `call:` grammar, or from
+ * whatever a future model emits, and the validator then judges it identically. Holding one means
+ * nothing has been checked yet — [ValidatedCall] is the type that carries a decision.
+ */
+data class ToolCall(
     val actionName: String? = null,
     val parameters: Map<String, String>? = null,
 )
@@ -80,7 +87,17 @@ data class ValidatedCall(
  * Gson because it is the module's single JSON library (per the typed fail-closed parsing decision) and
  * already a dependency.
  */
-class FunctionCallValidator(allowlist: List<ActionSpec>) {
+class FunctionCallValidator(
+    /**
+     * What the app permits — readable so the same object can be *declared to the model*.
+     *
+     * [ToolPromptBuilder] renders it into the tool declaration a prompt carries. Generating the
+     * declaration from the enforcement list, rather than writing it out beside it, is the same
+     * argument that generates the training corpus from it: three copies of the boundary would be
+     * three chances for them to disagree, and the disagreement surfaces as an unexplained refusal.
+     */
+    val allowlist: List<ActionSpec>,
+) {
 
     companion object {
         private val HH_MM = Regex("^([01]\\d|2[0-3]):[0-5]\\d$")
@@ -133,9 +150,24 @@ class FunctionCallValidator(allowlist: List<ActionSpec>) {
         } catch (e: JsonSyntaxException) {
             throw RejectedCallException("model output is not valid JSON: ${e.message}")
         } ?: throw RejectedCallException("model output is empty")
+        return validate(call)
+    }
 
+    /**
+     * Judge an already-parsed [call].
+     *
+     * Every check below runs on this path, so which [ToolCallParser] produced the call cannot change
+     * what is permitted — only whether a call was recognised at all. That separation is what let
+     * FunctionGemma's non-JSON grammar be supported without touching the boundary.
+     *
+     * @throws RejectedCallException on anything that is not an allowlisted, rule-satisfying call.
+     */
+    fun validate(call: ToolCall): ValidatedCall {
+        // Names the parsed field rather than a JSON key: the same check now runs on calls that never
+        // were JSON, and telling a FunctionGemma user their output lacks an "actionName" field would
+        // point them at a field their model has no way to emit.
         val name = call.actionName
-            ?: throw RejectedCallException("model output has no 'actionName' field")
+            ?: throw RejectedCallException("model output names no action (ToolCall.actionName is null)")
 
         // The allowlist check comes BEFORE anything is done with the parameters, so an unknown action
         // cannot reach any other code path.

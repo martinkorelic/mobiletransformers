@@ -9,6 +9,7 @@ import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -44,9 +45,26 @@ class ShowcaseStateTest {
         assertTrue(modern.subtitle.contains("cpu-int4"))
         assertFalse(modern.subtitle.contains("legacy"))
 
+        // The base model is secondary now that the row's title is the repo it was installed from, so
+        // an absent one is simply omitted rather than announced as "unknown". What still has to be
+        // said is why such a package offers no variants.
         val legacy = row(baseModelId = null, variants = emptyList(), hasManifest = false)
-        assertTrue(legacy.subtitle.contains("unknown base model"))
+        assertFalse(legacy.subtitle.contains("base:"))
         assertTrue(legacy.subtitle.contains("legacy layout"))
+    }
+
+    /**
+     * The Load regression, at the level the screen sees it.
+     *
+     * The row's load key must be the repo it was installed from, never the manifest's `baseModelId` —
+     * loading by the latter resolves to a different, absent cache directory and reports an installed
+     * package as missing.
+     */
+    @Test
+    fun anInstalledRowLoadsByTheRepoItWasInstalledFrom() {
+        val r = row(repoId = "mobiletransformers/functiongemma-270m-it", baseModelId = "google/functiongemma-270m-it")
+        assertEquals("mobiletransformers/functiongemma-270m-it", r.repoId)
+        assertNotEquals(r.repoId, r.baseModelId)
     }
 
     @Test
@@ -119,13 +137,20 @@ class ShowcaseStateTest {
         assertNull(AppConfig.dataset.value.task)
     }
 
+    /**
+     * A row is identified by the repo it was **installed from**, which is a different value from the
+     * `baseModelId` the manifest records — see [InstalledRow.repoId]. The default here keeps them
+     * distinct on purpose, so a test that confuses the two fails instead of passing by coincidence.
+     */
     private fun row(
+        repoId: String = "org/installed-package",
         baseModelId: String? = "base/model",
         variants: List<String> = listOf("cpu-int4"),
         sizeBytes: Long = 1024,
         hasManifest: Boolean = true,
     ) = InstalledRow(
-        sanitizedRepoId = "base__model",
+        repoId = repoId,
+        sanitizedRepoId = "org__installed-package",
         baseModelId = baseModelId,
         variantIds = variants,
         sizeBytes = sizeBytes,

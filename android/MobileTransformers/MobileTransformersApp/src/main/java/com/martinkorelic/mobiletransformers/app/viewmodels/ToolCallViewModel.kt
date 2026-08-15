@@ -39,33 +39,41 @@ import kotlinx.coroutines.launch
  */
 class ToolCallViewModel(app: Application) : AndroidViewModel(app) {
 
-    /**
-     * The app's declaration — the only source of intent strings. Generating a training set from this
-     * same object is what makes the corpus and the boundary provably one value
-     * (`mobiletransformers agent-dataset` writes it as `action_schema.json`).
-     */
-    val allowlist = listOf(
-        ActionSpec(
-            actionName = "set_alarm",
-            parameters = mapOf("time" to "string"),
-            allowedIntent = "android.intent.action.SET_ALARM",
-            validationRules = mapOf("time" to "HH:mm"),
-            privacyClass = "harmless-demo",
-        ),
-        ActionSpec(
-            actionName = "set_timer",
-            parameters = mapOf("seconds" to "string"),
-            allowedIntent = "android.intent.action.SET_TIMER",
-            validationRules = mapOf("seconds" to "/[0-9]{1,4}/"),
-            privacyClass = "harmless-demo",
-        ),
-        ActionSpec(
-            actionName = "open_wifi_settings",
-            parameters = emptyMap(),
-            allowedIntent = "android.settings.WIFI_SETTINGS",
-            privacyClass = "harmless-demo",
-        ),
-    )
+    companion object {
+        /**
+         * The app's declaration — the only source of intent strings. Generating a training set from
+         * this same object is what makes the corpus and the boundary provably one value
+         * (`mobiletransformers agent-dataset` writes it as `action_schema.json`).
+         *
+         * On the companion so the Chat screen's inline tool calls enforce the **same** list. Two
+         * copies would be two boundaries, and the one that drifted would refuse calls the other
+         * accepts — for reasons no error message could explain.
+         */
+        val ALLOWLIST = listOf(
+            ActionSpec(
+                actionName = "set_alarm",
+                parameters = mapOf("time" to "string"),
+                allowedIntent = "android.intent.action.SET_ALARM",
+                validationRules = mapOf("time" to "HH:mm"),
+                privacyClass = "harmless-demo",
+            ),
+            ActionSpec(
+                actionName = "set_timer",
+                parameters = mapOf("seconds" to "string"),
+                allowedIntent = "android.intent.action.SET_TIMER",
+                validationRules = mapOf("seconds" to "/[0-9]{1,4}/"),
+                privacyClass = "harmless-demo",
+            ),
+            ActionSpec(
+                actionName = "open_wifi_settings",
+                parameters = emptyMap(),
+                allowedIntent = "android.settings.WIFI_SETTINGS",
+                privacyClass = "harmless-demo",
+            ),
+        )
+    }
+
+    val allowlist = ALLOWLIST
 
     private val validator = FunctionCallValidator(allowlist)
 

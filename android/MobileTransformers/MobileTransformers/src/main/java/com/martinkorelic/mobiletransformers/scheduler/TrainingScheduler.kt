@@ -264,4 +264,62 @@ object TrainingScheduler {
         WorkManager.getInstance(context)
             .getWorkInfosForUniqueWorkFlow(uniqueWorkName(repoId))
             .map { it }
+
+    /**
+     * The scheduled queue for [repoId], already interpreted.
+     *
+     * #17/#19 gap found building the showcase app's Schedule tab. [observe] returns
+     * `List<WorkInfo>` — a WorkManager type — so a facade-only app could not read the queue of a
+     * feature the facade advertises (`RuntimeCapabilities.supportsScheduledTraining`) without taking
+     * a direct dependency on `androidx.work` and decoding this object's own progress keys. It had no
+     * caller at all, which is why scheduling reported a UUID and nothing else.
+     *
+     * The interpretation belongs here rather than in each app: `ENQUEUED` is the state that matters
+     * and the one its own name explains worst — it means "accepted, and its charging/idle constraints
+     * are not met", an indefinite and entirely normal wait.
+     */
+    fun observeChunks(context: Context, repoId: String): Flow<List<ScheduledChunk>> =
+        observe(context, repoId).map { infos -> infos.map { it.toChunk() } }
+
+    private fun WorkInfo.toChunk(): ScheduledChunk =
+        ScheduledChunk(
+            state = when (state) {
+                WorkInfo.State.ENQUEUED -> ScheduledChunk.State.WaitingForConstraints
+                WorkInfo.State.RUNNING -> ScheduledChunk.State.Running
+                WorkInfo.State.SUCCEEDED -> ScheduledChunk.State.Finished
+                WorkInfo.State.FAILED -> ScheduledChunk.State.Failed
+                WorkInfo.State.BLOCKED -> ScheduledChunk.State.Blocked
+                WorkInfo.State.CANCELLED -> ScheduledChunk.State.Cancelled
+            },
+            chunk = progress.getInt(TrainingWorker.KEY_CHUNK, -1).takeIf { it > 0 }
+                ?: outputData.getInt(TrainingWorker.KEY_CHUNK, -1).takeIf { it > 0 },
+            globalStep = outputData.getInt(TrainingWorker.KEY_GLOBAL_STEP, -1).takeIf { it >= 0 },
+            stalled = outputData.getBoolean(TrainingWorker.KEY_STALLED, false),
+            error = outputData.getString(TrainingWorker.KEY_ERROR),
+        )
+}
+
+/**
+ * One scheduled training chunk, in terms a caller can render without knowing about WorkManager.
+ *
+ * @property stalled the chunk advanced no steps. The worker stops chaining when this happens — a
+ *   chunk that made no progress would otherwise re-enqueue forever — so it is the difference between
+ *   "the run paused" and "the run is over and achieved nothing".
+ */
+data class ScheduledChunk(
+    val state: State,
+    val chunk: Int?,
+    val globalStep: Int?,
+    val stalled: Boolean = false,
+    val error: String? = null,
+) {
+    enum class State {
+        /** Accepted; waiting for charging + idle. Indefinite, and entirely normal. */
+        WaitingForConstraints,
+        Running,
+        Finished,
+        Failed,
+        Blocked,
+        Cancelled,
+    }
 }

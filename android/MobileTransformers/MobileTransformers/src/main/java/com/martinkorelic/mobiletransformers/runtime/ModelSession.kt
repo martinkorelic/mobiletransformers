@@ -4,6 +4,7 @@ import com.martinkorelic.mobiletransformers.GenerateCallback
 import com.martinkorelic.mobiletransformers.RetrieveCallback
 import com.martinkorelic.mobiletransformers.TrainCallback
 import com.martinkorelic.mobiletransformers.config.DatasetConfig
+import com.martinkorelic.mobiletransformers.config.DeviceConfig
 import com.martinkorelic.mobiletransformers.config.GenerationConfig
 import com.martinkorelic.mobiletransformers.config.HubConfig
 import com.martinkorelic.mobiletransformers.config.PeftConfig
@@ -50,6 +51,16 @@ interface ModelSession {
 
     /** #26: ingest a `.txt`/`.md`/`.jsonl` file into the RAG vector store (chunk → embed → store). */
     suspend fun ingest(path: String, config: RagConfig, progress: IngestionProgress? = null): IngestResult
+
+    /**
+     * #33: classify [text] with a sequence-classification package.
+     *
+     * The missing half of encoder support. Training an encoder worked end to end; running the result
+     * did not exist, so a fine-tuned classifier could never be asked anything. Fails closed when the
+     * package is not a classifier or does not name its labels — `RuntimeCapabilities.supportsClassification`
+     * is the question to ask first.
+     */
+    suspend fun classify(text: String, device: DeviceConfig, topK: Int): ClassificationResult
 
     /** #27: retrieve → assemble prompt → generate; the assembled prompt is returned for inspection. */
     suspend fun generateWithRag(

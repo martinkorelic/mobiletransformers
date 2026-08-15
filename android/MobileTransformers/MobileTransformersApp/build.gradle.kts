@@ -102,7 +102,10 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
 
     androidTestImplementation(libs.androidx.ui.test.junit4)
-    val composeBom = platform("androidx.compose:compose-bom:2024.10.00")
+    // The BOM comes from the version catalog, like every other dependency. It used to be declared
+    // here as a hardcoded 2024.10.00 while the catalog pinned 2024.04.01 for the library module, so
+    // the two modules resolved different Compose versions from the same build.
+    val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
     androidTestImplementation(composeBom)
     implementation(libs.androidx.activity.compose)
@@ -114,6 +117,10 @@ dependencies {
 
     // Compose
     implementation(libs.androidx.material3)
+    implementation(libs.androidx.material.icons.extended)
+    // The model catalog is a bundled JSON asset so adding a model is editing one file; gson is
+    // already the module's JSON library on the SDK side.
+    implementation(libs.gson)
 
     implementation(libs.androidx.ui.tooling.preview)
     debugImplementation(libs.androidx.ui.tooling)

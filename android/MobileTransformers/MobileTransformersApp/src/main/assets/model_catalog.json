@@ -1,0 +1,65 @@
+{
+  "_comment": [
+    "The model catalog the Models screen offers. Adding a model is editing this file — no code.",
+    "",
+    "Entries must name a repo that holds an EXPORTED MobileTransformers package (one carrying a",
+    "mobiletransformers_manifest.json at its root), not a plain Hugging Face model. `fromPretrained`",
+    "reads the manifest first to plan the download, so a base HF repo id fails at the first request.",
+    "Produce one with: mobiletransformers export --model <hf-id> --output <dir> [--train] [--rag]",
+    "then push it to the Hub.",
+    "",
+    "Set published=false for a package that is not on the Hub yet: the entry stays visible with a",
+    "badge and a disabled Install, which is more useful than an entry that 404s on tap.",
+    "approxSizeMb is the inference group alone; requesting train or rag adds to it."
+  ],
+  "models": [
+    {
+      "repoId": "mobiletransformers/functiongemma-270m-it",
+      "displayName": "FunctionGemma 270M",
+      "description": "Gemma-3 270M tuned for function calling. The model behind the Tool calls screen: it turns an instruction into a structured call that the app's allowlist then validates. Small enough to fine-tune on a phone in minutes.",
+      "baseModel": "google/functiongemma-270m-it",
+      "task": "text-generation",
+      "approxSizeMb": 620,
+      "features": ["inference", "train"],
+      "requiresToken": true,
+      "published": true,
+      "recommendedFor": "Tool calls, and the on-device fine-tuning demo"
+    },
+    {
+      "repoId": "mobiletransformers/SmolLM2-135M-Instruct",
+      "displayName": "SmolLM2 135M Instruct",
+      "description": "The smallest useful chat model here, and the one every parity check is measured against. Fastest to pull and fastest to train, so it is the right first model on a new device.",
+      "baseModel": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "task": "text-generation",
+      "approxSizeMb": 330,
+      "features": ["inference", "train", "rag"],
+      "requiresToken": true,
+      "published": false,
+      "recommendedFor": "First run, Chat, and the fastest training loop"
+    },
+    {
+      "repoId": "mobiletransformers/Qwen2-0.5B",
+      "displayName": "Qwen2 0.5B",
+      "description": "A noticeably more fluent decoder at roughly four times the size. Generation on a mid-range phone is a few tokens per second — worth seeing, because it is the honest cost of the extra quality.",
+      "baseModel": "Qwen/Qwen2-0.5B",
+      "task": "text-generation",
+      "approxSizeMb": 1200,
+      "features": ["inference", "train"],
+      "requiresToken": true,
+      "published": false,
+      "recommendedFor": "Chat quality, and the memory ceiling on smaller devices"
+    },
+    {
+      "repoId": "mobiletransformers/all-MiniLM-L6-v2",
+      "displayName": "all-MiniLM-L6-v2",
+      "description": "The sentence encoder behind retrieval. Pulled automatically as part of the RAG group of a decoder package; listed separately for anyone who wants only the embedding stage.",
+      "baseModel": "sentence-transformers/all-MiniLM-L6-v2",
+      "task": "feature-extraction",
+      "approxSizeMb": 91,
+      "features": ["inference", "rag"],
+      "requiresToken": true,
+      "published": false,
+      "recommendedFor": "Retrieval on its own"
+    }
+  ]
+}

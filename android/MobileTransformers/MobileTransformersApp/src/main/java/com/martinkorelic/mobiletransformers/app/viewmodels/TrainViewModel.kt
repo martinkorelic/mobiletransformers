@@ -4,14 +4,17 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.martinkorelic.mobiletransformers.app.AppConfig
+import com.martinkorelic.mobiletransformers.app.AppSnackbar
 import com.martinkorelic.mobiletransformers.app.ModelHolder
 import com.martinkorelic.mobiletransformers.app.ModelState
 import com.martinkorelic.mobiletransformers.app.SampleData
 import com.martinkorelic.mobiletransformers.packages.PackageFormat
+import com.martinkorelic.mobiletransformers.scheduler.ScheduledChunk
 import com.martinkorelic.mobiletransformers.scheduler.TrainingScheduleConfig
 import com.martinkorelic.mobiletransformers.scheduler.TrainingScheduler
 import com.martinkorelic.mobiletransformers.training.TrainingEvent
 import com.martinkorelic.mobiletransformers.training.TrainingStatus
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +34,50 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
 
     val modelState: StateFlow<ModelState> = ModelHolder.state
 
+    private val _scheduledRuns = MutableStateFlow<List<ScheduledRun>>(emptyList())
+
+    /**
+     * The scheduled queue for the loaded model.
+     *
+     * `TrainingScheduler.observe` has existed since #34 and had **no caller**, so the only feedback a
+     * user got from scheduling was a UUID in a text field. "Queued and waiting for the charger",
+     * "running chunk 3" and "finished an hour ago" were indistinguishable — for a feature whose whole
+     * point is that it runs when you are not watching.
+     */
+    val scheduledRuns: StateFlow<List<ScheduledRun>> = _scheduledRuns.asStateFlow()
+
+    private var observeJob: Job? = null
+
+    init {
+        // Re-subscribe when the model changes: the unique work name is per repo id.
+        viewModelScope.launch {
+            ModelHolder.state.collect { state ->
+                observeJob?.cancel()
+                val repoId = (state as? ModelState.Loaded)?.model?.repoId
+                if (repoId == null) {
+                    _scheduledRuns.value = emptyList()
+                    return@collect
+                }
+                observeJob = launch {
+                    TrainingScheduler.observeChunks(getApplication(), repoId).collect { chunks ->
+                        _scheduledRuns.value = chunks.map { it.toScheduledRun() }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Cancel the queued run; the chunk in flight checkpoints on its way out. */
+    fun cancelSchedule() {
+        val loaded = ModelHolder.state.value as? ModelState.Loaded ?: return
+        runCatching { TrainingScheduler.cancel(getApplication(), loaded.model.repoId) }
+            .onSuccess {
+                _ui.value = _ui.value.copy(scheduled = null)
+                AppSnackbar.info("Scheduled run cancelled")
+            }
+            .onFailure { AppSnackbar.error(it.message ?: "could not cancel the scheduled run") }
+    }
+
     fun start() {
         val loaded = ModelHolder.state.value as? ModelState.Loaded ?: return
         if (!loaded.model.capabilities.supportsTraining) {
@@ -42,7 +89,13 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             val job = loaded.model.trainingJob()
-            _ui.value = _ui.value.copy(running = true, error = null, events = emptyList())
+            _ui.value = _ui.value.copy(
+                running = true,
+                error = null,
+                events = emptyList(),
+                points = emptyList(),
+            )
+            AppSnackbar.info("Training started")
 
             // Observe before starting: a run short enough to finish first would otherwise report nothing.
             val statusJob = launch {
@@ -50,14 +103,27 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
             }
             val eventJob = launch {
                 job.events.collect { e ->
-                    _ui.value = _ui.value.copy(events = (_ui.value.events + e.describe()).takeLast(200))
+                    val ui = _ui.value
+                    _ui.value = ui.copy(
+                        events = (ui.events + e.describe()).takeLast(EVENT_LOG_LIMIT),
+                        // Every Step event already carried loss, learning rate and step duration;
+                        // rendering it with `toString()` threw all of it away.
+                        points = e.point()?.let { ui.points + it } ?: ui.points,
+                    )
                 }
             }
             try {
                 job.start(dataset = AppConfig.dataset.value, config = AppConfig.train.value)
                 _ui.value = _ui.value.copy(canResume = job.canResume)
+                val last = _ui.value.points.lastOrNull()
+                AppSnackbar.success(
+                    last?.let { "Training finished — loss %.4f at step %d".format(it.loss, it.step) }
+                        ?: "Training finished",
+                )
             } catch (e: Throwable) {
-                _ui.value = _ui.value.copy(error = e.message ?: e::class.java.simpleName)
+                val reason = e.message ?: e::class.java.simpleName
+                _ui.value = _ui.value.copy(error = reason)
+                AppSnackbar.error(reason)
             } finally {
                 statusJob.cancel()
                 eventJob.cancel()
@@ -138,29 +204,148 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
                 scheduled = "queued as $it — chunks run only while charging and idle, and each " +
                     "chunk re-evaluates its constraints",
             )
-        }.onFailure { _ui.value = _ui.value.copy(error = it.message) }
+            AppSnackbar.success("Scheduled — it will start when the device is charging and idle")
+        }.onFailure {
+            _ui.value = _ui.value.copy(error = it.message)
+            AppSnackbar.error(it.message ?: "could not schedule training")
+        }
     }
 
     fun merge() {
         val loaded = ModelHolder.state.value as? ModelState.Loaded ?: return
         viewModelScope.launch {
             runCatching { loaded.model.merge() }
-                .onSuccess { _ui.value = _ui.value.copy(status = "merged=${it.merged}") }
-                .onFailure { _ui.value = _ui.value.copy(error = it.message) }
+                .onSuccess {
+                    _ui.value = _ui.value.copy(status = "merged=${it.merged}")
+                    AppSnackbar.success(
+                        if (it.merged) {
+                            "Merged — generation now uses the fine-tuned weights"
+                        } else {
+                            "Nothing to merge: no adapter has been trained yet"
+                        },
+                    )
+                }
+                .onFailure {
+                    _ui.value = _ui.value.copy(error = it.message)
+                    AppSnackbar.error(it.message ?: "merge failed")
+                }
         }
     }
 }
+
+/** Keep the log bounded: a long run emits thousands of steps and this is a phone. */
+private const val EVENT_LOG_LIMIT = 300
 
 data class TrainUiState(
     val running: Boolean = false,
     val status: String = "idle",
     val events: List<String> = emptyList(),
+    /** The series behind the charts — one entry per reported step. */
+    val points: List<StepPoint> = emptyList(),
     val canResume: Boolean = false,
     val scheduled: String? = null,
     val datasetNote: String? = null,
     val error: String? = null,
 )
 
-private fun TrainingStatus.describe(): String = this::class.java.simpleName
+/** One scheduled chunk, as the queue panel renders it. */
+data class ScheduledRun(val stateLabel: String, val detail: String)
 
-private fun TrainingEvent.describe(): String = toString()
+/** Put the SDK's chunk state into the words the panel shows. */
+private fun ScheduledChunk.toScheduledRun(): ScheduledRun {
+    val label = when (state) {
+        ScheduledChunk.State.WaitingForConstraints -> "Waiting for charging + idle"
+        ScheduledChunk.State.Running -> "Running" + (chunk?.let { " chunk $it" } ?: "")
+        ScheduledChunk.State.Finished -> "Chunk finished"
+        ScheduledChunk.State.Failed -> "Failed"
+        ScheduledChunk.State.Blocked -> "Blocked by an earlier chunk"
+        ScheduledChunk.State.Cancelled -> "Cancelled"
+    }
+    val detail = buildString {
+        globalStep?.let { append("globalStep $it") }
+        if (stalled) {
+            if (isNotEmpty()) append(" · ")
+            append("advanced no steps, so no further chunk was queued")
+        }
+        error?.let {
+            if (isNotEmpty()) append(" · ")
+            append(it)
+        }
+        if (isEmpty()) {
+            append(
+                "Chunks run only while the device is charging and idle, and each one re-checks that " +
+                    "before starting.",
+            )
+        }
+    }
+    return ScheduledRun(label, detail)
+}
+
+/** One reported training step, as the charts consume it. */
+data class StepPoint(
+    val step: Int,
+    val loss: Float,
+    val learningRate: Float,
+    val stepDurationMs: Long,
+)
+
+/**
+ * A human-readable status line rather than a Kotlin class name.
+ *
+ * `this::class.java.simpleName` rendered `Running` for a run and gave no indication of *where* it
+ * was, even though `TrainingStatus.Running` carries the progress that answers exactly that.
+ */
+private fun TrainingStatus.describe(): String = when (this) {
+    is TrainingStatus.Idle -> "idle"
+    is TrainingStatus.Preparing -> "preparing — loading the training graph"
+    is TrainingStatus.Running ->
+        "step ${progress.currentStep} · epoch ${progress.currentEpoch} · loss %.4f".format(progress.stepLoss)
+    is TrainingStatus.Merging -> "merging the adapter into the inference graph"
+    is TrainingStatus.Saving -> "saving checkpoint"
+    is TrainingStatus.Completed ->
+        "completed — %d steps, final loss %.4f".format(result.finalStep, result.finalLoss)
+    is TrainingStatus.Cancelled ->
+        "cancelled" + (checkpoint?.let { " — checkpoint at step ${it.currentGlobalStep}" } ?: "")
+    is TrainingStatus.Failed -> "failed: ${error.message ?: error::class.java.simpleName}"
+}
+
+/**
+ * One aligned line per event.
+ *
+ * This used to be `toString()` on the event, which printed a whole Kotlin data class — including the
+ * nested `TrainingProgress` with all ten of its fields — for every step. The log was technically
+ * complete and practically unreadable, and it is the chart's table-view twin, so it has to be the
+ * place a value can actually be read.
+ */
+private fun TrainingEvent.describe(): String = when (this) {
+    is TrainingEvent.DataLoaded -> "data loaded · $totalSteps steps · $stepsPerEpoch per epoch"
+    is TrainingEvent.Step ->
+        "step %-5d loss %-9.4f lr %-10.2e %d ms".format(
+            progress.currentStep, progress.stepLoss, progress.learningRate, progress.stepDurationMs,
+        )
+    is TrainingEvent.OptimizerStep -> "optimizer step at ${progress.currentStep}"
+    is TrainingEvent.Epoch ->
+        "epoch %d ended · epoch loss %.4f · %d ms".format(
+            progress.currentEpoch, progress.epochLoss, progress.epochDurationMs,
+        )
+    is TrainingEvent.Metric -> "metric: $m"
+    is TrainingEvent.MergeStarted -> "merge started"
+    is TrainingEvent.MergeFinished -> "merge finished"
+    is TrainingEvent.Saved -> "checkpoint saved at step ${progress.currentStep}"
+    is TrainingEvent.Done ->
+        "done · %d steps · final loss %.4f · %d ms".format(
+            result.finalStep, result.finalLoss, result.totalDurationMs,
+        )
+    is TrainingEvent.Error -> "error: ${t.message ?: t::class.java.simpleName}"
+}
+
+/** The chart point a step event carries, or null for the events that are not steps. */
+private fun TrainingEvent.point(): StepPoint? = when (this) {
+    is TrainingEvent.Step -> StepPoint(
+        step = progress.currentStep,
+        loss = progress.stepLoss,
+        learningRate = progress.learningRate,
+        stepDurationMs = progress.stepDurationMs,
+    )
+    else -> null
+}

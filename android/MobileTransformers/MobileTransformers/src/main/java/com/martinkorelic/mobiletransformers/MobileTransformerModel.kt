@@ -3,8 +3,10 @@ package com.martinkorelic.mobiletransformers
 import com.martinkorelic.mobiletransformers.agent.FunctionCallValidator
 import com.martinkorelic.mobiletransformers.agent.RejectedCallException
 import com.martinkorelic.mobiletransformers.agent.ToolCallResult
-import com.martinkorelic.mobiletransformers.agent.extractFirstJsonObject
+import com.martinkorelic.mobiletransformers.agent.ToolCallParser
+import com.martinkorelic.mobiletransformers.agent.ToolPromptBuilder
 import com.martinkorelic.mobiletransformers.config.DatasetConfig
+import com.martinkorelic.mobiletransformers.config.DeviceConfig
 import com.martinkorelic.mobiletransformers.config.GenerationConfig
 import com.martinkorelic.mobiletransformers.config.HubConfig
 import com.martinkorelic.mobiletransformers.config.PeftConfig
@@ -17,6 +19,7 @@ import com.martinkorelic.mobiletransformers.packages.ModelFeature
 import com.martinkorelic.mobiletransformers.rag.IngestionProgress
 import com.martinkorelic.mobiletransformers.rag.PromptAssembler
 import com.martinkorelic.mobiletransformers.rag.PromptStrategy
+import com.martinkorelic.mobiletransformers.runtime.ClassificationResult
 import com.martinkorelic.mobiletransformers.runtime.GenerationResult
 import com.martinkorelic.mobiletransformers.runtime.GroundedResult
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
@@ -89,6 +92,34 @@ class MobileTransformerModel internal constructor(
         progress: IngestionProgress? = null,
     ): IngestResult = session.ingest(path, config, progress)
 
+    /**
+     * #33: classify [text] with a sequence-classification package.
+     *
+     * The other half of encoder support. Fine-tuning a BERT-family classifier on device worked end to
+     * end and the result could never be *asked* anything — this handle offered generate, retrieve,
+     * ingest and train, every one of which assumes a decoder.
+     *
+     * Check [RuntimeCapabilities.supportsClassification] first. Asking a decoder to classify throws
+     * rather than reading generation logits as class scores, which would be a confident wrong answer
+     * rather than an error.
+     *
+     * ```kotlin
+     * if (model.capabilities.supportsClassification) {
+     *     val result = model.classify("this sentence is grammatical")
+     *     show(result.best?.label, result.best?.score)
+     * }
+     * ```
+     *
+     * @param device where to run it; defaults to the same CPU floor as everything else.
+     * @param topK how many labels to return in [ClassificationResult.top]. The full ranking is always
+     *   in `scores`.
+     */
+    suspend fun classify(
+        text: String,
+        device: DeviceConfig = DeviceConfig(),
+        topK: Int = 5,
+    ): ClassificationResult = session.classify(text, device, topK)
+
     /** #27: grounded generation — retrieve → assemble prompt → generate. `result.prompt` is inspectable. */
     suspend fun generateWithRag(
         query: String,
@@ -125,22 +156,38 @@ class MobileTransformerModel internal constructor(
      * }
      * ```
      *
-     * @param extractJson pull the first balanced JSON object out of surrounding prose before validating.
-     *   Chooses *which substring* to validate and nothing else — every allowlist and rule check still
-     *   runs — so it cannot admit an action the app did not declare. Turn it off to require that the
-     *   model emit bare JSON and nothing else.
+     * @param parser how to read a call out of the model's text. Defaults to the one suited to this
+     *   package's base model — **FunctionGemma does not emit JSON**, so a fixed JSON reader rejected
+     *   every well-formed call it made. A parser chooses *which candidate* to check and nothing else;
+     *   every allowlist and rule check still runs, so it cannot admit an undeclared action.
+     * @param declareTools prepend the allowlist as a tool declaration the model can read. Without it
+     *   the model is asked to call one of a set of functions it was never shown, which only a model
+     *   fine-tuned on this exact allowlist can do. Turn it off when the caller has already framed the
+     *   prompt itself.
      */
     suspend fun generateToolCall(
         instruction: String,
         validator: FunctionCallValidator,
         config: GenerationConfig = GenerationConfig(),
-        extractJson: Boolean = true,
+        parser: ToolCallParser = ToolCallParser.forModel(capabilities.task.modelType ?: repoId),
+        declareTools: Boolean = true,
         callback: GenerateCallback? = null,
     ): ToolCallResult {
-        val raw = session.generate(instruction, config, callback).text
-        val candidate = if (extractJson) extractFirstJsonObject(raw) else raw
+        val prompt = if (declareTools) {
+            ToolPromptBuilder.declarations(validator.allowlist, parser) + "\n" + instruction
+        } else {
+            instruction
+        }
+        val raw = session.generate(prompt, config, callback).text
+        val call = parser.parse(raw)
+            // A parse failure is a refusal like any other — the raw text is kept so the caller can
+            // show what the model actually said, which is the only way to diagnose a format mismatch.
+            ?: return ToolCallResult.Rejected(
+                raw = raw,
+                reason = "no tool call found in the model's output",
+            )
         return try {
-            ToolCallResult.Accepted(raw = raw, call = validator.validate(candidate))
+            ToolCallResult.Accepted(raw = raw, call = validator.validate(call))
         } catch (e: RejectedCallException) {
             // Refusal is the expected answer for untrusted output, so it is a value, not a throw.
             ToolCallResult.Rejected(raw = raw, reason = e.message ?: "rejected")

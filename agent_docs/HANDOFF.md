@@ -1,6 +1,6 @@
 # Handoff — what is still open
 
-**Branch:** `restructure` · **Reset:** 2026-08-14
+**Branch:** `restructure` · **Reset:** 2026-08-14 · **Showcase-app cycle appended 2026-08-15 (see §0)**
 
 This file is **only what is left to do**. Completed work is not recorded here — it lives in
 `IMPLEMENTATION_ORDER.md`'s per-plan self-checks and in git. Rewritten each cycle.
@@ -85,6 +85,142 @@ that starts clean stays clean and also **ends** clean. See "The device-suite mut
 file movement and take ~15 s, against ~30 min and two profile switches for a full
 `make device-package`. The profile switching is also how gotcha 13's `onnxruntime` collision gets
 reached, so prefer the short path unless you are testing the export itself.
+
+---
+
+## 0. Showcase-app usability cycle — 2026-08-15 (READ FIRST if you are continuing it)
+
+A large showcase-app cycle landed on 2026-08-15. It is **green and installed on hardware**; what
+follows is only the part that was deliberately left. Everything below §0 predates this cycle — where
+the two disagree, §0 wins (in particular, §1b's "what is left on the app" list is now largely closed).
+
+**Gates as measured 2026-08-15, after the cycle:**
+
+```
+Python 560 passed / 11 skipped · guard 9 · Kotlin JVM 300 (library + app, --rerun-tasks)
+make android-build passes · APK installed on S21 FE SM-G990B, launches, no FATAL in logcat
+```
+
+### 0a. Two defects the user hit, both fixed — do not re-introduce
+
+- **Loading an installed package failed.** The Models screen loaded `baseModelId ?: sanitizedRepoId`,
+  and the manifest's `baseModelId` names the model a package was exported **from**
+  (`google/functiongemma-270m-it`), not the repo it was pulled **from**
+  (`mobiletransformers/functiongemma-270m-it`). It sanitized to a different, absent cache directory
+  and reported an installed package as missing. Fixed by recording the installing repo id:
+  `packages/InstallRecord.kt` is written **inside the staging tree before publish**, so it lands with
+  the same rename as the package; `CacheIndex.InstalledPackage.repoId` reads it, falling back to
+  un-sanitizing the directory name for legacy/`adb push`ed trees. **`repoId` is the load key;
+  `baseModelId` is provenance and must never be used as one.**
+- **A download was indistinguishable from a hang.** `PackageDownloader` fired progress only after a
+  whole file completed, and a package's weights are one or two files of 1–4 GB — so a working pull
+  showed "0 / N files" for ten minutes. `OkHttpClient()` also carried OkHttp's default **10-second
+  read timeout**, which is the most likely cause of the FunctionGemma pull that appeared to stall.
+  Now: byte-level progress with rate and ETA (`manifest.fileSizes` gives the denominator before the
+  first GET), `PackageDownloader.defaultClient()` with 60s read / no call timeout, `ensureActive()`
+  **inside** the read loop so a 3 GB transfer cancels promptly, and a Cancel button. The `.partial`
+  survives cancellation and Range-resume picks it up.
+
+### 0b. What else landed
+
+Shell: drawer navigation (`app/Navigation.kt` — `Destination.availability(ModelState)` is pure and
+JVM-tested) replacing the six-tab `ScrollableTabRow`; sub-tabs *within* destinations only; `AppTheme.FRI`
+(the red, light-only, as the user chose); a top-anchored snackbar fed by `AppSnackbar`; a persistent
+`views/ModelBar.kt` showing repo id, engine, capability chips and live download progress on every screen.
+
+Features: a bundled model catalog (`assets/model_catalog.json` + `app/ModelCatalog.kt`); Configuration
+split into five tabs with dropdowns over every closed set — including a **Device** tab, which had been
+on every public config and editable from nowhere, and a **PEFT** picker wired to the never-called
+`applyPeft`; a hand-rolled Compose loss chart (`views/LossChart.kt`) plus a readable event log
+(`TrainingEvent.describe()` used to be `toString()`); a scheduled-run queue panel via the new
+`TrainingScheduler.observeChunks` (`observe` had no caller, so scheduling reported only a UUID).
+
+SDK additions, each a facade gap the app found: `packages/PackageTask.kt` (reads the `task`/`id2label`
+the exporter already wrote to `inference/optimum_config.json` — nothing on the device had ever read
+it), `RuntimeCapabilities.task`/`isClassifier`/`supportsClassification`, `TrainingScheduler.observeChunks`
++ `ScheduledChunk`, `Tasks.TASKS` (the trainer's own dispatch, so a picker cannot drift from it),
+`MobileTransformerModel.classify` + `internal/runtime/ClassifierSession.kt`.
+
+**Tool calling now works against FunctionGemma at all.** It does not emit JSON — it emits
+`<start_function_call>call:name{key:<escape>value<escape>}<end_function_call>` — so
+`FunctionCallValidator`'s JSON parse rejected every well-formed call it made, and no further
+fine-tuning could have changed that. `agent/ToolCallParser.kt` splits parsing from validation
+(`ToolCallParser.Json` / `.FunctionGemma` / `.forModel(id)`), and `agent/ToolPromptBuilder.kt` renders
+the allowlist as a declaration the model can actually read — `generateToolCall` previously sent the
+bare instruction with **no tool declaration at all**. The boundary is unchanged: a parser only chooses
+*which candidate* to check, and `ToolCallParserTest` asserts an undeclared action is still refused
+whichever dialect it arrives in.
+
+### 0c. What is left — in priority order
+
+1. **`ClassifyScreen` + `ClassifyViewModel`, and re-add `Destination.Classify`.**
+   `MobileTransformerModel.classify` is implemented and the drawer already computes
+   `supportsClassification`; the destination was removed from `app/Navigation.kt` rather than shipped
+   as a stub. Re-add the enum entry, its `Availability.Hidden`-unless-`supportsClassification` branch
+   (the removed branch is in git), the icon in `MainActivity`, and a screen showing per-label
+   probability bars — ideally before/after a training run, which is the encoder story's payoff.
+2. **`classify()` has never run on a device.** The scoring maths is JVM-tested
+   (`ClassifierScoringTest`, 7 cases) and the forward pass is not. `ClassifierSession` deliberately
+   bypasses `ORTRetriever.createEmbeddingModel` (which would resolve the embedding stage, open the
+   embedder's tokenizer, build a vector store, and `DimensionRegistry.requireSupported` would reject
+   a 2-label head) and instead opens `createEmbeddingSession` against **`inference/`** with
+   `embeddingDim = numLabels`. The premise is that `inference::generateEmbedding` returns the raw
+   first output tensor with no pooling — read it in `cpp/inference.cpp:235-295` and confirm before
+   trusting the path. Needs `TASK=text-classification` package on device (`make device-package`).
+3. **`id2label` export is written but unproven.** `export/pipeline.py::_read_id2label` copies the HF
+   config's labels into `inference/optimum_config.json` for `SEQUENCE_CLASSIFICATION` only. It has
+   **no test** — add one to `tests/export/`, and re-export an encoder package to confirm the file
+   carries the names. Without them `classify()` fails closed by design (a `LABEL_3` is not an answer).
+4. **Training foreground-notification progress.** `TrainingWorker.foregroundInfo` takes a `progress`
+   parameter and is only ever called with `null`, so the ongoing notification never advances. Call
+   `setForeground` on each optimizer step with `setProgress(totalSteps, currentStep, false)` and text
+   naming the step and loss. The runtime permission is now requested
+   (`app/NotificationPermission.kt`) — it never was before, so on API 33+ **every** training
+   notification had been silently dropped by the system.
+5. **Route downloads through `PackageDownloadWorker`.** It is complete, still has no caller, and is
+   what would make a pull survive leaving the app. Promote it to a foreground worker with progress +
+   Cancel and have the Models screen observe its `WorkInfo` (`KEY_PHASE`/`KEY_BYTES_*` are already
+   emitted). Note it hardcodes `NetworkType.UNMETERED`, which would silently never start on mobile
+   data — expose that as a "Wi-Fi only" switch.
+6. **Docs and the showcase recording.** `README.md` and `docs/COOKBOOK.md` still describe the six-tab
+   app. The recording plan (7 clips + a hero GIF to replace `docs/ortransformer-feature.gif`) is in
+   `~/.claude-personal/plans/review-what-we-have-partitioned-seal.md` §4.3.
+7. **Two ideas worth taking from `Edge-Intelligence-Lab/MobileFineTuner`** (researched this cycle; its
+   app is otherwise thinner than ours). Its one distinctive feature is **on-device evaluation** —
+   before/after perplexity as a number that moves when you train, which is the most convincing proof
+   that fine-tuning did anything; host-side machinery exists in `research/evaluation/` and
+   `docs/mobile_evaluation.md`. Second, a **live resource panel**: `runtime/MemoryProbe`,
+   `scheduler/ThermalGuard` and the CSV trace `TrainingWorker` writes are all present and surfaced
+   nowhere.
+
+### 0d. Two things flagged, not fixed — decide deliberately
+
+- **`cpp/inference.cpp:288-294` returns a dangling pointer.** `generateEmbedding` returns
+  `output->GetTensorMutableData<float>()` from an `Ort::Value` destroyed at scope exit, and
+  `native-lib.cpp`'s error path `delete[]`s that same pointer (which was never `new[]`-allocated).
+  It happens to work today. **Pre-existing — it affects RAG now and would affect `classify()`** —
+  and it was left alone because it is a C++ lifetime change outside the cycle's scope. Fix it before
+  relying on either path under memory pressure.
+- **`FriLightColors` is not internally consistent.** Primary is the project red `#e03229`, but
+  `primaryContainer` is a leftover green (`#E8F5F0`) and `tertiary` a leftover brown (`#7B5A3C`) from
+  an earlier theme, so filled chips and containers read as off. The user explicitly chose "switch back
+  to FRI, leave the palette as-is" this cycle; a red-family recolor is a three-line change whenever
+  they want it. There is also still no dark scheme — `AppThemedContent(isDarkMode = …)` is an unused
+  parameter.
+
+### 0e. Catalog entries need confirming — the one place this cycle guessed
+
+`assets/model_catalog.json` ships four entries and **only `mobiletransformers/functiongemma-270m-it`
+is marked `published: true`** — the one the user confirmed downloads. The other three
+(`SmolLM2-135M-Instruct`, `Qwen2-0.5B`, `all-MiniLM-L6-v2`, all under the `mobiletransformers` org) are
+`published: false`, so they render with a disabled Install and an explanation rather than 404-ing on
+tap. Their `approxSizeMb` figures are estimates. **Export and push them, then flip the flag and
+correct the sizes** — or delete the entries. The public HF API returns nothing for
+`author=mobiletransformers`, so the org's repos could not be enumerated to check.
+
+Catalog entries must name **exported packages** (a repo with `mobiletransformers_manifest.json` at its
+root), never a base HF model id — `fromPretrained` reads the manifest first to plan the download, so a
+plain model id fails on the first request in a way that looks like a broken app.
 
 ---
 
@@ -227,21 +363,26 @@ fences and fails when a snippet names a type the facade does not declare (also v
   Training), so no embedding encoder was ever downloaded — meaning even a correct ingest call had
   nothing to embed with. Now a checkbox on the Models screen, where the ~91 MB cost is visible.
 
-**What is left on the app**, none of it blocking:
+**What is left on the app** — **mostly superseded by §0, which is authoritative.** Corrected in place
+2026-08-15:
 
-- **It has never been run on the device.** It compiles, `make android-build` passes, and its pure state
-  logic has 6 JVM tests, but no screen has been walked on hardware. That is the obvious next step and
-  the one thing that would find the ergonomic problems JVM tests cannot.
-- **No Hub token field.** `MobileTransformers.fromPretrained` takes a `HubConfig`, but `ModelHolder`
-  does not plumb one, so the app can only pull **public** repos. `HubPullDeviceTest` accepts a token
-  (`-e mtHubToken`); the app does not. This matters for
-  `mobiletransformers/functiongemma-270m-it`, which is currently private.
+- ~~**It has never been run on the device.**~~ — **The app was installed and launched on the S21 FE
+  `SM-G990B` on 2026-08-15** (`adb install` clean, `MainActivity` resumed, no `FATAL EXCEPTION` in
+  logcat). Walking every screen against a real package is still the highest-value manual leg; that is
+  what surfaced the two §0a defects in the first place.
+- ~~**No Hub token field.**~~ — **CLOSED.** `ModelHolder.hubConfig()` plumbs `BuildConfig.HF_TOKEN`
+  into `fromPretrained`, and the Models screen states whether the build carries credentials (the
+  boolean, never the token). Build with `HF_TOKEN=… ./gradlew :MobileTransformersApp:assembleDebug`.
 - The Tool calls screen shows `Rejected` against a base model that has not been fine-tuned on the
-  allowlist — that is the expected outcome, not a screen defect. *(This bullet used to say "for the
-  reason in §1a", which contradicted §1a directly above it once the gate started passing.)*
+  allowlist — that is the expected outcome, not a screen defect. **But note §0b: against FunctionGemma
+  it was rejecting for an unrelated reason** (a non-JSON dialect), which no amount of fine-tuning
+  would have fixed. Both the parser and the missing tool declaration are now handled.
 - The engine picker renders `availableEngines` but switching engines requires a reload from the Models
   tab (the engine is fixed at load). A single-tap switch would need the facade to re-open a session.
-- The old `ui/theme/` (`AppTheme.FRI`/`BETTER`) survived the rewrite untouched.
+  **The engine is at least selectable at pull time now** — `ModelsViewModel` hardcoded
+  `InferenceEngine.NATIVE`, so GenAI could be *reported* as available and never actually chosen.
+- ~~The old `ui/theme/` survived the rewrite untouched.~~ — the app now uses `AppTheme.FRI` (the red).
+  The palette's own inconsistencies are recorded in §0d.
 
 ### 1c. Smaller code items
 
@@ -302,9 +443,12 @@ runs it as a named step.)*
   falsifiability-checked.
 - #21: Kotlin `VariantSelector` parity. #22: a real authenticated adapter upload with a checkpoint
   factor read.
-- **The rewritten showcase app has never been run on hardware** (§1b). It compiles and its pure state
-  logic is JVM-tested, but no screen has been walked on a device. Highest-value manual leg available:
-  it exercises the whole public facade in one pass, including the six gaps just closed.
+- ~~**The rewritten showcase app has never been run on hardware**~~ — **installed and launched
+  2026-08-15** (S21 FE `SM-G990B`); see §1b. Still the highest-value manual leg: walking every screen
+  against a real package exercises the whole public facade in one pass, and it is what found the two
+  defects in §0a. **Start with the Models screen** — install `mobiletransformers/functiongemma-270m-it`
+  from the Catalog tab, watch the byte/rate/ETA progress, then tap Load on the Installed row (the
+  §0a regression).
 - #34: multi-hour / Doze / FGS-quota behaviour — a recorded DEBT; the plan's own DoD does not require it.
 
 ---

@@ -81,6 +81,9 @@ internal class RepositoryBackedModelSession(
     // #19: the validated PEFT selection to apply on the next train() (rank/alpha overrides).
     private var appliedPeft: PeftConfig? = null
 
+    /** #33: opened on the first `classify`, because most packages never call it. */
+    private var classifier: ClassifierSession? = null
+
     override suspend fun applyPeft(peft: PeftConfig) {
         if (!repo.isTrainingAvailable) {
             throw MissingArtifactException(
@@ -236,6 +239,34 @@ internal class RepositoryBackedModelSession(
         progress: IngestionProgress?,
     ): IngestResult = IngestResult(chunkCount = rag.ingest(path, config.toOrt(repo.ragConfig), progress))
 
+    /**
+     * #33: run the classification head.
+     *
+     * Guarded on [RuntimeCapabilities.supportsClassification] rather than attempted and allowed to
+     * fail somewhere in the runtime: a decoder asked to classify would run its graph and hand back
+     * `vocabSize` floats read as labels, which is not an error anywhere — just a confident nonsense
+     * answer. Fail at the door instead.
+     */
+    override suspend fun classify(
+        text: String,
+        device: com.martinkorelic.mobiletransformers.config.DeviceConfig,
+        topK: Int,
+    ): com.martinkorelic.mobiletransformers.runtime.ClassificationResult {
+        if (!capabilities.isClassifier) {
+            throw NotImplementedFeatureException(
+                "this package's task is '${capabilities.task.declaredTask ?: "undeclared"}', not " +
+                    "text-classification — classify() would read generation logits as class scores",
+            )
+        }
+        val session = classifier ?: ClassifierSession(
+            context = repo.applicationContext,
+            cacheDir = modelDir.parent ?: modelDir.absolutePath,
+            sanitizedRepoId = modelDir.name,
+            task = capabilities.task,
+        ).also { classifier = it }
+        return session.classify(text, device, topK)
+    }
+
     override suspend fun generateWithRag(
         query: String,
         rag: RagConfig,
@@ -309,6 +340,11 @@ internal class RepositoryBackedModelSession(
     override fun close() {
         repo.resetInference()
         repo.resetTraining()
+        // A classification session is a second native ORT session over the same package; leaking it
+        // would hold the graph's memory for the whole process, which on a phone is the difference
+        // between unloading a model and appearing to.
+        classifier?.close()
+        classifier = null
     }
 }
 
