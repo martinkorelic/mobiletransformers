@@ -49,7 +49,24 @@ data class GenerationResult(
     val tokenCount: Int = 0,
     val generationTimeMs: Long = 0L,
     val avgTokensPerSecond: Double = 0.0,
-)
+    /** Tokens the prompt occupied, after templating and after any trim. */
+    val promptTokenCount: Int = 0,
+    /** Tokens the model can attend to at once, or 0 when the package declares none. */
+    val contextLimit: Int = 0,
+) {
+    /**
+     * Prompt plus completion — what this turn left in the window.
+     *
+     * The pair (this, [contextLimit]) is the honest form of "how much context is used". Reporting
+     * only the completion length, which is all `tokenCount` gives, understates it by the whole
+     * conversation so far.
+     */
+    val contextUsedTokens: Int get() = promptTokenCount + tokenCount
+
+    /** Fraction of the window consumed, or null when the package declares no limit. */
+    val contextUsedFraction: Float?
+        get() = if (contextLimit > 0) contextUsedTokens.toFloat() / contextLimit else null
+}
 
 data class RetrievalMatch(val text: String, val score: Double)
 
@@ -103,4 +120,12 @@ data class GroundedResult(
     val text: String,
     val matches: List<RetrievalMatch> = emptyList(),
     val prompt: String = "",
+    /**
+     * The underlying generation, including its token counts.
+     *
+     * A grounded turn consumes *more* context than an ungrained one — that is the whole point of the
+     * assembled prompt — so it is the turn where "how much of the window is left" matters most, and
+     * it was the one path that reported nothing.
+     */
+    val generation: GenerationResult? = null,
 )

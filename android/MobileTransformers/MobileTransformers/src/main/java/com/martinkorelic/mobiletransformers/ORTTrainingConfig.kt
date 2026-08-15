@@ -69,7 +69,24 @@ data class ORTTrainingConfig(
     val schedulerType: String = "linear", // Options: "linear", "cosine"
     val schedulerConfig: SchedulerConfig = SchedulerConfig.Linear(),
 
-    val deviceOptions: DeviceOptions = DeviceOptions(),
+    /**
+     * **Training defaults to `low_mem`, unlike inference.**
+     *
+     * `high_perf` maps to `EnableMemPattern()` + `EnableCpuMemArena()` in `setSessionOptions`. For a
+     * forward-only inference session that is the right trade. For a *training* session it is not:
+     * the memory pattern planner pre-allocates the whole activation plan for the backward pass, and
+     * the CPU arena grows to the peak and never returns it, so the process holds its high-water mark
+     * for the rest of the run.
+     *
+     * Measured: FunctionGemma-270M (268,098,176 parameters, ~1.07 GB of fp32 weights) reached
+     * **2.35 GB RSS + 1.02 GB swap** under `high_perf` and was SIGKILLed by `lmkd` on a 5.5 GB device
+     * — roughly 3x the model, for a LoRA run with 368,640 trainable parameters. Nothing about the
+     * model needs that; the allocator does.
+     *
+     * A caller that wants the throughput can still pass `high_perf` explicitly. The default is the
+     * one that finishes.
+     */
+    val deviceOptions: DeviceOptions = DeviceOptions(memoryConfigId = "low_mem"),
 
     var customPreprocess: TaskPreprocessor? = null
 ) {

@@ -9,7 +9,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -23,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.martinkorelic.mobiletransformers.MobileTransformerModel
+import com.martinkorelic.mobiletransformers.app.viewmodels.StartDelay
 import com.martinkorelic.mobiletransformers.app.viewmodels.TrainViewModel
 
 /** #18/#19/#34 — the training lifecycle: status, charts, events, cancel, resume, merge, scheduling. */
@@ -83,7 +88,7 @@ private fun RunTab(vm: TrainViewModel, model: MobileTransformerModel) {
 
         Section("Run") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("status: ${ui.status}", style = MaterialTheme.typography.bodyMedium)
+                Text(ui.status, style = MaterialTheme.typography.titleSmall)
                 if (ui.canResume) {
                     Text(
                         "A checkpoint exists — starting again resumes from it while resumeFromState " +
@@ -124,6 +129,8 @@ private fun ProgressTab(vm: TrainViewModel) {
     val ui by vm.ui.collectAsState()
 
     Column(Modifier.fillMaxSize()) {
+        RunStatusCard(ui)
+
         TrainingCharts(ui.points, Modifier.padding(top = 12.dp))
 
         Text(
@@ -152,6 +159,57 @@ private fun ProgressTab(vm: TrainViewModel) {
     }
 }
 
+/**
+ * Where the run is, at the top of the tab that exists to answer that.
+ *
+ * The Progress tab opened straight onto a loss chart, and the status line — the one that says
+ * "preparing", "step 42 of 108", "failed: …" — was a single `bodyMedium` on the *Run* tab, which is
+ * the tab you leave to come here. So the screen dedicated to watching a run was the one place that
+ * did not say what the run was doing, and an empty chart meant both "not started" and "starting".
+ */
+@Composable
+private fun RunStatusCard(ui: com.martinkorelic.mobiletransformers.app.viewmodels.TrainUiState) {
+    val last = ui.points.lastOrNull()
+    Card(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (ui.error != null) {
+                MaterialTheme.colorScheme.errorContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+        ),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                ui.error ?: ui.status,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            if (ui.running) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                Stat("step", last?.step?.toString() ?: "—")
+                Stat("loss", last?.let { "%.4f".format(it.loss) } ?: "—")
+                Stat("lr", last?.let { "%.2e".format(it.learningRate) } ?: "—")
+                Stat("ms/step", last?.stepDurationMs?.toString() ?: "—")
+            }
+        }
+    }
+}
+
+@Composable
+private fun Stat(label: String, value: String) {
+    Column {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(value, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
 @Composable
 private fun ScheduleTab(vm: TrainViewModel, model: MobileTransformerModel) {
     val ui by vm.ui.collectAsState()
@@ -170,6 +228,19 @@ private fun ScheduleTab(vm: TrainViewModel, model: MobileTransformerModel) {
                     "Each chunk re-enters the queue when it finishes, restoring globalStep, epoch and " +
                         "the LR schedule from training_state.json — the same mechanism that survives " +
                         "the app's process being killed.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                ChipPicker(
+                    label = "Start",
+                    options = StartDelay.entries,
+                    selected = ui.startDelay,
+                    optionLabel = { it.label },
+                    onSelect = vm::onStartDelayChanged,
+                )
+                Text(
+                    "A delay is a floor, not an appointment: Android batches deferrable work and Doze " +
+                        "can hold it longer. Charging is still the real gate — the delay only moves " +
+                        "the earliest moment it is checked.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 ActionRow {

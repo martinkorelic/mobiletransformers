@@ -65,4 +65,70 @@ class TaskRegistryTest {
             getPreprocessFunctionForTask("mobileactions")
         }
     }
+
+    // --- Tasks.resolve: the same check, moved to where the caller can survive it ---------------
+    //
+    // `Unsupported task: none` used to reach the user as a FATAL EXCEPTION. The throw happened in
+    // `ORTTrainerNative.<init>`, called from a `launch` on LLMRepository's own scope, whose parent
+    // job has no handler — so it went to the thread's default handler and killed the process. These
+    // pin the resolution that now happens in the caller's frame instead.
+
+    @Test
+    fun resolvePrefersWhatTheCallerNamed() {
+        assertEquals("mobile_actions", Tasks.resolve("mobile_actions", "cola"))
+    }
+
+    @Test
+    fun resolveFallsBackToThePackagesDeclaration() {
+        assertEquals("cola", Tasks.resolve(null, "cola"))
+    }
+
+    @Test
+    fun resolveRejectsTheDefaultSentinelWithAnActionableMessage() {
+        // The exact input that crashed the app: DatasetConfig.task unset, package declaring nothing,
+        // so ORTTrainingConfig's default "none" reached the dispatch.
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            Tasks.resolve(null, Tasks.UNSET)
+        }
+        val message = error.message.orEmpty()
+        assertTrue(
+            "the message must say nothing NAMED a task, not that 'none' is an unknown one — " +
+                "'none' is a default the user never typed: $message",
+            message.contains("No task was named"),
+        )
+        assertTrue(
+            "the message must name the field to set: $message",
+            message.contains("DatasetConfig.task"),
+        )
+        for (name in Tasks.NAMES) {
+            assertTrue("the message must offer '$name': $message", message.contains(name))
+        }
+    }
+
+    @Test
+    fun resolveRejectsAMisspelledTask() {
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            Tasks.resolve("mobileactions", null)
+        }
+        assertTrue(error.message.orEmpty().contains("'mobileactions' is not a known task"))
+    }
+
+    @Test
+    fun resolveAllowsAnythingWhenTheCallerSuppliesAPreprocessor() {
+        // The name is never dispatched on in that case, so checking it would reject a legal setup.
+        assertEquals("whatever", Tasks.resolve("whatever", null, hasCustomPreprocess = true))
+    }
+
+    @Test
+    fun everyResolvedNameActuallyDispatches() {
+        // The point of the whole exercise: resolve() must not admit a name the trainer then rejects.
+        for (name in Tasks.NAMES) {
+            assertNotNull(getPreprocessFunctionForTask(Tasks.resolve(name, null)))
+        }
+    }
+
+    @Test
+    fun resolveTreatsBlankAsUnset() {
+        assertThrows(IllegalArgumentException::class.java) { Tasks.resolve("", "  ") }
+    }
 }

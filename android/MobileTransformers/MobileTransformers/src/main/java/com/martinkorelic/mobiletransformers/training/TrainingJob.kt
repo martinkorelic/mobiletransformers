@@ -2,6 +2,7 @@ package com.martinkorelic.mobiletransformers.training
 
 import com.martinkorelic.mobiletransformers.ORTTrainingConfig
 import com.martinkorelic.mobiletransformers.TaskPreprocessor
+import com.martinkorelic.mobiletransformers.Tasks
 import com.martinkorelic.mobiletransformers.config.DatasetConfig
 import com.martinkorelic.mobiletransformers.config.TrainConfig
 import com.martinkorelic.mobiletransformers.internal.config.toOrt
@@ -57,7 +58,10 @@ class TrainingJob internal constructor(
     suspend fun start(dataset: DatasetConfig, config: TrainConfig = TrainConfig()) {
         val ortConfig = config.toOrt(repo.trainingConfig).copy(
             datasetOptions = dataset.toOrt(),
-            taskName = dataset.task ?: repo.trainingConfig.taskName,
+            // Checked here, in the caller's frame. Left to the trainer's constructor this throws
+            // inside LLMRepository's own coroutine scope, where no caller `catch` can see it and the
+            // process dies instead. See Tasks.resolve.
+            taskName = Tasks.resolve(dataset.task, repo.trainingConfig.taskName),
         )
         // `DatasetConfig` names a registered task rather than carrying a lambda, so the preprocessor
         // is resolved by name inside the training path — the same rule scheduled training relies on

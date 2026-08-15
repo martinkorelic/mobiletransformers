@@ -13,6 +13,8 @@ import com.martinkorelic.mobiletransformers.agent.ToolCallResult
 import com.martinkorelic.mobiletransformers.agent.ToolPromptBuilder
 import com.martinkorelic.mobiletransformers.app.AppConfig
 import com.martinkorelic.mobiletransformers.app.AppSnackbar
+import com.martinkorelic.mobiletransformers.MobileTransformerModel
+import com.martinkorelic.mobiletransformers.app.ModelActivity
 import com.martinkorelic.mobiletransformers.app.ModelHolder
 import com.martinkorelic.mobiletransformers.app.ModelState
 import com.martinkorelic.mobiletransformers.app.SampleData
@@ -61,15 +63,70 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Whether each turn is asked for a tool call instead of prose.
+     * Whether an accepted tool call fires by itself or waits for a tap.
      *
-     * The Tool calls screen proves the mechanism in isolation; this puts it where a user would meet
-     * it — mid-conversation, with the refusal or the call rendered as a turn rather than as a panel
-     * on a different screen.
+     * Defaults to [ToolExecution.Approve]. The SDK never executes anything — `IntentBinder.dryRun`
+     * holds no `Context` and has no `startActivity` call site, which is the structural half of #37's
+     * "no model output is ever executed". Firing is therefore the **app's** deliberate act, taken
+     * only on a `ValidatedCall` that cleared the allowlist, and the default keeps a human in the loop
+     * for it.
      */
-    fun onToolsToggled(value: Boolean) {
-        _ui.value = _ui.value.copy(useTools = value)
+    fun onToolExecutionChanged(value: ToolExecution) {
+        _ui.value = _ui.value.copy(toolExecution = value)
     }
+
+    /**
+     * Fire an accepted call's intent.
+     *
+     * Only reachable from a card the validator accepted, and the intent's action string comes from
+     * the app's own [ActionSpec] rather than from anything the model produced — a model selects an
+     * action, it cannot name an intent. `FLAG_ACTIVITY_NEW_TASK` because the launch originates from
+     * a ViewModel holding an application context, not an Activity.
+     */
+    fun runToolCall(card: ToolCallCard) {
+        val intent = card.intent ?: return
+        runCatching {
+            getApplication<Application>().startActivity(
+                android.content.Intent(intent).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+            .onSuccess {
+                markExecuted(card)
+                AppSnackbar.success("Ran ${card.actionName}")
+            }
+            .onFailure {
+                // No handler for the intent is the common case on an emulator or a stripped ROM, and
+                // it is a property of the device rather than a failure of the call.
+                AppSnackbar.error(
+                    "Could not run ${card.actionName}: ${it.message ?: "no app handles that intent"}",
+                )
+            }
+    }
+
+    /** Flip the card to executed, so the conversation records that it fired. */
+    private fun markExecuted(card: ToolCallCard) {
+        _ui.value = _ui.value.copy(
+            messages = _ui.value.messages.map { m ->
+                if (m.toolCall === card) m.copy(toolCall = card.copy(executed = true)) else m
+            },
+        )
+    }
+
+    /**
+     * Whether this conversation routes through the tool-call path at all.
+     *
+     * **Not a user-facing switch.** It used to be a chip the user had to set *before* sending, which
+     * asks them to predict something only the reply can answer: whether "wake me at 07:30" is a tool
+     * call or a question about alarms. With the toggle off a genuine call came back as prose; with it
+     * on, "what time is it in Tokyo" came back as a refusal.
+     *
+     * So the allowlist is declared on every turn for a model that has a tool-call grammar, and the
+     * *outcome* decides how the turn renders — `ToolCallResult.NoCall` for prose, `Accepted` or
+     * `Rejected` for a call. Declaring tools costs prompt tokens, so it is skipped for models that
+     * have no such grammar, where every turn would be prose anyway.
+     */
+    private fun toolsAvailable(model: MobileTransformerModel): Boolean =
+        model.capabilities.supportsToolCalling
 
     /**
      * Ingest a document into the on-device vector store.
@@ -94,7 +151,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             _ui.value = _ui.value.copy(ingesting = true, error = null, ingestNote = null)
             try {
                 val doc = uri?.let { copyToCache(it) } ?: SampleData.installRagDocument(getApplication())
-                val result = model.ingest(doc.absolutePath, AppConfig.rag.value)
+                val result = ModelHolder.withActivity(ModelActivity.Ingesting) {
+                    model.ingest(doc.absolutePath, AppConfig.rag.value)
+                }
                 _ui.value = _ui.value.copy(
                     ingestNote = "ingested ${doc.name}: ${result.chunkCount} chunks",
                     ingestedDocuments = _ui.value.ingestedDocuments + doc.name,
@@ -142,10 +201,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             try {
-                when {
-                    _ui.value.useTools -> sendAsToolCall(model, prompt)
-                    _ui.value.useRag -> sendGrounded(model, prompt)
-                    else -> sendPlain(model, prompt)
+                ModelHolder.withActivity(ModelActivity.Generating) {
+                    when {
+                        // Grounding is an explicit choice about *where the answer comes from*, which
+                        // is a question the user genuinely can answer in advance. Tool calling is not.
+                        _ui.value.useRag -> sendGrounded(model, prompt)
+                        toolsAvailable(model) -> sendMaybeToolCall(model, prompt)
+                        else -> sendPlain(model, prompt)
+                    }
                 }
             } catch (e: Throwable) {
                 val reason = e.message ?: e::class.java.simpleName
@@ -174,7 +237,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             messages = _ui.value.messages + ChatMessage(
                 text = result.text,
                 fromUser = false,
-                stats = "${result.tokenCount} tokens · %.1f tok/s".format(result.avgTokensPerSecond),
+                turnStats = TurnStats.of(result),
             ),
         )
     }
@@ -212,25 +275,55 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     "${grounded.matches.size} sources"
                 },
+                turnStats = TurnStats.of(grounded.generation),
             ),
         )
     }
 
     /**
-     * #37 in the conversation: instruction → validated call → the intent it would fire.
+     * #37 in the conversation: one turn, with tools declared, rendered according to what came back.
      *
-     * The parser comes from the loaded package's own model family. FunctionGemma does not emit JSON,
-     * so a fixed JSON reader refused every well-formed call it made.
+     * Three outcomes, three renderings, and the model picks which one — that is the whole point:
+     *
+     * - [ToolCallResult.NoCall] — it answered in words. An ordinary reply bubble.
+     * - [ToolCallResult.Accepted] — a call this app permits, shown with the intent it *would* fire.
+     * - [ToolCallResult.Rejected] — a call this app does not permit. Also a turn, not an error
+     *   banner: refusing untrusted output is the safety property working, and hiding it would hide
+     *   the one thing worth showing.
+     *
+     * `NoCall` is what makes this usable as the only chat path. It used to be a `Rejected` carrying
+     * "no tool call found in the model's output", so every ordinary sentence rendered as a refusal —
+     * and that message masked the real defect underneath, which was that the JSON parser was being
+     * handed FunctionGemma's grammar and could not have recognised a call in it.
      */
-    private suspend fun sendAsToolCall(
+    private suspend fun sendMaybeToolCall(
         model: com.martinkorelic.mobiletransformers.MobileTransformerModel,
         prompt: String,
     ) {
-        _ui.value = _ui.value.copy(phase = "asking for a tool call…")
+        // Streams like any other turn. The tool-call path passed no callback at all, so on a
+        // tool-capable model — which is every turn for FunctionGemma — the screen sat blank for the
+        // whole generation and the tokens appeared at once at the end. Whether the reply turns out
+        // to be a call is decided *after* it is complete, so there is no reason not to show it
+        // arriving; if it does turn out to be a call, the streamed text is replaced by the card.
+        var lastProgress: GenerateProgress? = null
         val result = model.generateToolCall(
             instruction = prompt,
             validator = validator,
             config = AppConfig.generation.value,
+            callback = object : GenerateCallback {
+                override fun onPartialResult(progress: GenerateProgress) {
+                    lastProgress = progress
+                    _ui.value = _ui.value.copy(
+                        // Turn markers are prompt scaffolding, not content: a model that keeps
+                        // talking past its turn would otherwise stream "<end_of_turn>" into the bubble.
+                        streaming = cleanTurnMarkers(_ui.value.streaming + progress.token),
+                    )
+                }
+
+                override fun onCompletion(progress: GenerateProgress) {
+                    lastProgress = progress
+                }
+            },
         )
         val message = when (result) {
             is ToolCallResult.Accepted -> {
@@ -243,25 +336,52 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         actionName = result.call.actionName,
                         parameters = result.call.parameters,
                         intentAction = intended.intent.action ?: "(none)",
-                        willExecute = intended.willExecute,
                         raw = result.raw,
+                        intent = intended.intent,
                     ),
+                    turnStats = TurnStats.of(lastProgress),
                 )
             }
             is ToolCallResult.Rejected -> ChatMessage(
                 text = "",
                 fromUser = false,
-                // A refusal is a turn in the conversation, not an error banner: it is the *expected*
-                // answer for untrusted output, and hiding it would hide the safety property working.
                 toolCall = ToolCallCard(
                     accepted = false,
                     reason = result.reason,
                     raw = result.raw,
                 ),
+                turnStats = TurnStats.of(lastProgress),
+            )
+            is ToolCallResult.NoCall -> ChatMessage(
+                // The model chose prose. Rendered as prose, with the tool-call framing stripped so a
+                // stray turn marker does not leak into the bubble.
+                text = cleanTurnMarkers(result.raw).ifBlank { "(the model returned nothing)" },
+                fromUser = false,
+                turnStats = TurnStats.of(lastProgress),
             )
         }
         _ui.value = _ui.value.copy(messages = _ui.value.messages + message)
+
+        // Automatic mode fires here, after the card exists, so the conversation shows what ran even
+        // when nobody approved it.
+        val card = message.toolCall
+        if (card != null && card.accepted && _ui.value.toolExecution == ToolExecution.Automatic) {
+            runToolCall(card)
+        }
     }
+
+    /**
+     * Drop the turn markers a tool-declaring prompt invites the model to echo.
+     *
+     * The prompt ends with `<start_of_turn>model`, and a model that keeps talking past its turn emits
+     * `<end_of_turn><start_of_turn>user` and carries on with a conversation it invented. Only the
+     * first turn is this model's answer; the rest is it playing both parts.
+     */
+    private fun cleanTurnMarkers(raw: String): String =
+        raw.substringBefore("<end_of_turn>")
+            .substringBefore("<start_of_turn>")
+            .removePrefix("model")
+            .trim()
 
     /**
      * Feed a tool result back and let the model speak about it — the second half of the loop.
@@ -276,6 +396,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _ui.value = _ui.value.copy(generating = true, phase = "feeding the result back…")
             try {
+              ModelHolder.withActivity(ModelActivity.Generating) {
                 val response = ToolPromptBuilder.functionResponse(
                     actionName = action,
                     values = mapOf("status" to "ok"),
@@ -286,11 +407,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 _ui.value = _ui.value.copy(
                     messages = _ui.value.messages + ChatMessage(
-                        text = result.text,
+                        text = cleanTurnMarkers(result.text),
                         fromUser = false,
                         stats = "after a simulated result for $action",
+                        turnStats = TurnStats.of(result),
                     ),
                 )
+              }
             } catch (e: Throwable) {
                 AppSnackbar.error(e.message ?: "could not continue after the tool result")
             } finally {
@@ -300,7 +423,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clear() {
-        _ui.value = ChatUiState(useRag = _ui.value.useRag, useTools = _ui.value.useTools)
+        _ui.value = ChatUiState(useRag = _ui.value.useRag, toolExecution = _ui.value.toolExecution)
     }
 }
 
@@ -312,7 +435,7 @@ data class ChatUiState(
     /** What a non-streaming turn is doing right now, so a long wait is legible rather than frozen. */
     val phase: String? = null,
     val useRag: Boolean = false,
-    val useTools: Boolean = false,
+    val toolExecution: ToolExecution = ToolExecution.Approve,
     val ingesting: Boolean = false,
     val ingestNote: String? = null,
     val ingestedDocuments: List<String> = emptyList(),
@@ -332,9 +455,56 @@ data class ChatMessage(
     val assembledPrompt: String? = null,
     val toolCall: ToolCallCard? = null,
     val stats: String? = null,
+    /** Structured per-turn numbers; [stats] stays for the one-off notes that are not measurements. */
+    val turnStats: TurnStats? = null,
 )
 
 data class SourceCard(val text: String, val score: Double)
+
+/**
+ * The per-turn numbers shown under an assistant message.
+ *
+ * Speed alone was all the app reported, and speed does not answer the question that actually
+ * predicts trouble: how full the window is. A turn that is fast and at 95% of context is about to
+ * start truncating; one that is slow at 3% is merely slow.
+ */
+data class TurnStats(
+    val tokens: Int,
+    val tokensPerSecond: Double,
+    val contextUsed: Int,
+    val contextLimit: Int,
+) {
+    /** e.g. `"37 tokens · 4.2 tok/s · context 512 / 32768 (2%)"`, degrading as parts go unknown. */
+    fun render(): String = buildString {
+        append("$tokens tokens")
+        if (tokensPerSecond > 0) append(" · %.1f tok/s".format(tokensPerSecond))
+        if (contextLimit > 0) {
+            val pct = (contextUsed * 100.0 / contextLimit)
+            append(" · context %,d / %,d (%.0f%%)".format(contextUsed, contextLimit, pct))
+        } else if (contextUsed > 0) {
+            append(" · context %,d tokens".format(contextUsed))
+        }
+    }
+
+    companion object {
+        fun of(result: com.martinkorelic.mobiletransformers.runtime.GenerationResult?) = result?.let { TurnStats(
+            tokens = it.tokenCount,
+            tokensPerSecond = it.avgTokensPerSecond,
+            contextUsed = it.contextUsedTokens,
+            contextLimit = it.contextLimit,
+        ) }
+
+        /** From the last streamed progress, for paths that have no GenerationResult in hand. */
+        fun of(progress: GenerateProgress?) = progress?.let {
+            TurnStats(
+                tokens = it.totalDecodedTokens,
+                tokensPerSecond = it.avgTokensPerSecond,
+                contextUsed = it.promptTokenCount + it.totalDecodedTokens,
+                contextLimit = it.contextLimit,
+            )
+        }
+    }
+}
 
 /** An accepted or refused tool call, rendered inline. Accepted and refused are peers. */
 data class ToolCallCard(
@@ -342,10 +512,27 @@ data class ToolCallCard(
     val actionName: String? = null,
     val parameters: Map<String, String> = emptyMap(),
     val intentAction: String? = null,
-    val willExecute: Boolean = false,
     val reason: String? = null,
     val raw: String = "",
+    /**
+     * The intent this call would fire, or null for a refusal.
+     *
+     * Held so the app can run it on request. It was built by `IntentBinder` from the app's own
+     * `ActionSpec`, so what is stored here is not model output.
+     */
+    val intent: android.content.Intent? = null,
+    /** Set once the app has actually started it. */
+    val executed: Boolean = false,
 )
+
+/** What happens when a tool call is accepted. */
+enum class ToolExecution(val label: String) {
+    /** Show it and wait for a tap. The default: a validated call is still an action on the device. */
+    Approve("Ask before running"),
+
+    /** Fire it as soon as it is accepted. */
+    Automatic("Run automatically"),
+}
 
 /** What the engine picker renders: the selected engine plus the ones this device/package allows. */
 data class EnginePickerState(

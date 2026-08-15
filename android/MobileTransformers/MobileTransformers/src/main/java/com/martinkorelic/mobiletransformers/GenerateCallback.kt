@@ -13,6 +13,10 @@ data class GenerateProgress(
     val generationTimeMs: Long = 0L,
     val avgTokensPerSecond: Double = 0.0,
     val isCompleted: Boolean = false,
+    /** Tokens the prompt occupied, after templating and after any trim. */
+    val promptTokenCount: Int = 0,
+    /** Tokens the model can attend to at once, or 0 when the package declares none. */
+    val contextLimit: Int = 0,
 )
 
 /**

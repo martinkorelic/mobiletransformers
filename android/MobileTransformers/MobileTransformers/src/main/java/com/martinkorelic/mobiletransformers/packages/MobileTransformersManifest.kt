@@ -20,6 +20,16 @@ data class MobileTransformersManifest(
     @SerializedName("requiredFiles") val requiredFiles: List<String> = emptyList(),
     @SerializedName("sha256") val sha256: Map<String, String> = emptyMap(),
     @SerializedName("fileSizes") val fileSizes: Map<String, Long> = emptyMap(),
+    /**
+     * Every parameter the training graph materialises — not the trainable subset.
+     *
+     * The exporter has written both since the training stage existed and the device read neither.
+     * It is what [com.martinkorelic.mobiletransformers.runtime.MemoryHeadroom] estimates from: for a
+     * LoRA export the two differ by three orders of magnitude (268,098,176 against 368,640), and
+     * sizing memory from the trainable count would under-estimate by the whole model.
+     */
+    @SerializedName("trainingParameterCount") val trainingParameterCount: Long = 0L,
+    @SerializedName("trainableParameterCount") val trainableParameterCount: Long = 0L,
     @SerializedName("downloadPlan") val downloadPlan: Map<String, Map<String, List<String>>> = emptyMap(),
     @SerializedName("weightHandoff") val weightHandoff: String = "",
 ) {

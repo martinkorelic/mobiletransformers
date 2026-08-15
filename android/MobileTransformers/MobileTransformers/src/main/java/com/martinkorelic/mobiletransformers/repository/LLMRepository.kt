@@ -6,6 +6,8 @@ import com.martinkorelic.mobiletransformers.InferenceProgress
 import com.martinkorelic.mobiletransformers.MobileTransformersException
 import com.martinkorelic.mobiletransformers.ORTGenerationConfig
 import com.martinkorelic.mobiletransformers.ORTRagArguments
+import com.martinkorelic.mobiletransformers.runtime.MemoryHeadroom
+import com.martinkorelic.mobiletransformers.runtime.MemoryProbe
 import com.martinkorelic.mobiletransformers.runtime.ModelRuntime
 import com.martinkorelic.mobiletransformers.runtime.ModelRuntimeFactory
 import com.martinkorelic.mobiletransformers.ORTRagConfig
@@ -169,6 +171,36 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
     var lastGenerationSessionFailure : Throwable? = null
         private set
 
+    /**
+     * Why the last training-session setup failed, or null.
+     *
+     * The generation path has had this since #11; the training path had not, and the difference was
+     * a crash. `prepareTraining` builds the trainer inside `coroutineScope.launch`, and a `launch`
+     * that throws does **not** deliver the exception to whoever `join()`s it — it goes to the scope's
+     * parent job, and this scope's parent is a bare `Job()` with no handler, i.e. the thread's
+     * default handler, i.e. process death. A mistyped `DatasetConfig.task` therefore killed the app:
+     *
+     *     FATAL EXCEPTION: main
+     *     java.lang.IllegalArgumentException: Unsupported task: none.
+     *         at ORTTrainerNative.<init>(ORTTrainerNative.kt:42)
+     *         at LLMRepository$prepareTraining$3$1$1.invokeSuspend(LLMRepository.kt:546)
+     *
+     * `Tasks.resolve` now rejects that particular input before the launch, but the shape of the
+     * hazard is not specific to it — any failure opening the training session (a missing checkpoint,
+     * an unreadable graph, an OOM) had the same fate. Captured here and re-raised by
+     * [TrainingRepository.performTraining], it becomes an error the caller can show.
+     */
+    @Volatile
+    var lastTrainingSessionFailure : Throwable? = null
+        private set
+
+    /** Take the recorded training-setup failure, clearing it. */
+    fun consumeTrainingSessionFailure(): Throwable? {
+        val failure = lastTrainingSessionFailure
+        lastTrainingSessionFailure = null
+        return failure
+    }
+
     // Retriever capabilities
     var ortRetriever : ORTRetriever? = null
 
@@ -291,6 +323,74 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         llmState = LLMState.NotInitialized
     }
 
+    /**
+     * Drop the inference session if one is open. Idempotent, and **not conditional on [llmState]**.
+     *
+     * ### Why this is a resource check and not a state check
+     *
+     * `prepareTraining` used to release only `if (llmState == LLMState.ReadyGenerate)` — a *state*
+     * standing in for a *resource*. Whether a native session is open is knowable directly
+     * (`modelRuntime != null`), and the state enum has seven values of which four can hold a live
+     * inference session: `Generating` and `Querying` (work in flight), `NotInitialized` (set by
+     * `prepareGeneration`'s own catch path, which leaves a partially-built runtime behind), and
+     * `ReadyTrain`. Any of those and the training session was opened **on top of** the inference one.
+     *
+     * That is not a leak of a handle, it is a leak of a graph: this package's `inference/` stage is
+     * 3.5 GB of fp32 (`model.onnx_data` 1.74 GB + `frozen_base.onnx.data` 1.68 GB). Holding it while
+     * ORT builds the training graph is what took the app to 2.1 GB RSS + 1.1 GB swap on a 5.5 GB
+     * device and got it SIGKILLed by `lmkd` mid-run, after the killer had already reclaimed five
+     * other processes:
+     *
+     *     lmkd: Reclaim 'com.martinkorelic.mobiletransformers.app' (31489), oom_score_adj 0,
+     *           to free 2175440kB rss, 1091904kB swap; reason: min2x watermark is breached
+     *     Zygote: Process 31489 exited due to signal 9 (Killed)
+     *
+     * There is no Java exception for that and nothing to catch — the only defence is not holding both.
+     *
+     * The log line is deliberate. The previous code left no trace either way, so "was the inference
+     * session still resident during training?" could not be answered from a logcat capture; it had to
+     * be re-derived from the source. Now the answer is in the log next to the RSS it freed.
+     */
+    private fun releaseInferenceRuntime(reason: String) {
+        val runtime = modelRuntime ?: return
+        val before = MemoryProbe.currentRssKb()
+        // #11: release whichever engine is loaded. The old `when (type)` released only Native, so a
+        // GenAI session leaked its native handle across a train switch.
+        runtime.release()
+        modelRuntime = null
+        val after = MemoryProbe.currentRssKb()
+        Log.i(
+            LOG_TAG,
+            "Released the inference session ($reason): RSS ${before} kB -> ${after} kB",
+        )
+        if (llmState == LLMState.ReadyGenerate || llmState == LLMState.Generating || llmState == LLMState.Querying) {
+            llmState = LLMState.NotInitialized
+        }
+    }
+
+    /**
+     * Drop the training session if one is open. The mirror of [releaseInferenceRuntime].
+     *
+     * `destroySession` is already idempotent (it no-ops on a zero handle), but the reference was left
+     * dangling and nothing recorded that the swap had happened — the same blind spot in the other
+     * direction.
+     */
+    private fun releaseTrainingSessionForSwap(reason: String, saveCheckpoint: Boolean = false) {
+        val trainer = ortTrainerNative ?: return
+        val before = MemoryProbe.currentRssKb()
+        trainer.destroySession(saveCheckpoint)
+        ortTrainerNative = null
+        val after = MemoryProbe.currentRssKb()
+        Log.i(
+            LOG_TAG,
+            "Released the training session ($reason, saveCheckpoint=$saveCheckpoint): " +
+                "RSS ${before} kB -> ${after} kB",
+        )
+        if (llmState == LLMState.ReadyTrain || llmState == LLMState.Training) {
+            llmState = LLMState.NotInitialized
+        }
+    }
+
     fun resetTraining() {
         ortTokenizerNative?.destroySession()
         ortTrainerNative?.destroySession(false)
@@ -331,9 +431,11 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
             ortTokenizerNative?.createTokenizerModel()
         }
 
-        // We destroy trainer session before loading generation session, if it was active before
-        // Assuming the training session has been saved prior to this
-        ortTrainerNative?.destroySession(false)
+        // Drop the training session before opening a generation one. Symmetric with
+        // prepareTraining's release, and for the same memory reason — the two graphs must never be
+        // resident together. `saveCheckpoint = false` is unchanged: the training path is responsible
+        // for persisting its own checkpoint before handing over.
+        releaseTrainingSessionForSwap("a generation session is being opened")
 
         // #13: supportedEngines comes from the installed variant's manifest declaration. A package that
         // declares none (an older export, or a manifest-less legacy dir) keeps the permissive default —
@@ -344,6 +446,26 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         } else {
             ModelRuntimeFactory.create(cacheDir, ortTokenizerNative!!, generationArgs)
         }
+    }
+
+    /**
+     * What the last [prepareTraining] concluded about memory headroom, or null when it was fine.
+     *
+     * Surfaced so an app can warn the user; it never blocks the run.
+     */
+    @Volatile
+    var lastTrainingHeadroomWarning : String? = null
+        private set
+
+    /** The full parameter count the installed package's training graph materialises, or 0. */
+    private fun installedTrainingParameterCount(): Long {
+        val manifestFile = File(
+            PackagePaths.forCache(cacheDir, _modelName).root,
+            PackageFormat.MANIFEST_FILENAME,
+        )
+        if (!manifestFile.isFile) return 0L
+        return runCatching { MobileTransformersManifest.load(manifestFile).trainingParameterCount }
+            .getOrDefault(0L)
     }
 
     /** The installed package's declared engines, or null when it declares none (see [makeModelRuntime]). */
@@ -360,9 +482,9 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
 
     private suspend fun makeOrtRag(ortArgs : ORTRagConfig) : ORTRetriever {
 
-        // We destroy trainer session before loading generation session, if it was active before
-        // Assuming the training session has been saved prior to this
-        ortTrainerNative?.destroySession(false)
+        // Same swap rule as the generation path: retrieval opens an embedding session, and the
+        // training graph must not still be resident behind it.
+        releaseTrainingSessionForSwap("a retrieval session is being opened")
 
         // #27: honor the override config actually passed in (was previously ignoring ortArgs).
         val retriever = ORTRetriever(cacheDir, applicationContext, ortArgs)
@@ -392,7 +514,7 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
                 withContext(Dispatchers.Default) {
 
                     // Release training session if there was any (no saving)
-                    ortTrainerNative?.destroySession(false)
+                    releaseTrainingSessionForSwap("switching to generation")
 
                     llmState = LLMState.ReadyGenerate
                 }
@@ -430,7 +552,7 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
                 withContext(Dispatchers.Default) {
 
                     // Release training session if there was any (no saving)
-                    ortTrainerNative?.destroySession(false)
+                    releaseTrainingSessionForSwap("switching to generation")
 
                     llmState = LLMState.ReadyGenerate
                 }
@@ -518,36 +640,54 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
 
     suspend fun prepareTraining(trainingArguments: ORTTrainingConfig? = null,  dataPreprocessFunction: TaskPreprocessor? = null) : Job {
 
-        if (llmState == LLMState.ReadyGenerate) {
-            coroutineScope.launch {
-                // #18/#34 session lock: the inference teardown must not interleave with another
-                // prepare* creating a session on the same handles.
-                sessionLock.withLock {
-                    withContext(Dispatchers.Default) {
-
-                        // #11: release whichever engine is loaded. The old `when (type)` released only
-                        // Native, so a GenAI session leaked its native handle across a train switch.
-                        modelRuntime?.release()
-                        modelRuntime = null
-
-                        llmState = LLMState.NotInitialized
-                    }
+        // #18/#34 session lock: the inference teardown must not interleave with another prepare*
+        // creating a session on the same handles.
+        coroutineScope.launch {
+            sessionLock.withLock {
+                withContext(Dispatchers.Default) {
+                    releaseInferenceRuntime("a training session is being opened")
                 }
-            }.join()
-
-        }
+            }
+        }.join()
 
         val finalTrainConfig = trainingConfig.overrideConfig(trainingArguments);
+
+        // Advisory only — see MemoryHeadroom for why this warns instead of refusing. Logged before
+        // the session opens because if the estimate is right there will be no `after`: the process
+        // is SIGKILLed and this line is the last thing in the capture that explains why.
+        lastTrainingHeadroomWarning = when (
+            val verdict = MemoryHeadroom.verdict(
+                trainingParameterCount = installedTrainingParameterCount(),
+                availableKb = MemoryHeadroom.availableKb(),
+            )
+        ) {
+            is MemoryHeadroom.Verdict.Tight -> {
+                Log.w(LOG_TAG, "Memory headroom: ${verdict.message}")
+                verdict.message
+            }
+            else -> null
+        }
+        Log.i(LOG_TAG, "Opening a training session at RSS ${MemoryProbe.currentRssKb()} kB")
+
+        lastTrainingSessionFailure = null
 
         return coroutineScope.launch {
             // #18/#34 session lock: serialize native session creation/teardown (see `sessionLock`).
             sessionLock.withLock {
-                withContext(Dispatchers.Default) {
-                    ortTrainerNative = makeOrtTrainer(
-                        finalTrainConfig,
-                        dataPreprocessFunction
-                    )
-                    llmState = LLMState.ReadyTrain
+                try {
+                    withContext(Dispatchers.Default) {
+                        ortTrainerNative = makeOrtTrainer(
+                            finalTrainConfig,
+                            dataPreprocessFunction
+                        )
+                        llmState = LLMState.ReadyTrain
+                    }
+                } catch (e: Throwable) {
+                    // Must not escape: this coroutine's parent has no handler, so an escaping throw
+                    // is a FATAL EXCEPTION rather than a failed call. See lastTrainingSessionFailure.
+                    lastTrainingSessionFailure = e
+                    llmState = LLMState.NotInitialized
+                    Log.e(LOG_TAG, "Training session failed to create: ${e.message}", e)
                 }
             }
         }

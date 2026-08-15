@@ -2,6 +2,7 @@ package com.martinkorelic.mobiletransformers.agent
 
 import com.google.gson.Gson
 import com.google.gson.JsonSyntaxException
+import com.martinkorelic.mobiletransformers.packages.ToolCallDialect
 
 /**
  * Turns raw model text into a candidate [ToolCall], for [FunctionCallValidator] to judge.
@@ -45,16 +46,33 @@ fun interface ToolCallParser {
         val FunctionGemma: ToolCallParser = FunctionGemmaToolCallParser
 
         /**
-         * The parser suited to a package, chosen from the model it was exported from.
+         * The parser for a dialect detected from the package itself.
          *
-         * A guess, deliberately: the package format has no field declaring a tool-call dialect, and
-         * inventing one that older packages cannot carry would make every existing package
-         * un-parseable. Naming the family in the base model id is the signal actually available, and
-         * a caller who knows better passes the parser explicitly.
+         * Prefer this over [forModel]. The dialect comes from
+         * [com.martinkorelic.mobiletransformers.packages.ToolCallSupport], which reads the model's own
+         * chat template rather than pattern-matching a name.
          */
         @JvmStatic
-        fun forModel(baseModelId: String?): ToolCallParser =
-            if (baseModelId?.contains("functiongemma", ignoreCase = true) == true) {
+        fun forDialect(dialect: ToolCallDialect): ToolCallParser = when (dialect) {
+            ToolCallDialect.FUNCTION_GEMMA -> FunctionGemma
+            ToolCallDialect.JSON -> Json
+        }
+
+        /**
+         * The parser suited to a package, guessed from any names known for the model.
+         *
+         * A guess, and the weaker of the two signals — [forDialect] reads the artifact. Kept because
+         * a package whose chat template did not survive export has nothing else to go on.
+         *
+         * **Takes every hint, not one.** The single-argument version was called as
+         * `forModel(task.modelType ?: repoId)`, and `modelType` is the *architecture*
+         * (`gemma3_text`) — non-null for every modern package, so the repo id that actually carries
+         * the family name was never reached. FunctionGemma got the JSON parser and every well-formed
+         * call it made was reported as "no tool call found".
+         */
+        @JvmStatic
+        fun forModel(vararg hints: String?): ToolCallParser =
+            if (hints.any { it?.contains("functiongemma", ignoreCase = true) == true }) {
                 FunctionGemma
             } else {
                 Json

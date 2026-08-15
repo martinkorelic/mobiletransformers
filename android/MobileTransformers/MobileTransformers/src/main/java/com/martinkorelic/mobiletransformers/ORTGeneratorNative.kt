@@ -168,6 +168,10 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
             var (inputIds, attentionMask, positionIds) = createModelInputs(inputTokens)
             val generatedIds = inputIds
 
+            // Captured before the loop mutates inputIds down to a single token per step.
+            val promptTokens = inputIds.size
+            val contextLimit = tokenizer.maximumTokenLength
+
             var decoded = 0
 
             var currentGenerationTime : Long = 0L
@@ -188,7 +192,9 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
                     timeToLoadModelMs = modelLoadTimeMs,
                     generationTimeMs = cumulativeGenerationTime,
                     avgTokensPerSecond =  avgTokensPerS,
-                    isCompleted = this.tokenizer.isEosToken(inputIds.last().toInt())
+                    isCompleted = this.tokenizer.isEosToken(inputIds.last().toInt()),
+                    promptTokenCount = promptTokens,
+                    contextLimit = contextLimit,
                 )
             )
 
@@ -267,7 +273,9 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
                         timeToLoadModelMs = modelLoadTimeMs,
                         generationTimeMs = cumulativeGenerationTime,
                         avgTokensPerSecond =  avgTokensPerS,
-                        isCompleted = isEosToken
+                        isCompleted = isEosToken,
+                        promptTokenCount = promptTokens,
+                        contextLimit = contextLimit,
                     )
                 )
                 decoded++
@@ -303,7 +311,9 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
                     timeToLoadModelMs = modelLoadTimeMs,
                     generationTimeMs = cumulativeGenerationTime,
                     avgTokensPerSecond =  avgTokensPerS,
-                    isCompleted = true
+                    isCompleted = true,
+                    promptTokenCount = promptTokens,
+                    contextLimit = contextLimit,
             ))
         } catch (e: Throwable) {
             Log.e(LOG_TAG, e.toString())

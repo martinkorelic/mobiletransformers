@@ -3,6 +3,8 @@ package com.martinkorelic.mobiletransformers.app.views
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,7 +13,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -34,6 +40,7 @@ import com.martinkorelic.mobiletransformers.app.viewmodels.ChatMessage
 import com.martinkorelic.mobiletransformers.app.viewmodels.ChatViewModel
 import com.martinkorelic.mobiletransformers.app.viewmodels.EnginePickerState
 import com.martinkorelic.mobiletransformers.app.viewmodels.ToolCallCard
+import com.martinkorelic.mobiletransformers.app.viewmodels.ToolExecution
 
 /**
  * #11/#24/#27/#37 — generate and stream, ground in ingested documents, and call tools, all in one
@@ -60,12 +67,11 @@ fun ChatScreen(vm: ChatViewModel) {
 
         Column(Modifier.fillMaxSize()) {
             ChatToolbar(
-                ui.useRag,
-                ui.useTools,
-                settingsOpen,
+                useRag = ui.useRag,
+                settingsOpen = settingsOpen,
                 supportsRag = model.capabilities.supportsRag,
+                supportsTools = model.capabilities.supportsToolCalling,
                 onRag = vm::onRagToggled,
-                onTools = vm::onToolsToggled,
                 onToggleSettings = { settingsOpen = !settingsOpen },
             )
 
@@ -82,16 +88,22 @@ fun ChatScreen(vm: ChatViewModel) {
                     item {
                         EmptyState(
                             title = "Say something",
-                            detail = "A small model on a phone is slow and not very fluent — that is " +
-                                "the hardware and the model size, not a defect. Tokens appear as " +
-                                "they are generated.",
+                            detail = if (model.capabilities.supportsToolCalling) {
+                                "This model can call tools. Ask it anything — a reply that turns out " +
+                                    "to be a call to one of this app's actions is shown as a call, " +
+                                    "with the intent it would fire; anything else is shown as an answer."
+                            } else {
+                                "Tokens appear as they are generated."
+                            },
                         )
                     }
                 }
-                items(ui.messages) { m -> MessageCard(m, onSimulate = vm::simulateToolResult) }
+                items(ui.messages) { m ->
+                    MessageCard(m, onSimulate = vm::simulateToolResult, onRun = vm::runToolCall)
+                }
 
                 if (ui.streaming.isNotEmpty()) {
-                    item { Bubble("model", ui.streaming, streaming = true) }
+                    item { Bubble(fromUser = false, text = ui.streaming, streaming = true) }
                 }
                 ui.phase?.let {
                     // The grounded and tool-call paths do not stream, so without this a 20-second
@@ -120,23 +132,42 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 }
 
+/**
+ * One toggle, one badge, one link.
+ *
+ * The "Tool calls" chip that used to sit here asked the user to declare, before sending, whether
+ * their next message was a tool call — which is a property of the *reply*, not of the question.
+ * Getting it wrong in either direction produced a wrong-looking result from a correctly working
+ * system. Tool calling is now detected from the answer, so what remains here is a statement of
+ * capability rather than a control.
+ *
+ * Grounding stays a toggle, because "answer from the documents I ingested" genuinely is a decision
+ * the user makes in advance.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChatToolbar(
     useRag: Boolean,
-    useTools: Boolean,
     settingsOpen: Boolean,
     supportsRag: Boolean,
+    supportsTools: Boolean,
     onRag: (Boolean) -> Unit,
-    onTools: (Boolean) -> Unit,
     onToggleSettings: () -> Unit,
 ) {
-    Row(
+    FlowRow(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
     ) {
         ModeChip("Ground with RAG", useRag, enabled = supportsRag) { onRag(!useRag) }
-        ModeChip("Tool calls", useTools) { onTools(!useTools) }
+        if (supportsTools) {
+            AssistChip(
+                onClick = { },
+                enabled = false,
+                leadingIcon = { Icon(Icons.Outlined.Bolt, contentDescription = null) },
+                label = { Text("can call tools") },
+            )
+        }
         TextButton(onClick = onToggleSettings) { Text(if (settingsOpen) "Hide setup" else "Setup") }
     }
 }
@@ -219,55 +250,124 @@ private fun ChatSettings(vm: ChatViewModel, model: com.martinkorelic.mobiletrans
     Section("Tool calls") {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
-                "With Tool calls on, each message asks for a call from this app's allowlist instead " +
-                    "of prose. Nothing is executed — the card shows the intent that WOULD fire.",
+                if (model.capabilities.supportsToolCalling) {
+                    "This model has a tool-call grammar (${
+                        model.capabilities.toolCalling.dialect.name.lowercase()
+                    }), so every message is sent with the actions below declared. Whether a reply is " +
+                        "a call is read from the reply. Nothing is executed — an accepted call shows " +
+                        "the intent that WOULD fire."
+                } else {
+                    "This model has no tool-call grammar of its own, so messages are sent as plain " +
+                        "chat. Fine-tuning it on the Training screen teaches it the JSON call shape " +
+                        "these actions are validated against."
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
             vm.allowlist.forEach { Text("• ${it.actionName}", style = MaterialTheme.typography.bodySmall) }
+
+            ChipPicker(
+                label = "When a call is accepted",
+                options = ToolExecution.entries,
+                selected = ui.toolExecution,
+                optionLabel = { it.label },
+                onSelect = vm::onToolExecutionChanged,
+            )
+            Text(
+                "Only calls that clear the allowlist can run, and the intent comes from this app's " +
+                    "own action list — a model picks an action, it never names an intent.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
 
 @Composable
-private fun MessageCard(m: ChatMessage, onSimulate: (ToolCallCard) -> Unit) {
+private fun MessageCard(
+    m: ChatMessage,
+    onSimulate: (ToolCallCard) -> Unit,
+    onRun: (ToolCallCard) -> Unit,
+) {
     when {
-        m.toolCall != null -> ToolCallBubble(m.toolCall, onSimulate)
+        m.toolCall != null -> ToolCallBubble(m.toolCall, m.turnStats, onSimulate, onRun)
         else -> Bubble(
-            who = if (m.fromUser) "you" else "model",
+            fromUser = m.fromUser,
             text = m.text,
             sources = m.sources,
             assembledPrompt = m.assembledPrompt,
             stats = m.stats,
+            turnStats = m.turnStats,
         )
     }
 }
 
+/**
+ * One turn.
+ *
+ * ### Telling the two speakers apart
+ *
+ * Both sides used to be an identical full-width `Card` distinguished only by the words "you" and
+ * "model" in 11sp grey above the text — so scanning back through a conversation meant reading the
+ * label on every bubble. Three cues carry it now, none of them load-bearing alone: the user's turn
+ * is tinted with `primaryContainer` and inset from the left, the model's uses `surfaceVariant` and
+ * is inset from the right, and both keep the caption. Colour is never the only signal, which matters
+ * for the same reason the status dot has words next to it.
+ */
 @Composable
 private fun Bubble(
-    who: String,
+    fromUser: Boolean,
     text: String,
     streaming: Boolean = false,
     sources: List<com.martinkorelic.mobiletransformers.app.viewmodels.SourceCard> = emptyList(),
     assembledPrompt: String? = null,
     stats: String? = null,
+    turnStats: com.martinkorelic.mobiletransformers.app.viewmodels.TurnStats? = null,
 ) {
     var showSources by remember { mutableStateOf(false) }
     var showPrompt by remember { mutableStateOf(false) }
 
-    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 3.dp)) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp),
+        // The asymmetric inset is the cue that survives a greyscale screenshot.
+        horizontalArrangement = if (fromUser) Arrangement.End else Arrangement.Start,
+    ) {
+        Card(
+            Modifier.fillMaxWidth(0.92f),
+            colors = CardDefaults.cardColors(
+                containerColor = if (fromUser) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+                contentColor = if (fromUser) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            ),
+        ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                if (streaming) "$who (streaming)" else who,
+                when {
+                    fromUser -> "you"
+                    streaming -> "model · generating…"
+                    else -> "model"
+                },
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(text, style = MaterialTheme.typography.bodyMedium)
+
+            // The measured cost of the turn: speed, and how full the window now is.
+            turnStats?.let {
+                Text(
+                    it.render(),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
 
             stats?.let {
                 Text(
                     it,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
@@ -298,6 +398,7 @@ private fun Bubble(
                 if (showPrompt) Text(p, style = MaterialTheme.typography.bodySmall)
             }
         }
+        }
     }
 }
 
@@ -308,7 +409,12 @@ private fun Bubble(
  * — it is the safety property working, not a failure to display.
  */
 @Composable
-private fun ToolCallBubble(card: ToolCallCard, onSimulate: (ToolCallCard) -> Unit) {
+private fun ToolCallBubble(
+    card: ToolCallCard,
+    turnStats: com.martinkorelic.mobiletransformers.app.viewmodels.TurnStats?,
+    onSimulate: (ToolCallCard) -> Unit,
+    onRun: (ToolCallCard) -> Unit,
+) {
     var showRaw by remember { mutableStateOf(false) }
 
     Card(
@@ -332,22 +438,23 @@ private fun ToolCallBubble(card: ToolCallCard, onSimulate: (ToolCallCard) -> Uni
                 card.parameters.forEach { (k, v) ->
                     Text("$k = $v", style = MaterialTheme.typography.bodySmall)
                 }
-                Text("intent: ${card.intentAction}", style = MaterialTheme.typography.bodySmall)
-                Text(
-                    "willExecute = ${card.willExecute} — dry run. IntentBinder holds no Context and " +
-                        "has no startActivity call site, so firing it is the caller's deliberate act.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                Text(card.intentAction.orEmpty(), style = MaterialTheme.typography.labelSmall)
                 ActionRow {
+                    // The card used to explain the dry-run contract in two sentences on every call.
+                    // That belongs in the docs, not in the conversation — here it is just a button.
+                    if (!card.executed) {
+                        Button(onClick = { onRun(card) }) { Text("Run") }
+                    } else {
+                        Text("ran", style = MaterialTheme.typography.labelSmall)
+                    }
                     OutlinedButton(onClick = { onSimulate(card) }) { Text("Simulate a result") }
                 }
             } else {
                 Text(card.reason.orEmpty(), style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    "A refusal is a result, not a crash. Expect it from a model that has not been " +
-                        "fine-tuned on this action set — train on the Training screen, then try again.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            }
+
+            turnStats?.let {
+                Text(it.render(), style = MaterialTheme.typography.labelSmall)
             }
 
             TextButton(onClick = { showRaw = !showRaw }) {

@@ -7,6 +7,7 @@ import com.martinkorelic.mobiletransformers.MissingArtifactException
 import com.martinkorelic.mobiletransformers.NotImplementedFeatureException
 import com.martinkorelic.mobiletransformers.RagResult
 import com.martinkorelic.mobiletransformers.RetrieveCallback
+import com.martinkorelic.mobiletransformers.Tasks
 import com.martinkorelic.mobiletransformers.TrainCallback
 import com.martinkorelic.mobiletransformers.TrainProgress
 import com.martinkorelic.mobiletransformers.TrainingProgress
@@ -142,7 +143,9 @@ internal class RepositoryBackedModelSession(
             datasetOptions = dataset.toOrt(),
             // The caller supplies the data, so the caller names its preprocessor; fall back to
             // whatever the package declared.
-            taskName = dataset.task ?: repo.trainingConfig.taskName,
+            // Resolved (and rejected) here rather than in the trainer's constructor, which runs on
+            // LLMRepository's scope where a throw kills the process instead of reaching the caller.
+            taskName = Tasks.resolve(dataset.task, repo.trainingConfig.taskName),
         )
         training.performTraining(ortConfig, adapter)
         if (config.mergeAtEnd) mergedWeightsLoaded = true
@@ -208,6 +211,8 @@ internal class RepositoryBackedModelSession(
             tokenCount = finalProgress?.totalDecodedTokens ?: tokens,
             generationTimeMs = finalProgress?.generationTimeMs ?: 0L,
             avgTokensPerSecond = finalProgress?.avgTokensPerSecond ?: 0.0,
+            promptTokenCount = finalProgress?.promptTokenCount ?: 0,
+            contextLimit = finalProgress?.contextLimit ?: 0,
         )
     }
 
@@ -277,7 +282,12 @@ internal class RepositoryBackedModelSession(
         val retrieval = retrieve(query, rag, null)
         val prompt = PromptAssembler.assemble(query, retrieval.matches, promptStrategy)
         val generated = generate(prompt, generation, null)
-        return GroundedResult(text = generated.text, matches = retrieval.matches, prompt = prompt)
+        return GroundedResult(
+            text = generated.text,
+            matches = retrieval.matches,
+            prompt = prompt,
+            generation = generated,
+        )
     }
 
     override suspend fun pushAdapter(hubConfig: HubConfig, repoId: String): PushResult {
@@ -372,6 +382,8 @@ private fun InferenceProgress.toPublic(): GenerateProgress =
         generationTimeMs = generationTimeMs,
         avgTokensPerSecond = avgTokensPerSecond,
         isCompleted = isCompleted,
+        promptTokenCount = promptTokenCount,
+        contextLimit = contextLimit,
     )
 
 private fun RagResult.toPublic(): RetrievalResult =

@@ -116,6 +116,45 @@ object ModelRuntimeFactory {
     }
 
     /**
+     * The engines a picker may offer for this package on this device — the same decision
+     * [selectEngine] makes, asked ahead of time.
+     *
+     * ### Why this is here and not in the facade
+     *
+     * `RuntimeCapabilities.availableEngines` used to be built inline in `MobileTransformers`, from
+     * **two** of the three conditions [selectEngine] applies: the package ships `genai_config.json`,
+     * and the native probe succeeds. It ignored the third — the manifest variant's `supportedEngines`.
+     *
+     * FunctionGemma is exactly the package that separates them. Its `inference/` stage carries a
+     * `genai_config.json` (optimum writes one), but its manifest declares `supportedEngines:
+     * ["native"]`, because Gemma-3 inference export goes through optimum's `main_export` rather than
+     * the vendored GenAI builder. So the facade advertised GenAI, the app's picker offered it, the
+     * user chose it, and [create] then refused it — correctly — with "explicitly requested but not
+     * selectable". The SDK contradicted itself within one load, and the app was blamed for it.
+     *
+     * Deriving both answers from one place is the fix; `EngineSelectionTest` asserts they agree for
+     * every combination of the three inputs.
+     *
+     * @param declaredEngines the manifest variant's declaration, or `null` when the package declares
+     *   none. Null stays permissive — an unknown declaration must not become a narrower one, which is
+     *   the same rule [create]'s default argument encodes.
+     */
+    fun enginesAvailableFor(
+        declaredEngines: Set<String>?,
+        genaiConfigPresent: Boolean,
+        genaiAvailable: Boolean,
+    ): Set<InferenceEngine> = buildSet {
+        add(InferenceEngine.NATIVE)
+        val selectable = selectEngine(
+            requested = InferenceEngine.GENAI,
+            supportedEngines = declaredEngines ?: setOf("native", "genai"),
+            defaultEngine = InferenceEngine.NATIVE,
+            genaiAvailable = genaiAvailable,
+        )
+        if (genaiConfigPresent && selectable == InferenceEngine.GENAI) add(InferenceEngine.GENAI)
+    }
+
+    /**
      * Pure rule: may a GenAI that is unavailable or failed to load be silently replaced by Native?
      *
      * Only when the caller expressed no preference. `requested == null` means "pick for me", and Native

@@ -322,9 +322,14 @@ Java_com_martinkorelic_mobiletransformers_ORTGeneratorNative_nativeInferenceMetr
                                                        sequence_length,
                                                        new_token_count);
 
-        const auto fp = logits_metrics::fingerprint_last_position(logits, new_token_count, vocab_size);
+        // Same clamp as performInferenceStep, and for the same reason: these two also stride by
+        // vocab_size to find the row. A measurement taken over the wrong stride is not a measurement.
+        const int metric_vocab_size =
+                sampling::effectiveVocabSize(vocab_size, session_cache->lastLogitsWidth());
+
+        const auto fp = logits_metrics::fingerprint_last_position(logits, new_token_count, metric_vocab_size);
         const double loss = logits_metrics::causal_cross_entropy(
-                logits, input_ids_elements, new_token_count, vocab_size);
+                logits, input_ids_elements, new_token_count, metric_vocab_size);
 
         // A probe must not advance the conversation.
         session_cache->initializeKVCache(batch_size);
@@ -640,7 +645,21 @@ Java_com_martinkorelic_mobiletransformers_ORTGeneratorNative_performInferenceSte
                                        sequence_length,
                                        past_sequence_length);
 
-        int best_index = sampling::sampleNextToken(logits, past_sequence_length, vocab_size, session_cache->sampling_config, session_cache->random_generator);
+        // The graph decides how wide the vocabulary is, not the package's JSON declaration. An
+        // over-declared vocab_size both mis-strides the row offset and lets the argmax return an id
+        // with no embedding row, which the NEXT step reports as an out-of-bounds Gather far from the
+        // cause. See sampling::effectiveVocabSize.
+        const long long graph_width = session_cache->lastLogitsWidth();
+        const int sampled_vocab_size = sampling::effectiveVocabSize(vocab_size, graph_width);
+        if (sampled_vocab_size != vocab_size) {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                                "declared vocab_size %d exceeds the graph's logits width %lld; "
+                                "sampling over %d. Re-export the package: its "
+                                "mobiletransformers_tokenizer_config.json is wrong.",
+                                vocab_size, graph_width, sampled_vocab_size);
+        }
+
+        int best_index = sampling::sampleNextToken(logits, past_sequence_length, sampled_vocab_size, session_cache->sampling_config, session_cache->random_generator);
 
         env->ReleaseLongArrayElements(input_ids, input_ids_elements, JNI_ABORT);
         env->ReleaseLongArrayElements(attention_mask, attention_mask_elements, JNI_ABORT);

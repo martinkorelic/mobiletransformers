@@ -10,12 +10,15 @@ import com.martinkorelic.mobiletransformers.hub.HubDownloader
 import com.martinkorelic.mobiletransformers.hub.HubResolver
 import com.martinkorelic.mobiletransformers.packages.CacheIndex
 import com.martinkorelic.mobiletransformers.internal.runtime.RepositoryBackedModelSession
+import com.martinkorelic.mobiletransformers.packages.MobileTransformersManifest
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
 import com.martinkorelic.mobiletransformers.packages.PackageFormat
 import com.martinkorelic.mobiletransformers.packages.PackageTask
+import com.martinkorelic.mobiletransformers.packages.ToolCallSupport
 import com.martinkorelic.mobiletransformers.repository.LLMRepository
 import com.martinkorelic.mobiletransformers.runtime.GenAiSupport
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
+import com.martinkorelic.mobiletransformers.runtime.ModelRuntimeFactory
 import com.martinkorelic.mobiletransformers.runtime.RuntimeCapabilities
 import java.io.File
 import com.martinkorelic.mobiletransformers.packages.PackagePaths
@@ -106,21 +109,37 @@ object MobileTransformers {
             if (features.any { it == ModelFeature.GenAI }) InferenceEngine.GENAI else engine
 
         // #19: GenAI needs the genai config in the shared package; else fail closed (no silent fallback here).
-        if (resolvedEngine == InferenceEngine.GENAI &&
-            !File(modelDir, "inference/genai_config.json").isFile
-        ) {
+        val genaiInstalled = File(modelDir, "inference/genai_config.json").isFile
+        if (resolvedEngine == InferenceEngine.GENAI && !genaiInstalled) {
             throw EngineUnavailableException(
                 InferenceEngine.GENAI,
                 "inference/genai_config.json not found in the installed package (re-export with GenAI).",
             )
         }
 
-        // #17/#19: what a picker may offer. Native is the floor; GenAI needs both the package
-        // side-car and the native probe — exactly ModelRuntimeFactory's two conditions.
-        val genaiInstalled = File(modelDir, "inference/genai_config.json").isFile
-        val availableEngines = buildSet {
-            add(InferenceEngine.NATIVE)
-            if (genaiInstalled && GenAiSupport.available()) add(InferenceEngine.GENAI)
+        // #17/#19: what a picker may offer — ModelRuntimeFactory's OWN rule, asked ahead of time.
+        //
+        // This used to apply two of the factory's three conditions, omitting the manifest's
+        // `supportedEngines`. FunctionGemma ships a genai_config.json but declares
+        // `supportedEngines: ["native"]`, so the facade advertised GenAI, the app offered it, and the
+        // factory then refused it mid-load with "explicitly requested but not selectable". See
+        // ModelRuntimeFactory.enginesAvailableFor.
+        val declaredEngines = declaredEnginesFor(modelDir)
+        val availableEngines = ModelRuntimeFactory.enginesAvailableFor(
+            declaredEngines = declaredEngines,
+            genaiConfigPresent = genaiInstalled,
+            genaiAvailable = GenAiSupport.available(),
+        )
+        if (resolvedEngine == InferenceEngine.GENAI && InferenceEngine.GENAI !in availableEngines) {
+            // Named at load, where the package is in hand, rather than as a null runtime discovered
+            // at the first generate() — which is what "Generation session was never created" was.
+            throw EngineUnavailableException(
+                InferenceEngine.GENAI,
+                "the installed package declares supportedEngines=${declaredEngines ?: "(none)"} for " +
+                    "its variant, so GenAI is not a valid engine for it. Gemma-3 packages are " +
+                    "exported through optimum rather than the GenAI builder and are Native-only. " +
+                    "Load it with engine=NATIVE.",
+            )
         }
 
         val capabilities =
@@ -140,6 +159,15 @@ object MobileTransformers {
                 // asking for generation and reading the failure.
                 task = PackageTask.read(
                     PackagePaths.forCache(modelDir.parentFile, modelDir.name).inference,
+                ),
+                // From the model's own chat template, with the names as a fallback. `repoId` is
+                // included because the manifest's `baseModelId` is provenance, not an install key —
+                // and because passing only the architecture (`gemma3_text`) is exactly the bug this
+                // replaces.
+                trainingParameterCount = manifestOf(modelDir)?.trainingParameterCount ?: 0L,
+                toolCalling = ToolCallSupport.read(
+                    tokenizerDir = PackagePaths.forCache(modelDir.parentFile, modelDir.name).tokenizer,
+                    hints = listOf(repoId, sanitized),
                 ),
             )
 
@@ -181,6 +209,22 @@ object MobileTransformers {
             val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
             (info.totalMem / (1024L * 1024L)).toInt()
         }.getOrNull()
+
+    /**
+     * The installed variant's declared engines, or `null` when the package declares none.
+     *
+     * Mirrors `LLMRepository.installedSupportedEngines` deliberately: the facade must answer "may I
+     * offer GenAI" from the same declaration the loader will judge the request against.
+     */
+    private fun declaredEnginesFor(modelDir: File): Set<String>? =
+        manifestOf(modelDir)?.supportedEnginesFor()
+
+    /** The installed manifest, or null when absent or unreadable. Never throws: it is a hint source. */
+    private fun manifestOf(modelDir: File): MobileTransformersManifest? {
+        val manifestFile = File(modelDir, PackageFormat.MANIFEST_FILENAME)
+        if (!manifestFile.isFile) return null
+        return runCatching { MobileTransformersManifest.load(manifestFile) }.getOrNull()
+    }
 
     private fun detectFeatures(repo: LLMRepository): Set<ModelFeature> {
         val features = mutableSetOf<ModelFeature>()

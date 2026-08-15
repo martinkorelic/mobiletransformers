@@ -164,7 +164,6 @@ extend-exclude = ["/research/", "tests/fixtures/tiny_trainable.onnx"]
 # call about behaviour, which does not belong in a move.
 "src/mobiletransformers/training/data.py" = ["E721", "W291", "W293"]        # S1
 "src/mobiletransformers/inference/generator.py" = ["B006", "B905"]          # S1
-"src/mobiletransformers/export/tokenizer_export.py" = ["E722", "W293"]      # S1
 "src/mobiletransformers/export/inference_package.py" = ["E501"]             # S2
 "src/mobiletransformers/peft/ablation/config.py" = ["E501"]                 # S3
 "src/mobiletransformers/peft/ablation/layer.py" = ["F841"]                  # S3

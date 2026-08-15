@@ -43,7 +43,31 @@ data class RuntimeCapabilities(
      */
     val task: com.martinkorelic.mobiletransformers.packages.PackageTask =
         com.martinkorelic.mobiletransformers.packages.PackageTask.UNKNOWN,
+    /**
+     * Whether this model was trained to emit tool calls, and in which grammar.
+     *
+     * Read from the package's own chat template — see
+     * [com.martinkorelic.mobiletransformers.packages.ToolCallSupport]. Two things depended on
+     * knowing this and neither could: `generateToolCall` chose its parser by looking for the string
+     * `"functiongemma"` in the *architecture* name (`gemma3_text`), and an app had no way to tell a
+     * user which of its models can call tools at all.
+     */
+    val toolCalling: com.martinkorelic.mobiletransformers.packages.ToolCallSupport =
+        com.martinkorelic.mobiletransformers.packages.ToolCallSupport.NONE,
+    /**
+     * Every parameter this package's training graph materialises, or 0 when it declares none.
+     *
+     * Exposed because it is the input to
+     * [com.martinkorelic.mobiletransformers.runtime.MemoryHeadroom] — the only way an app can warn a
+     * user that a run will not fit **before** Android kills the process for it, which it does with
+     * SIGKILL and no recoverable error. The exporter has written this since the training stage
+     * existed and nothing on the device read it.
+     */
+    val trainingParameterCount: Long = 0L,
 ) {
+    /** This model has a tool-call grammar of its own; asking it for a call is reasonable. */
+    val supportsToolCalling: Boolean get() = toolCalling.supported
+
     /** This package predicts a class per input rather than generating tokens. */
     val isClassifier: Boolean get() = task.isClassifier
 

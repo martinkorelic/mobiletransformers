@@ -9,6 +9,7 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.martinkorelic.mobiletransformers.DatasetOptions
 import com.martinkorelic.mobiletransformers.ORTTrainingConfig
+import com.martinkorelic.mobiletransformers.Tasks
 import com.martinkorelic.mobiletransformers.SchedulerConfig
 import com.martinkorelic.mobiletransformers.config.DatasetConfig
 import com.martinkorelic.mobiletransformers.config.TrainConfig
@@ -31,6 +32,7 @@ internal object TrainingScheduleConfigCodec {
     private const val K_TOTAL = "totalSteps"
     private const val K_TITLE = "notificationTitle"
     private const val K_CHANNEL = "notificationChannelId"
+    private const val K_DELAY = "initialDelayMinutes"
 
     /**
      * The input-data pairs for a chunk. Also used by the #34 device test so it builds the SAME input
@@ -47,6 +49,7 @@ internal object TrainingScheduleConfigCodec {
         K_TOTAL to (config.totalSteps ?: -1),
         K_TITLE to config.notificationTitle,
         K_CHANNEL to config.notificationChannelId,
+        K_DELAY to config.initialDelayMinutes,
     )
 
     fun fromData(data: Data): TrainingScheduleConfig {
@@ -57,6 +60,7 @@ internal object TrainingScheduleConfigCodec {
             requiresDeviceIdle = data.getBoolean(K_IDLE, defaults.requiresDeviceIdle),
             requiresBatteryNotLow = data.getBoolean(K_BATTERY, defaults.requiresBatteryNotLow),
             maxRuntimeMinutes = data.getInt(K_RUNTIME, defaults.maxRuntimeMinutes),
+            initialDelayMinutes = data.getLong(K_DELAY, defaults.initialDelayMinutes),
             maxStepsPerChunk = data.getInt(K_STEPS, defaults.maxStepsPerChunk),
             checkpointEverySteps = data.getInt(K_CKPT, defaults.checkpointEverySteps),
             totalSteps = if (total <= 0) null else total,
@@ -210,7 +214,10 @@ object TrainingScheduler {
             repoId = repoId,
             training = training.toOrt(base).copy(
                 datasetOptions = dataset.toOrt(),
-                taskName = dataset.task ?: base.taskName,
+                // Rejected at SCHEDULE time. A chunk only runs once the device is charging and
+                // idle, so an unresolvable task discovered inside the worker surfaces hours later,
+                // as a failed background job nobody was watching.
+                taskName = Tasks.resolve(dataset.task, base.taskName),
             ),
             cacheDir = cacheDir,
             config = config,
@@ -226,6 +233,13 @@ object TrainingScheduler {
     ): UUID {
         val request = OneTimeWorkRequestBuilder<TrainingWorker>()
             .setConstraints(config.toConstraints())
+            // First chunk only: the delay is "do not start before", and re-applying it to every
+            // chunk would add it again at each boundary, stretching a 10-chunk run by 10x the delay.
+            .apply {
+                if (chunk == 1 && config.initialDelayMinutes > 0) {
+                    setInitialDelay(config.initialDelayMinutes, TimeUnit.MINUTES)
+                }
+            }
             .setInputData(
                 workDataOf(
                     *TrainingScheduleConfigCodec.toPairs(config),

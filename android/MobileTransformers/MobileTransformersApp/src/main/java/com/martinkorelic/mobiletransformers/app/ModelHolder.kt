@@ -55,6 +55,34 @@ object ModelHolder {
     private val _download = MutableStateFlow<DownloadUi?>(null)
     val download: StateFlow<DownloadUi?> = _download.asStateFlow()
 
+    /**
+     * What the model is doing right now, for the one indicator every screen shows.
+     *
+     * The status dot used to be painted from [ModelState] alone, which only distinguishes loaded from
+     * not-loaded — so a model mid-generation and a model sitting idle looked identical, and the
+     * question the dot exists to answer ("can I ask it something now?") had no answer anywhere in the
+     * app. The work itself happens in three different ViewModels, so the flag has to live with the
+     * model rather than with any one of them.
+     */
+    private val _activity = MutableStateFlow(ModelActivity.Idle)
+    val activity: StateFlow<ModelActivity> = _activity.asStateFlow()
+
+    /**
+     * Run [block] with [activity] set, restoring it afterwards on every path.
+     *
+     * Nested and concurrent work is not modelled: only one native session exists, and two screens
+     * cannot drive it at once. The `finally` matters more than the nesting — a cancelled generation
+     * that left the dot red would be worse than no dot.
+     */
+    suspend fun <T> withActivity(activity: ModelActivity, block: suspend () -> T): T {
+        _activity.value = activity
+        return try {
+            block()
+        } finally {
+            _activity.value = ModelActivity.Idle
+        }
+    }
+
     fun refreshInstalled(context: Context) {
         _installed.value = MobileTransformers.installed(context)
     }
@@ -90,6 +118,7 @@ object ModelHolder {
         features: Set<ModelFeature> = setOf(ModelFeature.Inference),
     ) = lock.withLock {
         _state.value = ModelState.Loading(repoId)
+        _activity.value = ModelActivity.Loading
         AppSnackbar.info("Loading $repoId…")
         try {
             unlockedClose()
@@ -132,6 +161,7 @@ object ModelHolder {
             AppSnackbar.error(reason)
         } finally {
             _download.value = null
+            _activity.value = ModelActivity.Idle
         }
     }
 
@@ -145,6 +175,26 @@ object ModelHolder {
         (_state.value as? ModelState.Loaded)?.model?.close()
         _state.value = ModelState.None
     }
+}
+
+/**
+ * What the model is occupied with.
+ *
+ * Separate from [ModelState] on purpose: state answers "which model", activity answers "is it free".
+ * A dot painted from state alone can only say loaded/not-loaded, and the question a user actually has
+ * in front of a status light is the second one.
+ */
+enum class ModelActivity(val label: String) {
+    Idle("ready"),
+    Loading("loading"),
+    Generating("generating"),
+    Training("training"),
+    Merging("merging"),
+    Ingesting("ingesting"),
+    ;
+
+    /** Whether the native session is occupied — the whole reason this enum exists. */
+    val isBusy: Boolean get() = this != Idle
 }
 
 /** What the app knows about the model right now. Every screen renders one of these four. */

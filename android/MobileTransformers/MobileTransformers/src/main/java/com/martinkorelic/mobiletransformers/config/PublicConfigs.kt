@@ -51,7 +51,17 @@ data class TrainConfig(
     val mergeAtEnd: Boolean = true,
     val saveAtEnd: Boolean = true,
     val resumeFromState: Boolean = true,
-    val device: DeviceConfig = DeviceConfig(),
+    /**
+     * Defaults to the **low-memory** profile, unlike [GenerationConfig]'s.
+     *
+     * `MemoryConfigId.HIGH_PERF` enables ORT's memory-pattern planner and CPU arena. On a training
+     * session that means the whole backward activation plan is pre-allocated and the arena keeps its
+     * peak for the life of the run: FunctionGemma-270M measured 2.35 GB RSS + 1.02 GB swap and was
+     * killed by `lmkd` on a 5.5 GB phone, for a LoRA run whose weights are ~1.07 GB.
+     *
+     * Pass `DeviceConfig(memoryConfigId = MemoryConfigId.HIGH_PERF)` explicitly to trade it back.
+     */
+    val device: DeviceConfig = DeviceConfig(memoryConfigId = MemoryConfigId.LOW_MEM),
 )
 
 /** Generation configuration. `maxNewTokens` is the public length field (maps to internal `maxSequenceLength`). */

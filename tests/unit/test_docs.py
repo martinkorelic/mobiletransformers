@@ -195,11 +195,14 @@ _COOKBOOK_EXTERNAL_TYPES = frozenset(
 
 #: `object`/`companion` members and enum values are not declarations `_KOTLIN_DECL` can see; they are
 #: covered by `make parity` (enum wire values) or by the JVM suites that call them.
+# Enum constants and sealed-class members: the scan cannot tell `MemoryConfigId.HIGH_PERF` from a
+# type name, and the enum itself is already checked.
 _COOKBOOK_IGNORED_TOKENS = frozenset(
     {
         "GREEDY",
         "NATIVE",
         "GENAI",
+        "HIGH_PERF",
         "DEFAULT",
         "Accepted",
         "Rejected",

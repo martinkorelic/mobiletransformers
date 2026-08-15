@@ -42,6 +42,26 @@ sealed interface ToolCallResult {
         override val raw: String,
         val reason: String,
     ) : ToolCallResult
+
+    /**
+     * The model answered in prose. It did not attempt a call, so there was nothing to permit or refuse.
+     *
+     * ### Why this is not a [Rejected]
+     *
+     * It used to be, with `reason = "no tool call found in the model's output"`. That conflates two
+     * different events under the word a UI renders as a refusal: "you asked for something I will not
+     * do" and "I answered your question". A user reading the second as the first concludes the model
+     * or the allowlist is broken — which is exactly what happened, and it hid a real defect
+     * underneath (the JSON parser was being handed FunctionGemma's grammar, so *every* call looked
+     * like no call).
+     *
+     * It also makes conversational tool use expressible: with tools declared on every turn, most
+     * turns are legitimately prose, and a chat screen needs to render those as answers rather than as
+     * a wall of refusals.
+     */
+    data class NoCall(
+        override val raw: String,
+    ) : ToolCallResult
 }
 
 /**

@@ -48,7 +48,11 @@ add_executable(host_tests
         test_mem_probe.cpp
         test_layer_name.cpp
         test_training_inputs.cpp
-        test_logits_metrics.cpp)
+        test_logits_metrics.cpp
+        test_sampling.cpp
+        # sampling.cpp is ORT-free (it includes only <vector>/<random>/<algorithm>), so the real
+        # samplers link on a host and the clamp can be tested against the code that ships.
+        ../sampling.cpp)
 
 target_include_directories(host_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/shims   # <android/log.h> stand-in

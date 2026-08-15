@@ -82,10 +82,24 @@ fun ToolCallScreen(vm: ToolCallViewModel) {
                         Text(o.reason, style = MaterialTheme.typography.bodyLarge)
                         Text("raw: ${o.raw.take(400)}", style = MaterialTheme.typography.bodySmall)
                         Text(
-                            "A refusal is a result, not a crash. Expect it from a model that has not " +
-                                "been fine-tuned on this action set — and note that as of 2026-08-14 " +
-                                "the on-device gate still fails even after fine-tuning, for reasons " +
-                                "recorded against #37 (merge numerics, not convergence).",
+                            "A refusal is a result, not a crash: the model named an action or a value " +
+                                "this app does not permit, and the allowlist held. That is the safety " +
+                                "property working.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                is Outcome.NoCall -> Section("No call attempted") {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            "The model answered in words rather than calling anything.",
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(o.raw.take(400), style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "Not a refusal — nothing was permitted or denied. Expect it from a model " +
+                                "with no tool-call grammar that has not been fine-tuned on this " +
+                                "action set; train it on the Training screen and try again.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }

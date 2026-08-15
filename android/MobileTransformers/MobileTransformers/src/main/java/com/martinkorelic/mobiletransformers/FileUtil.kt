@@ -44,13 +44,17 @@ fun parseTrainingArguments(jsonPath: String): ORTTrainingConfig {
         parseSchedulerConfigFromRoot(schedulerType, trainConfig)
     }
 
-    // Parse device options
+    // Parse device options.
+    //
+    // `low_mem` is the default HERE and nowhere else: exported training configs carry no device
+    // section, so this branch decides the allocator for every training run, and `high_perf`'s arena
+    // is what got a 270M LoRA run killed at 3.4 GB. Inference keeps `high_perf` — a forward-only
+    // session benefits from the arena and does not accumulate a backward plan.
     val deviceOptions = if (trainConfig.has("deviceOptions")) {
         val deviceOptionsJson = trainConfig.getJSONObject("deviceOptions")
-        parseDeviceOptions(deviceOptionsJson)
+        parseDeviceOptions(deviceOptionsJson, defaultMemoryConfigId = MemoryConfigId.LOW_MEM.wire)
     } else {
-        // Fallback: try to parse from root level for backward compatibility
-        parseDeviceOptionsFromRoot(trainConfig)
+        parseDeviceOptions(trainConfig, defaultMemoryConfigId = MemoryConfigId.LOW_MEM.wire)
     }
 
     // Parse dataset options
@@ -130,12 +134,24 @@ fun parseDatasetOptionsFromRoot(trainConfig: JSONObject): DatasetOptions {
  * now throws at the parse boundary instead of being handed to native code that would quietly fall
  * back to a default execution provider or memory profile.
  */
-fun parseDeviceOptions(deviceOptionsJson: JSONObject): DeviceOptions {
+fun parseDeviceOptions(
+    deviceOptionsJson: JSONObject,
+    /**
+     * What to use when the config declares no `memoryConfigId`.
+     *
+     * Exported `training_config.json` files carry no device section at all, so this default IS the
+     * setting for every training run — and `high_perf` (arena + memory pattern) is what took a
+     * 270M-parameter LoRA run to 3.4 GB and got it killed. See [ORTTrainingConfig.deviceOptions].
+     */
+    defaultMemoryConfigId: String = MemoryConfigId.HIGH_PERF.wire,
+): DeviceOptions {
     return DeviceOptions(
         enableProfiling = deviceOptionsJson.optBoolean("enableProfiling", false),
         coreConfigId = CoreConfigId.fromWire(deviceOptionsJson.optString("coreConfigId", "opt1")).wire,
         memoryConfigId =
-            MemoryConfigId.fromWire(deviceOptionsJson.optString("memoryConfigId", "high_perf")).wire,
+            MemoryConfigId.fromWire(
+                deviceOptionsJson.optString("memoryConfigId", defaultMemoryConfigId),
+            ).wire,
         executionProvider =
             ExecutionProvider.fromWire(deviceOptionsJson.optString("executionProvider", "cpu")).wire,
     )

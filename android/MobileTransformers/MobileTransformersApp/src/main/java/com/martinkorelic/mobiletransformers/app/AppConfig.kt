@@ -71,12 +71,24 @@ object AppConfig {
         _dataset.value = block(_dataset.value)
     }
 
-    /** Set the device options and fan them out to every config that carries a [DeviceConfig]. */
+    /**
+     * Set the device options and fan them out to every config that carries a [DeviceConfig].
+     *
+     * **Except the memory profile for training.** `TrainConfig` deliberately defaults to
+     * `MemoryConfigId.LOW_MEM` — ORT's arena and memory-pattern planner take a 270M LoRA run to
+     * ~3.4 GB and get the app killed — and a blanket fan-out would silently put `HIGH_PERF` back the
+     * first time anyone touched the Device tab, reintroducing the crash from a screen that says
+     * nothing about training. The rest (execution provider, core profile, profiling) fans out as
+     * before; a caller who genuinely wants a high-performance training allocator sets it on
+     * `TrainConfig` directly.
+     */
     fun updateDevice(block: (DeviceConfig) -> DeviceConfig) {
         val next = block(_device.value)
         _device.value = next
         _generation.value = _generation.value.copy(device = next)
-        _train.value = _train.value.copy(device = next)
+        _train.value = _train.value.copy(
+            device = next.copy(memoryConfigId = _train.value.device.memoryConfigId),
+        )
         _rag.value = _rag.value.copy(device = next)
     }
 

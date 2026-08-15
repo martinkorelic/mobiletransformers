@@ -7,6 +7,7 @@ import com.martinkorelic.mobiletransformers.agent.ActionSpec
 import com.martinkorelic.mobiletransformers.agent.FunctionCallValidator
 import com.martinkorelic.mobiletransformers.agent.ToolCallResult
 import com.martinkorelic.mobiletransformers.app.AppConfig
+import com.martinkorelic.mobiletransformers.app.ModelActivity
 import com.martinkorelic.mobiletransformers.app.ModelHolder
 import com.martinkorelic.mobiletransformers.app.ModelState
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -94,11 +95,13 @@ class ToolCallViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _ui.value = _ui.value.copy(running = true, outcome = null, error = null)
             try {
-                when (val result = model.generateToolCall(
-                    instruction = instruction,
-                    validator = validator,
-                    config = AppConfig.generation.value,
-                )) {
+                when (val result = ModelHolder.withActivity(ModelActivity.Generating) {
+                    model.generateToolCall(
+                        instruction = instruction,
+                        validator = validator,
+                        config = AppConfig.generation.value,
+                    )
+                }) {
                     is ToolCallResult.Accepted -> {
                         val intended = result.dryRun()
                         _ui.value = _ui.value.copy(
@@ -115,6 +118,13 @@ class ToolCallViewModel(app: Application) : AndroidViewModel(app) {
                         _ui.value = _ui.value.copy(
                             outcome = Outcome.Rejected(raw = result.raw, reason = result.reason),
                         )
+
+                    is ToolCallResult.NoCall ->
+                        // Distinct from a refusal, and the distinction matters most on this screen:
+                        // "the model did not attempt a call" points at the model or the prompt, while
+                        // "the app refused the call" points at the allowlist. Reporting both as
+                        // Rejected sent every investigation to the wrong place.
+                        _ui.value = _ui.value.copy(outcome = Outcome.NoCall(raw = result.raw))
                 }
             } catch (e: Throwable) {
                 _ui.value = _ui.value.copy(error = e.message ?: e::class.java.simpleName)
@@ -144,4 +154,7 @@ sealed interface Outcome {
     ) : Outcome
 
     data class Rejected(val raw: String, val reason: String) : Outcome
+
+    /** The model answered in words. Nothing was permitted or refused, because nothing was asked for. */
+    data class NoCall(val raw: String) : Outcome
 }

@@ -212,7 +212,17 @@ class ToolCallDeviceTest {
             assertTrue(
                 "the model did not emit a call this app accepts after $STEPS steps on its own action " +
                     "set.\n  raw output: '${result.raw}'\n  reason: " +
-                    (result as? ToolCallResult.Rejected)?.reason +
+                    when (result) {
+                        // Two very different diagnoses, and reporting both as "rejected" sent the
+                        // investigation to the wrong place: a refusal means the allowlist held
+                        // against a call, while NoCall means no call was recognised at all — which
+                        // is what a parser/dialect mismatch looks like, not a training failure.
+                        is ToolCallResult.Rejected -> "refused by the validator: ${result.reason}"
+                        is ToolCallResult.NoCall -> "no call was recognised in the output — check " +
+                            "the tool-call dialect (capabilities.toolCalling) before concluding the " +
+                            "model did not learn"
+                        is ToolCallResult.Accepted -> ""
+                    } +
                     "\n  loss drop over training: ${"%.1f".format(drop * 100)}%\n" +
                     "This is the #37 differentiation gate. A refusal here is a real result — record it " +
                     "rather than weakening the assertion; asserting on the refusal path would prove " +

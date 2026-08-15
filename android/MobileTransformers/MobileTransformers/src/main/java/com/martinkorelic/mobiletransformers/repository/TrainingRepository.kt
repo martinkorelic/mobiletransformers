@@ -14,6 +14,11 @@ class TrainingRepository(private val llmRepository: LLMRepository) {
             llmRepository.trainingCallback?.onModelLoadStart()
             val job = llmRepository.prepareTraining(trainingConfig, dataPreprocessFunction)
             job.join()
+            // `join()` never rethrows, and `prepareTraining` deliberately swallows so the failure
+            // cannot reach an uncaught handler. Re-raise it here, on the caller's own coroutine,
+            // which is the first frame that can both see it and report it. Without this a setup
+            // failure read as "runTraining says the model is not ready" — a symptom, on a later line.
+            llmRepository.consumeTrainingSessionFailure()?.let { throw it }
             llmRepository.trainingCallback?.onModelLoadEnd()
         }
 

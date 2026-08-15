@@ -2,6 +2,8 @@ package com.martinkorelic.mobiletransformers.app.views
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -39,6 +41,7 @@ import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
  * Three tabs, because "where does a model come from" genuinely has three answers and they were
  * previously stacked into one long scroll with the installed list below the fold.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ModelsScreen(vm: ModelsViewModel) {
     var tab by remember { mutableIntStateOf(0) }
@@ -83,6 +86,7 @@ private fun DownloadCard(d: com.martinkorelic.mobiletransformers.app.DownloadUi,
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CatalogTab(vm: ModelsViewModel) {
     val context = LocalContext.current
@@ -116,7 +120,12 @@ private fun CatalogTab(vm: ModelsViewModel) {
                     Text(entry.repoId, style = MaterialTheme.typography.labelSmall)
                     Text(entry.description, style = MaterialTheme.typography.bodySmall)
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // Four assist chips do not fit one phone-width row once `sizeLabel` is a real
+                    // figure ("3.9 GB") and `task` is "text-generation".
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
                         AssistChip(onClick = {}, label = { Text(entry.sizeLabel) })
                         AssistChip(onClick = {}, label = { Text(entry.task) })
                         if (entry.supportsTraining) AssistChip(onClick = {}, label = { Text("train") })
@@ -203,7 +212,9 @@ private fun InstalledTab(vm: ModelsViewModel) {
         }
 
         item {
-            ActionRow {
+            // Padded: every other control on this screen sits inside a Section (16dp), so a bare
+            // ActionRow put these two buttons hard against the left edge of the display.
+            ActionRow(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 OutlinedButton(onClick = vm::refresh) { Text("Refresh") }
                 OutlinedButton(onClick = vm::unload, enabled = model is ModelState.Loaded) {
                     Text("Unload current")
@@ -213,6 +224,7 @@ private fun InstalledTab(vm: ModelsViewModel) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PullByIdTab(vm: ModelsViewModel) {
     val ui by vm.ui.collectAsState()
@@ -256,7 +268,10 @@ private fun PullByIdTab(vm: ModelsViewModel) {
         item {
             Section("Engine") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
                         InferenceEngine.entries.forEach { e ->
                             FilterChip(
                                 selected = ui.engine == e,
@@ -266,10 +281,12 @@ private fun PullByIdTab(vm: ModelsViewModel) {
                         }
                     }
                     Text(
-                        "Fixed at load, so switching means reloading. GenAI additionally needs the " +
-                            "package to ship genai_config.json and the native probe to succeed on " +
-                            "this device; asking for it otherwise fails closed rather than quietly " +
-                            "handing back Native.",
+                        "Fixed at load, so switching means reloading. Most packages are Native-only: " +
+                            "GenAI additionally needs the variant's manifest to declare it, and " +
+                            "Gemma-3 packages (FunctionGemma included) are exported through optimum " +
+                            "rather than the GenAI builder, so they declare native alone. Choosing " +
+                            "GenAI for one of those fails closed at load, naming the declaration, " +
+                            "rather than quietly handing back Native.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

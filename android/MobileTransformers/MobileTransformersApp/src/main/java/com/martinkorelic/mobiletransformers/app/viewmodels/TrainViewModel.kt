@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.martinkorelic.mobiletransformers.app.AppConfig
 import com.martinkorelic.mobiletransformers.app.AppSnackbar
+import com.martinkorelic.mobiletransformers.app.ModelActivity
 import com.martinkorelic.mobiletransformers.app.ModelHolder
 import com.martinkorelic.mobiletransformers.app.ModelState
 import com.martinkorelic.mobiletransformers.app.SampleData
@@ -67,6 +68,10 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun onStartDelayChanged(value: StartDelay) {
+        _ui.value = _ui.value.copy(startDelay = value)
+    }
+
     /** Cancel the queued run; the chunk in flight checkpoints on its way out. */
     fun cancelSchedule() {
         val loaded = ModelHolder.state.value as? ModelState.Loaded ?: return
@@ -113,7 +118,9 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             try {
-                job.start(dataset = AppConfig.dataset.value, config = AppConfig.train.value)
+                ModelHolder.withActivity(ModelActivity.Training) {
+                    job.start(dataset = AppConfig.dataset.value, config = AppConfig.train.value)
+                }
                 _ui.value = _ui.value.copy(canResume = job.canResume)
                 val last = _ui.value.points.lastOrNull()
                 AppSnackbar.success(
@@ -197,14 +204,17 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
                 repoId = loaded.model.repoId,
                 dataset = AppConfig.dataset.value,
                 training = AppConfig.train.value,
-                config = TrainingScheduleConfig(),
+                config = TrainingScheduleConfig(
+                    initialDelayMinutes = _ui.value.startDelay.minutes,
+                ),
             )
         }.onSuccess {
+            val delay = _ui.value.startDelay
             _ui.value = _ui.value.copy(
-                scheduled = "queued as $it — chunks run only while charging and idle, and each " +
-                    "chunk re-evaluates its constraints",
+                scheduled = "queued as $it — ${delay.describe()}, and each chunk re-evaluates its " +
+                    "constraints before it starts",
             )
-            AppSnackbar.success("Scheduled — it will start when the device is charging and idle")
+            AppSnackbar.success("Scheduled — ${delay.describe()}")
         }.onFailure {
             _ui.value = _ui.value.copy(error = it.message)
             AppSnackbar.error(it.message ?: "could not schedule training")
@@ -214,7 +224,7 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
     fun merge() {
         val loaded = ModelHolder.state.value as? ModelState.Loaded ?: return
         viewModelScope.launch {
-            runCatching { loaded.model.merge() }
+            runCatching { ModelHolder.withActivity(ModelActivity.Merging) { loaded.model.merge() } }
                 .onSuccess {
                     _ui.value = _ui.value.copy(status = "merged=${it.merged}")
                     AppSnackbar.success(
@@ -245,8 +255,37 @@ data class TrainUiState(
     val canResume: Boolean = false,
     val scheduled: String? = null,
     val datasetNote: String? = null,
+    val startDelay: StartDelay = StartDelay.WhenReady,
     val error: String? = null,
 )
+
+/**
+ * When the first chunk may start.
+ *
+ * ### Why these are delays and not clock times
+ *
+ * WorkManager's `setInitialDelay` is the only start-time control Android offers deferrable work, and
+ * it is a **floor, not an appointment** — the system batches, and Doze can hold a job well past it.
+ * An exact wall-clock start needs `AlarmManager.setExactAndAllowWhileIdle` and the
+ * `SCHEDULE_EXACT_ALARM` permission, which Play restricts to alarm clocks and calendar reminders; a
+ * multi-hour training job is neither, and asking for that permission to run a background trainer
+ * would rightly be refused.
+ *
+ * So the honest UI is "not before", and the constraints (charging, battery not low) remain the real
+ * gate — a delay only moves the earliest moment they are consulted.
+ */
+enum class StartDelay(val label: String, val minutes: Long) {
+    WhenReady("As soon as it can", 0),
+    InAnHour("Not for an hour", 60),
+    InFourHours("Not for 4 hours", 240),
+    Overnight("Not for 8 hours", 480),
+    ;
+
+    fun describe(): String = when (this) {
+        WhenReady -> "it starts as soon as the device is charging"
+        else -> "it starts no earlier than $minutes minutes from now, once charging"
+    }
+}
 
 /** One scheduled chunk, as the queue panel renders it. */
 data class ScheduledRun(val stateLabel: String, val detail: String)

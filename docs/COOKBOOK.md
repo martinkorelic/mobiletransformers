@@ -97,8 +97,9 @@ Log.i("gen", "${result.tokenCount} tokens at ${result.avgTokensPerSecond} tok/s"
 
 *Sample app: Chat screen, engine picker.*
 
-`Native` is the guaranteed floor. `GenAI` is selectable only when the installed package ships
-`inference/genai_config.json` **and** the device's GenAI probe succeeds — ask, rather than guessing:
+`Native` is the guaranteed floor. `GenAI` is selectable only when **all three** hold: the installed
+package ships `inference/genai_config.json`, its manifest variant declares `genai` in
+`supportedEngines`, and the device's GenAI probe succeeds. Ask, rather than guessing:
 
 ```kotlin
 if (InferenceEngine.GENAI in model.capabilities.availableEngines) {
@@ -114,6 +115,12 @@ if (InferenceEngine.GENAI in model.capabilities.availableEngines) {
 Naming an engine you cannot have raises `EngineUnavailableException` instead of quietly giving you
 Native. Silent substitution is what made an earlier engine-parity test compare Native with Native and
 pass.
+
+**Most packages are Native-only, including ones that ship a `genai_config.json`.** Gemma-3 packages
+(FunctionGemma among them) are exported through optimum's `main_export` rather than the vendored
+GenAI builder, so their manifests declare `supportedEngines: ["native"]` even though optimum writes a
+`genai_config.json` beside the graph. `availableEngines` applies the manifest condition too, so it and
+the loader always agree — check it and offer only what it contains.
 
 ---
 
@@ -150,6 +157,28 @@ Two things worth knowing before you size a run:
 * **Cancelling is resumable.** `job.cancel(saveCheckpoint = true)` sets a cooperative flag; the loop
   breaks at the next step boundary and writes a checkpoint, and `job.canResume` then reads `true`.
 
+### Memory: training defaults to `low_mem`, and you should leave it there
+
+`TrainConfig().device.memoryConfigId` is `MemoryConfigId.LOW_MEM`, unlike `GenerationConfig`'s
+`HIGH_PERF`. That is not a conservative guess — `HIGH_PERF` enables ORT's memory-pattern planner and
+CPU arena, which on a *training* session pre-allocates the whole backward activation plan and holds
+its peak for the life of the run. Measured on a 5.5 GB phone, FunctionGemma-270M (~1.07 GB of fp32
+weights, a 368,640-parameter LoRA) reached **2.35 GB RSS + 1.02 GB swap** under `HIGH_PERF` and was
+killed by the system; under `LOW_MEM` the same run completes.
+
+There is no exception to catch when that happens: Android sends **SIGKILL**, so the process vanishes
+with no error, no `finally` and no checkpoint. If you override this, do it knowing that is the failure
+mode:
+
+```kotlin
+// Only if you have measured that it fits.
+TrainConfig(device = DeviceConfig(memoryConfigId = MemoryConfigId.HIGH_PERF))
+```
+
+Inference keeps `HIGH_PERF`: a forward-only session benefits from the arena and builds no backward
+plan. If you fan one `DeviceConfig` across every config in your app, exclude the training memory
+profile — the sample app's `AppConfig.updateDevice` shows the shape.
+
 ### Train while charging
 
 ```kotlin
@@ -158,11 +187,23 @@ TrainingScheduler.schedule(
     repoId = model.repoId,
     dataset = DatasetConfig(trainFile = "my_data", task = "cola"),
     training = TrainConfig(maxSteps = 500),
-    config = TrainingScheduleConfig(),
+    config = TrainingScheduleConfig(
+        // "Not before", NOT an appointment — see below.
+        initialDelayMinutes = 240,
+    ),
 )
 ```
 
 Each chunk re-enters the WorkManager queue, so unplugging pauses the run rather than failing it.
+
+**On start times.** `initialDelayMinutes` maps to WorkManager's `setInitialDelay`, which is the only
+start-time control Android gives deferrable work, and it is a **floor**: the system batches, and Doze
+can hold a job well past it. An exact wall-clock start would need
+`AlarmManager.setExactAndAllowWhileIdle` and the `SCHEDULE_EXACT_ALARM` permission, which Play
+restricts to alarm clocks and calendar reminders — a background trainer is neither. The constraints
+(`requiresCharging`, `requiresBatteryNotLow`) are the real gate; the delay only moves the earliest
+moment they are consulted. It applies to the first chunk only, so a multi-chunk run is not re-delayed
+at every boundary.
 
 ---
 
@@ -215,12 +256,44 @@ when (val result = model.generateToolCall("wake me at 07:30", validator)) {
         Log.i("tool", "${intended.intent.action} willExecute=${intended.willExecute}")  // false
     }
     is ToolCallResult.Rejected -> Log.i("tool", "refused: ${result.reason}")
+    is ToolCallResult.NoCall -> Log.i("tool", "answered in prose: ${result.raw}")
 }
 ```
+
+**Three outcomes, and the third is not a refusal.** `NoCall` means the model answered in words rather
+than attempting a call — nothing was permitted or denied. Reporting that as `Rejected` (which this API
+used to do, with `reason = "no tool call found in the model's output"`) tells a user their allowlist
+blocked something when it did not, and it hides format mismatches: a parser reading the wrong dialect
+produces `NoCall` for *every* well-formed call.
+
+That distinction is what makes this usable as your only chat path: declare the tools on every turn and
+let the outcome decide how the turn renders, instead of asking the user to predict, before sending,
+whether their message is a tool call.
 
 `Rejected` is a value, not an exception: refusing untrusted output is the expected path. Nothing here
 executes — `IntentBinder` holds no `Context` and has no `startActivity` call site, so firing the intent
 is your deliberate act with your own `Context`.
+
+### Dialects: check what the model speaks
+
+**Not every model emits JSON.** FunctionGemma emits
+`<start_function_call>call:name{key:<escape>value<escape>}<end_function_call>`, and handing that to a
+JSON reader yields `NoCall` for calls that are perfectly well formed. The dialect is detected from the
+package's own chat template:
+
+```kotlin
+if (model.capabilities.supportsToolCalling) {
+    Log.i("tool", "grammar: ${model.capabilities.toolCalling.dialect}")  // FUNCTION_GEMMA | JSON
+}
+```
+
+`generateToolCall` defaults its parser from that, and `ToolPromptBuilder` renders the declarations —
+and the turn structure — in the matching grammar. Pass `parser =` only if you know better than the
+package does.
+
+`supportsToolCalling` being false does not forbid tool calls: a model fine-tuned on this repo's
+`mobile_actions` corpus learns the JSON shape without its template ever mentioning tools. It means
+only that the model has no grammar of its own, so an app should not advertise the capability.
 
 Build the training set from the same declaration so the corpus and the boundary are provably one value:
 
@@ -229,10 +302,11 @@ mobiletransformers agent-dataset --source generated \
   --allowlist build/agent/action_schema.json --output build/user
 ```
 
-> **Status, 2026-08-14.** The on-device gate for this recipe (`ToolCallDeviceTest`) **fails**: after a
-> converging fine-tune the model emits a repeated newline rather than a call. The cause is under
-> investigation and is recorded against #37 — it is not convergence, dataset size or prompt format,
-> all of which were measured and excluded. Expect `Rejected` until it is fixed.
+> **Status, 2026-08-15.** The on-device gate for this recipe (`ToolCallDeviceTest`) **passes** — 2
+> tests / 0 failures / 754 s on an S21 FE, `steps=108 lossDrop=99.5%`. The repeated-newline failure
+> this note used to describe was the merge-transpose defect, fixed 2026-08-14: the model had learned
+> the task all along and the merge was corrupting the result on the way out. FunctionGemma has since
+> been observed emitting a well-formed call in its own grammar on the same device.
 
 ---
 

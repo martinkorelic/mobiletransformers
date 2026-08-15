@@ -37,6 +37,45 @@ object ToolPromptBuilder {
         }
 
     /**
+     * The complete prompt for one tool-calling turn: declarations, the user's message, and the
+     * marker that hands the floor to the model.
+     *
+     * ### Why the turn structure is here
+     *
+     * `generateToolCall` used to send `declarations + "\n" + instruction`, bare. FunctionGemma is
+     * trained on `<start_of_turn>developer … <end_of_turn><start_of_turn>user …
+     * <end_of_turn><start_of_turn>model`, and normally the tokenizer's chat template supplies that
+     * framing — but the exporter writes the template to a sibling `chat_template.jinja` that
+     * `ORTTokenizerNative` does not read, so on device `chatTemplate` is null and **nothing wraps the
+     * prompt at all**. The model was being handed a naked instruction in a format it has never seen
+     * and asked to produce a grammar it only emits inside a model turn.
+     *
+     * Framing it here is the fix that does not depend on a Jinja engine rendering a 400-line
+     * template on a phone. It is dialect-specific for the same reason the parser is: the two are
+     * chosen together, and a declaration in one grammar with a reply parsed in the other is the
+     * mismatch this whole seam exists to prevent.
+     *
+     * **Assumes the caller's session does not apply a chat template of its own.** When
+     * `ORTTokenizerNative.chatTemplate` is non-null the generator already wraps each prompt, and this
+     * would nest one framing inside another; that combination does not arise for the packages that
+     * ship today (none carries a template the device reads), and is called out here so it is noticed
+     * rather than discovered.
+     */
+    @JvmStatic
+    fun prompt(allowlist: List<ActionSpec>, parser: ToolCallParser, instruction: String): String =
+        if (parser === ToolCallParser.FunctionGemma) {
+            buildString {
+                append("<start_of_turn>developer\n")
+                append(functionGemmaDeclarations(allowlist).trim())
+                append("<end_of_turn>\n")
+                append("<start_of_turn>user\n").append(instruction.trim()).append("<end_of_turn>\n")
+                append("<start_of_turn>model\n")
+            }
+        } else {
+            jsonDeclarations(allowlist) + "\n" + instruction
+        }
+
+    /**
      * `<start_function_declaration>declaration:name{…}<end_function_declaration>`, one per action.
      *
      * String values are wrapped in `<escape>` because the grammar requires it — the delimiter is what

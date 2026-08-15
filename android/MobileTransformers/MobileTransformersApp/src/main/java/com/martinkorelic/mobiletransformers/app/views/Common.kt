@@ -2,6 +2,8 @@ package com.martinkorelic.mobiletransformers.app.views
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -89,14 +91,22 @@ fun Section(title: String, content: @Composable () -> Unit) {
     }
 }
 
+/**
+ * A label and a switch, with the **label** giving way when space runs out.
+ *
+ * `SpaceBetween` alone lets the text claim its full intrinsic width and pushes the switch past the
+ * right edge — which is how "Also request the RAG feature (~91 MB encoder)" ended up with an
+ * unreachable control. `weight(1f)` makes the label the flexible half, so the switch keeps its fixed
+ * size and stays on screen and the label wraps instead.
+ */
 @Composable
 fun LabeledSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(
         Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = onChange)
     }
 }
@@ -230,11 +240,16 @@ fun <T> Dropdown(
 }
 
 /** A row of chips over a closed set — the compact form of [Dropdown] for three or four options. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun <T> ChipPicker(label: String, options: List<T>, selected: T?, optionLabel: (T) -> String, onSelect: (T) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(label, style = MaterialTheme.typography.labelMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Wraps for the same reason ActionRow does: four chips with real labels do not fit a phone.
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             options.forEach { option ->
                 FilterChip(
                     selected = option == selected,
@@ -333,12 +348,22 @@ fun SubTabs(titles: List<String>, selected: Int, onSelect: (Int) -> Unit) {
  *
  * Buttons were previously laid out ad hoc per screen, so identical action rows had different spacing
  * and no shared baseline — the "unaligned buttons" that read as sloppiness rather than as a bug.
+ *
+ * **Wraps.** It was a plain `Row`, which lays children out past the right edge rather than onto a
+ * second line, so any row of three buttons whose labels were long enough lost the last one entirely —
+ * off screen, unreachable, with nothing to indicate it existed. Three-button rows are the norm here
+ * (Start / Cancel / Merge, Install / Load / Unload), so this was a matter of label length, not of
+ * layout intent.
+ *
+ * @param modifier for call sites that live outside a [Section] and must supply their own padding —
+ *   a bare `fillMaxWidth()` row sits flush against the screen edge.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun ActionRow(content: @Composable () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth(),
+fun ActionRow(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    FlowRow(
+        modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
     ) { content() }
 }

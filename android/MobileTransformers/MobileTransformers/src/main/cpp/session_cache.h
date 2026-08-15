@@ -572,6 +572,31 @@ struct InferenceSessionCache {
         sampling_config.top_p = 0.9f;
     }
 
+    /**
+     * The last dimension of the logits the most recent forward pass produced, or 0 before one has run.
+     *
+     * This is the graph's own statement of how many token ids exist, and it is the only trustworthy
+     * one on the device: the declared vocabulary arrives from a JSON file the exporter wrote, and for
+     * at least one shipped package that file is two entries too wide. See
+     * `sampling::effectiveVocabSize` for what goes wrong when the sampler believes it.
+     */
+    long long lastLogitsWidth() const {
+        if (!last_output) {
+            return 0;
+        }
+        try {
+            const auto shape = last_output->GetTensorTypeAndShapeInfo().GetShape();
+            if (shape.empty()) {
+                return 0;
+            }
+            return static_cast<long long>(shape.back());
+        } catch (const std::exception&) {
+            // A shape we cannot read is not a reason to fail a generation step; the declared value
+            // stays in force, which is exactly the behaviour that existed before this check.
+            return 0;
+        }
+    }
+
     // Function to initialize the KV cache with provided batch size and sequence length
     void initializeKVCache(int batch_size) {
         past_key_values.clear();  // Clear any existing key-values

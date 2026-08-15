@@ -127,6 +127,7 @@ private fun ShowcaseApp() {
 
     val modelState by ModelHolder.state.collectAsState()
     val download by ModelHolder.download.collectAsState()
+    val activity by ModelHolder.activity.collectAsState()
 
     // Loading a classifier while sitting on Chat would leave the user on a screen that has just left
     // the drawer, with no visible way back.
@@ -189,6 +190,7 @@ private fun ShowcaseApp() {
             Column(Modifier.fillMaxSize().padding(padding)) {
                 ModelBar(
                     state = modelState,
+                    activity = activity,
                     download = download,
                     onUnload = { scope.launch { ModelHolder.close() } },
                     onGoToModels = { destination = Destination.Models },

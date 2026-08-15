@@ -16,6 +16,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.ExperimentalTextApi
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.martinkorelic.mobiletransformers.app.viewmodels.StepPoint
 import kotlin.math.abs
@@ -118,12 +122,28 @@ private fun Tile(label: String, value: String, modifier: Modifier = Modifier) {
 }
 
 /**
- * One series over global step.
+ * One series over global step, with a labelled x-axis.
  *
- * Hairline solid axes (never dashed — dashing reads as a threshold), a 2px line, and a single direct
- * label at the last point. A number on every point is unreadable, and the values are all present in
- * the Events list below, which is this chart's table-view twin.
+ * ### Three things this got wrong
+ *
+ * - **`strokeWidth = 1f` is one *pixel*, not one dp.** At this device's 3x density that is a third of
+ *   a dp, which lands between physical pixels and renders as a barely-visible grey smear — the axes
+ *   looked absent.
+ * - **The x-axis was drawn at exactly `y = h`**, the last row of the canvas, so half the stroke fell
+ *   outside the drawing bounds and was clipped. What survived was half of an already-invisible line:
+ *   "cut off at the bottom" was literally true.
+ * - **There were no ticks.** The only x information was a `step 0 → 108` caption under the plot, so a
+ *   reader could see the range but could not place any point within it.
+ *
+ * Now the canvas reserves gutters and the series is drawn into a plot rect inset from them, which is
+ * what leaves room for tick labels without clipping either axis. Ticks are drawn with the measured
+ * text so they sit exactly under their gridline rather than being approximated by a `Row`.
+ *
+ * Still deliberately sparse: no grid, hairline axes one shade off the surface, one direct label at
+ * the last point. At phone width a gridded 160dp plot is mostly grid, and every value is also in the
+ * Events list below, which is this chart's table-view twin.
  */
+@OptIn(ExperimentalTextApi::class)
 @Composable
 private fun LineChart(
     title: String,
@@ -134,6 +154,10 @@ private fun LineChart(
     format: (Float) -> String,
 ) {
     val axis = MaterialTheme.colorScheme.outlineVariant
+    val tickInk = MaterialTheme.colorScheme.onSurfaceVariant
+    val tickStyle = MaterialTheme.typography.labelSmall
+    val measurer = rememberTextMeasurer()
+
     val min = values.min()
     val max = values.max()
     // A flat series has zero range; without a floor every point maps to the same y and the line
@@ -151,34 +175,83 @@ private fun LineChart(
             )
         }
 
-        Canvas(Modifier.fillMaxWidth().height(height).padding(top = 6.dp, bottom = 6.dp)) {
-            val w = size.width
-            val h = size.height
+        // The gutter is part of the canvas, not padding around it: the axis has to be drawn INSIDE
+        // the drawing bounds or it gets clipped, and the tick labels need somewhere to live.
+        Canvas(Modifier.fillMaxWidth().height(height + X_AXIS_GUTTER).padding(top = 6.dp)) {
+            val gutter = X_AXIS_GUTTER.toPx()
+            val stroke = 1.dp.toPx()
+            // Inset by half a stroke so neither axis is half-outside the canvas.
+            val left = stroke / 2f
+            val right = size.width - stroke / 2f
+            val top = stroke / 2f
+            val bottom = size.height - gutter
 
-            // Recessive chrome: two hairlines, one shade off the surface, and no grid at all — at
-            // phone width a gridded 160dp plot is mostly grid.
-            drawLine(axis, Offset(0f, h), Offset(w, h), strokeWidth = 1f)
-            drawLine(axis, Offset(0f, 0f), Offset(0f, h), strokeWidth = 1f)
+            drawLine(axis, Offset(left, bottom), Offset(right, bottom), strokeWidth = stroke)
+            drawLine(axis, Offset(left, top), Offset(left, bottom), strokeWidth = stroke)
+
+            val plotWidth = right - left
+            val plotHeight = bottom - top
+            fun xAt(index: Int): Float =
+                if (values.size == 1) left else left + plotWidth * index / (values.size - 1).toFloat()
+            fun yAt(value: Float): Float =
+                // Inverted: canvas y grows downward, and a falling loss must read as falling.
+                bottom - ((value - min) / span) * plotHeight
+
+            // Ticks at the ends and at even fractions between, capped so labels cannot collide on a
+            // narrow screen. Indices, not step numbers, so a run with irregular step reporting still
+            // puts every tick on a real data point.
+            val tickCount = minOf(MAX_X_TICKS, values.size)
+            val tickIndices = if (tickCount <= 1) {
+                listOf(0)
+            } else {
+                (0 until tickCount).map { it * (values.size - 1) / (tickCount - 1) }
+            }
+            for (index in tickIndices.distinct()) {
+                val x = xAt(index)
+                drawLine(
+                    axis,
+                    Offset(x, bottom),
+                    Offset(x, bottom + TICK_LENGTH.toPx()),
+                    strokeWidth = stroke,
+                )
+                val label = measurer.measure(steps[index].toString(), tickStyle)
+                // Centred on the tick, then nudged inward at the edges so the first and last labels
+                // stay inside the canvas instead of being clipped by it.
+                val half = label.size.width / 2f
+                val labelX = (x - half).coerceIn(0f, size.width - label.size.width)
+                drawText(
+                    textLayoutResult = label,
+                    color = tickInk,
+                    topLeft = Offset(labelX, bottom + TICK_LENGTH.toPx() + 2.dp.toPx()),
+                )
+            }
 
             val path = Path()
             values.forEachIndexed { i, v ->
-                val x = if (values.size == 1) 0f else w * i / (values.size - 1).toFloat()
-                // Inverted: canvas y grows downward, and a falling loss must read as falling.
-                val y = h - ((v - min) / span) * h
+                val x = xAt(i)
+                val y = yAt(v)
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
             drawPath(path, color, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
 
-            // The endpoint, with a surface ring so it stays legible where the line doubles back.
-            val lastX = w
-            val lastY = h - ((values.last() - min) / span) * h
-            drawCircle(color, radius = 4.dp.toPx(), center = Offset(lastX, lastY))
+            // The endpoint, so the current value is locatable on the curve.
+            drawCircle(color, radius = 4.dp.toPx(), center = Offset(xAt(values.size - 1), yAt(values.last())))
         }
 
         Text(
-            "step ${steps.first()} → ${steps.last()}",
+            "step",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center,
         )
     }
 }
+
+/** Room under the plot for the tick marks and their labels. */
+private val X_AXIS_GUTTER = 18.dp
+
+private val TICK_LENGTH = 3.dp
+
+/** Enough to place a point, few enough that the labels never collide at phone width. */
+private const val MAX_X_TICKS = 5

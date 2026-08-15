@@ -153,8 +153,15 @@ class MobileTransformerModel internal constructor(
      * when (val result = model.generateToolCall("wake me at 07:30", validator)) {
      *     is ToolCallResult.Accepted -> show(result.dryRun())   // willExecute = false
      *     is ToolCallResult.Rejected -> show("I can't do that: ${result.reason}")
+     *     is ToolCallResult.NoCall   -> show(result.raw)        // it answered in words
      * }
      * ```
+     *
+     * **[ToolCallResult.NoCall] is why this is usable as the only chat entry point.** Declare the
+     * allowlist on every turn and let the outcome say what happened: prose comes back as prose, a
+     * call comes back validated. That removes the "am I asking for a tool call right now?" switch a
+     * caller would otherwise have to put in front of the user, who has no way to know the answer
+     * before seeing the reply.
      *
      * @param parser how to read a call out of the model's text. Defaults to the one suited to this
      *   package's base model — **FunctionGemma does not emit JSON**, so a fixed JSON reader rejected
@@ -169,23 +176,23 @@ class MobileTransformerModel internal constructor(
         instruction: String,
         validator: FunctionCallValidator,
         config: GenerationConfig = GenerationConfig(),
-        parser: ToolCallParser = ToolCallParser.forModel(capabilities.task.modelType ?: repoId),
+        parser: ToolCallParser = ToolCallParser.forDialect(capabilities.toolCalling.dialect),
         declareTools: Boolean = true,
         callback: GenerateCallback? = null,
     ): ToolCallResult {
         val prompt = if (declareTools) {
-            ToolPromptBuilder.declarations(validator.allowlist, parser) + "\n" + instruction
+            // The whole turn, not declarations glued to an instruction: FunctionGemma emits its call
+            // grammar inside a model turn, and nothing else on the device supplies that framing.
+            ToolPromptBuilder.prompt(validator.allowlist, parser, instruction)
         } else {
             instruction
         }
         val raw = session.generate(prompt, config, callback).text
         val call = parser.parse(raw)
-            // A parse failure is a refusal like any other — the raw text is kept so the caller can
-            // show what the model actually said, which is the only way to diagnose a format mismatch.
-            ?: return ToolCallResult.Rejected(
-                raw = raw,
-                reason = "no tool call found in the model's output",
-            )
+            // Not a refusal: the model said something that is not a call. The raw text is the answer,
+            // and reporting it as "rejected" both misleads the user and hides parser mismatches —
+            // see ToolCallResult.NoCall.
+            ?: return ToolCallResult.NoCall(raw = raw)
         return try {
             ToolCallResult.Accepted(raw = raw, call = validator.validate(call))
         } catch (e: RejectedCallException) {

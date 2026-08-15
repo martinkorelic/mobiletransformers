@@ -17,7 +17,7 @@ CI parity gate that fails on drift. The **wire value** (right column) is the on-
 | `SchedulerType` | `linear`, `cosine` |
 | `ExecutionProvider` | `cpu`, `xnnpack`, `nnapi` |
 | `CoreConfigId` | `opt1`, `opt2`, `opt3` |
-| `MemoryConfigId` | `low_mem`, `high_perf` |
+| `MemoryConfigId` | `low_mem`, `high_perf` — see [Memory profiles](#memory-profiles) |
 | `SearchType` | `semantic`, `text` |
 | `QuantizationType` | `QInt8`, `QUInt8`, `int4` |
 | `PEFTMethod` | `lora`, `lora-xs`, `mars`, `all`, `nolora` |
@@ -27,6 +27,40 @@ CI parity gate that fails on drift. The **wire value** (right column) is the on-
 
 `ExportFrontend` (`optimum-onnx`, `torch.onnx`) is build-time/Python-only — Android never sees it, so it has
 no Kotlin mirror and no parity obligation.
+
+## Memory profiles
+
+`MemoryConfigId` selects ORT session options in `session_cache.h`:
+
+| value | session options | default for |
+| --- | --- | --- |
+| `high_perf` | `EnableMemPattern()` + `EnableCpuMemArena()` | inference, retrieval |
+| `low_mem` | `DisableMemPattern()` + `DisableCpuMemArena()` | **training** |
+
+**Training defaults to `low_mem` and this is not a conservative guess.** The memory-pattern planner
+pre-allocates the whole backward activation plan, and the CPU arena grows to the run's peak and never
+returns it. Measured on an S21 FE (5.5 GB RAM): FunctionGemma-270M — 268,098,176 parameters, ~1.07 GB
+of fp32 weights, a 368,640-parameter LoRA — reached **2.35 GB RSS + 1.02 GB swap** under `high_perf`
+and was killed by `lmkd`; the identical run completes under `low_mem`.
+
+The failure has no error to catch. Android sends **SIGKILL**, so the app disappears with no exception,
+no `finally` and no checkpoint — which is why the default matters more than it would elsewhere.
+
+Three sites set it and all three must agree, because each is a separate way to get `high_perf` back:
+
+- `ORTTrainingConfig.deviceOptions` — the engine-level default;
+- `parseTrainingArguments` in `FileUtil.kt` — **the one that decides real runs**, because exported
+  `training_config.json` files carry no `deviceOptions` section at all, so its fallback *is* the
+  setting;
+- `config.TrainConfig.device` — what an app passes.
+
+`TrainingMemoryProfileTest` pins all three, that the public default survives the mapping to the engine
+config, that an explicit `high_perf` in a package config is still honoured, and that inference is
+unaffected.
+
+If your app holds one `DeviceConfig` and fans it across every config, **exclude the training memory
+profile** — otherwise the first visit to a device-settings screen silently restores `high_perf` for
+training. The sample app's `AppConfig.updateDevice` shows the shape.
 
 ## Cross-boundary config models
 

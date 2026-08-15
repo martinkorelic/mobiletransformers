@@ -153,6 +153,64 @@ object Tasks {
     val NAMES: List<String> get() = TASKS.map { it.name }
 
     fun describe(name: String): String? = TASKS.firstOrNull { it.name == name }?.description
+
+    /** Whether [name] resolves to a preprocessor in [getPreprocessFunctionForTask]. */
+    @JvmStatic
+    fun isRegistered(name: String?): Boolean =
+        name != null && NAMES.any { it.equals(name, ignoreCase = true) }
+
+    /**
+     * Settle the task for a run, and fail **here** if it names no preprocessor.
+     *
+     * ### Why this is a separate step
+     *
+     * `DatasetConfig.task ?: package.taskName` was resolved independently at two call sites and
+     * handed straight to [ORTTrainerNative]'s constructor, which builds the curator, which calls
+     * [getPreprocessFunctionForTask], which throws. That throw happened inside a `launch` on
+     * `LLMRepository`'s own scope, so it did not reach the caller's `try` at all — it reached the
+     * thread's uncaught handler and **took the whole app down**:
+     *
+     *     FATAL EXCEPTION: main
+     *     java.lang.IllegalArgumentException: Unsupported task: none.
+     *         at DataUtilKt.getPreprocessFunctionForTask(DataUtil.kt:175)
+     *         at ORTTrainerNative.<init>(ORTTrainerNative.kt:42)
+     *
+     * The message was also unhelpful in a specific way: `none` is not something the user typed. It is
+     * [ORTTrainingConfig]'s default, reached because the caller left `DatasetConfig.task` null and
+     * packages ship no task declaration — so the honest report is "nothing named a task", not
+     * "'none' is unsupported".
+     *
+     * Called before the coroutine is launched, this fails in the caller's frame where the app's
+     * `catch` can show it, and names both the valid set and where to set it.
+     *
+     * @param requested what the caller asked for ([com.martinkorelic.mobiletransformers.config.DatasetConfig.task]).
+     * @param declaredByPackage the installed package's own declaration, used when the caller names none.
+     * @param hasCustomPreprocess when true the name is never dispatched on, so anything is allowed.
+     */
+    @JvmStatic
+    fun resolve(
+        requested: String?,
+        declaredByPackage: String?,
+        hasCustomPreprocess: Boolean = false,
+    ): String {
+        val chosen = requested?.takeIf { it.isNotBlank() }
+            ?: declaredByPackage?.takeIf { it.isNotBlank() }
+            ?: UNSET
+        if (hasCustomPreprocess || isRegistered(chosen)) return chosen
+        val named = if (chosen == UNSET) {
+            "No task was named: DatasetConfig.task is unset and the installed package declares none"
+        } else {
+            "'$chosen' is not a known task"
+        }
+        throw IllegalArgumentException(
+            "$named. The trainer cannot parse a dataset without knowing its shape. Set " +
+                "DatasetConfig.task to one of ${NAMES.joinToString(", ")}, or supply a " +
+                "customPreprocess function.",
+        )
+    }
+
+    /** [ORTTrainingConfig.taskName]'s default — the sentinel meaning "nobody said". */
+    const val UNSET: String = "none"
 }
 
 // Factory function using the interface
