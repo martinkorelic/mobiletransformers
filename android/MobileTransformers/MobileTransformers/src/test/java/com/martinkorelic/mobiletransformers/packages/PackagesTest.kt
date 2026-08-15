@@ -150,6 +150,52 @@ class PackagesTest {
         assertTrue(entry.sizeBytes > 0)
     }
 
+    /**
+     * The default install must NOT consume its source — and this is the test that says why.
+     *
+     * `tinyPackage()` is a checked-in fixture that two tests above install from, one of them twice. An
+     * installer that moved the staged files instead of copying them would empty the fixture out of the
+     * working tree on first use, and the failures would land in unrelated tests.
+     */
+    @Test
+    fun installLeavesTheStagedPackageIntactByDefault() {
+        val cacheDir = File(createTempDir(), "cache").apply { mkdirs() }
+        ModelPackageInstaller.install(tinyPackage(), cacheDir, "org/Tiny-Model", "cpu-int4")
+
+        assertTrue(
+            "the default install consumed its source — the shared fixture is now gone",
+            File(tinyPackage(), "variants/cpu-int4/inference/model.onnx").isFile,
+        )
+        assertTrue(File(tinyPackage(), "shared/tokenizer/tokenizer.json").isFile)
+    }
+
+    /**
+     * `consumeSource = true` moves instead of copying, and still produces the same cache layout.
+     *
+     * This is what `HubDownloader` passes over its own throwaway `.download/` tree, where copying meant
+     * writing a whole package a second time — for a real 1.3 GB model that is a gigabyte of pointless
+     * I/O and a gigabyte of transient space on a phone.
+     */
+    @Test
+    fun installWithConsumeSourceMovesTheStagedTreeAndStillMaterializesTheCacheShape() {
+        val cacheDir = File(createTempDir(), "cache").apply { mkdirs() }
+        // A private copy, because this install destroys what it is given.
+        val staged = File(createTempDir(), "staged").apply { tinyPackage().copyRecursively(this) }
+
+        val installed =
+            ModelPackageInstaller.install(staged, cacheDir, "org/Tiny-Model", "cpu-int4", true)
+
+        assertTrue(File(installed.repoDir, "inference/model.onnx").isFile)
+        assertTrue(File(installed.repoDir, "tokenizer/tokenizer.json").isFile)
+        assertTrue(File(installed.repoDir, PackageFormat.MANIFEST_FILENAME).isFile)
+        assertFalse(File(cacheDir, ".staging/org__Tiny-Model").exists())
+        // Moved, not copied: the staged stage directories are gone.
+        assertFalse(
+            "consumeSource=true still copied — the staged tree survived",
+            File(staged, "variants/cpu-int4/inference").exists(),
+        )
+    }
+
     @Test
     fun cacheIndexToleratesLegacyDir() {
         val cacheDir = File(createTempDir(), "cache").apply { mkdirs() }

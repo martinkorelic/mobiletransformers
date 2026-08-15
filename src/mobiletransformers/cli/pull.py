@@ -24,6 +24,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
         "--features", default="inference", help="Comma-separated feature groups (e.g. inference,train,rag)."
     )
     pull.add_argument("--out", default=None, help="Staging output dir (default ./.mt-pull/<repo>).")
+    pull.add_argument(
+        "--token",
+        default=None,
+        help="Hub token, for a private or gated repo. Defaults to $HF_TOKEN. `pull_package` has always "
+        "accepted one; the CLI did not pass it, so a private package could only be fetched from Python.",
+    )
     pull.set_defaults(func=run_pull)
 
     inst = subparsers.add_parser(
@@ -38,12 +44,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
 
 
 def run_pull(args: argparse.Namespace) -> int:
+    from mobiletransformers.config.settings import get_settings
     from mobiletransformers.hub.pull import pull_package
 
     features = tuple(f.strip() for f in args.features.split(",") if f.strip())
     try:
         staging = pull_package(
-            args.repo_id, revision=args.revision, variant=args.variant, features=features, dest=args.out
+            args.repo_id,
+            revision=args.revision,
+            variant=args.variant,
+            features=features,
+            dest=args.out,
+            # Via `config.settings`, the one sanctioned credential-read site, so `.env` is honoured.
+            token=getattr(args, "token", None) or get_settings().hf_token,
         )
     except MobileTransformersError as exc:
         print(f"pull failed: {exc}")

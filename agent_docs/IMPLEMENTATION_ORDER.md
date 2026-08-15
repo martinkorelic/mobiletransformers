@@ -1048,8 +1048,70 @@ together, so they resolve separately, exactly as `numpy` and `onnx` already do f
 lock now carries `transformers` **4.46.2 and 4.57.6** side by side, and nothing else moved.
 
 The training profile is deliberately untouched: floating a pin in that block has broken
-`get_peft_model` before. **Consequence, recorded:** Gemma-3 *inference* export works; on-device
-FunctionGemma *training* is still blocked behind the same pin.
+`get_peft_model` before. ~~**Consequence, recorded:** Gemma-3 *inference* export works; on-device
+FunctionGemma *training* is still blocked behind the same pin.~~
+
+> ### ✅ CORRECTION 2026-08-15: the pin was NOT the blocker. FunctionGemma exports train-capable.
+>
+> The struck sentence stood for six days and was wrong in both directions. The experiment that settles
+> it: a throwaway **sibling** group reproducing the paired stack exactly — torch 2.7.1, peft 0.13.2,
+> numpy<2, onnx<1.19, the same source-built ORT wheel — with `transformers` as the single moved
+> variable (4.46.2 → 4.57.6).
+>
+> **The sibling is gone as of the same day.** Once a third control (BERT encoder, `all-MiniLM-L6-v2`
+> text-classification: 73,728 trainable, unchanged) joined the other two, the bumped range moved into
+> `ort-training-local` itself and the experimental group was deleted. There is ONE training profile
+> again. `paired_stack` in `third_party/onnxruntime/manifest.json` still records
+> `transformers: 4.46.2` — that is a record of the wheel's *build* environment, not a runtime
+> constraint, and manifest.json's own notes name only `numpy<2` and `onnx<1.19` as ABI constraints.
+> Treating every paired_stack entry as load-bearing is precisely what kept this blocked.
+>
+> **`get_peft_model` did not break.** That specific fear is what kept the pin, and it did not reproduce.
+>
+> **The real blocker was an input-set mismatch, unrelated to any dependency.** `LlamaOnnxConfig.inputs`
+> is `[input_ids, attention_mask, position_ids]`; `Gemma3TextOnnxConfig.inputs` is
+> `[input_ids, attention_mask]` — Gemma-3 declares no `position_ids`. Optimum passes the generated
+> dummy inputs to the traced module **positionally**, so `OnnxTrainerWrapper`'s four-parameter forward
+> got `labels` bound to `position_ids` and nothing bound to `labels`, surfacing as a bare
+> `TypeError: … missing 1 required positional argument: 'labels'` raised from `torch/jit/_trace.py`,
+> several frames below anything this repo owns. Two further layers had the same decoder-shaped
+> assumption baked in: `train_inference_parity.py` fed a hardcoded 4-tuple to `Module.__call__`
+> (`Train input name index out of range. Expected in range [0-3). Actual: 3`).
+>
+> Fixes, all registry/observation-driven rather than special-cased:
+> `OnnxDecoderNoPositionIdsTrainerWrapper`; `ArchitectureSpec.trainer_wrapper_class` (the architecture
+> owns the input set because its `onnx_config_class` decides it, while the task still owns the label
+> contract); `_check_wrapper_matches_config_inputs()`, which fails closed naming **both** lists so this
+> class of bug can never again present as a `torch.jit` TypeError; and a parity probe that feeds by the
+> names `Module.input_names()` reports.
+>
+> **The control that makes this trustworthy:** `SmolLM2-135M-Instruct` through the *same* bumped group
+> exports fine, parity delta **0.0111 nats** — byte-identical to what its 2026-08-10 export recorded
+> under 4.46.2. Raising the pin moved nothing for a model that already worked.
+>
+> **Published:** `mobiletransformers/functiongemma-270m-it` from `google/functiongemma-270m-it`
+> (the real FunctionGemma, `Gemma3ForCausalLM`/`gemma3_text`, 18 layers, 640 hidden). 72 LoRA tensors
+> (18 × q_proj/v_proj × A/B), rank 8, 368,640 trainable of 268,098,176. 102 files, 3.87 GB.
+>
+> **Still NOT proven: on-device Gemma-3 training.** This is a train-capable package. No training step
+> has run on a phone for this architecture, and #37's passing demo remains a SmolLM2 decoder.
+>
+> **A second defect surfaced while validating it — the parity probe was measuring nothing meaningful
+> off the Llama family.** `PROBE_INPUT_IDS` were Llama-family ids, so a Gemma-vocabulary model scored
+> ~25 nats against a `ln(262144) = 12.48` uniform floor: both graphs confidently wrong on gibberish.
+> The delta inflated with them, and FunctionGemma passed its own integrity gate by **0.06 nats**
+> (1.4417 against a 1.5 bound) for reasons that had nothing to do with the package. The probe now
+> tokenizes real English with the **package's own tokenizer**, resolved once and shared by both legs:
+>
+> | package | before (borrowed ids) | after (own tokenizer) |
+> | --- | --- | --- |
+> | SmolLM2-135M-Instruct | 12.01 / 12.02, Δ 0.0111 | 3.1803 / 3.3264, Δ **0.1461** |
+> | google/gemma-3-270m | 24.41 / 24.20, Δ 0.2116 | 3.2870 / 3.3057, Δ **0.0188** |
+> | google/functiongemma-270m-it | 25.70 / 27.14, Δ 1.4417 | 5.1658 / 6.0495, Δ **0.8837** |
+>
+> FunctionGemma's remaining gap is the probe being off-distribution for a model fine-tuned hard on
+> function-call JSON, not a defect: re-probed on such JSON the same package gives 4.4513 / 4.1526,
+> Δ **0.2987**. Quantization error is largest exactly where the model is least confident.
 
 > ### ⚠️ CORRECTION 2026-08-09: the fork is NOT risk-free, and it broke a passing device test
 >

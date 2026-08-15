@@ -6,6 +6,42 @@ v1.0.0 onward.
 
 ## [Unreleased]
 
+### Fixed — release blockers found 2026-08-15
+- **`android.permission.INTERNET` was declared nowhere.** The entire #21 Hub-download stack —
+  resolver, planner, streaming downloader with Range-resume and sha256 verify-and-retry, WorkManager
+  worker, installer — was complete and JVM-tested, and **could not run on any device**: the first real
+  GET throws `SecurityException`. MockWebServer runs on the JVM against localhost, where no Android
+  permission model applies, so no existing test could see it. Now declared in the **library** manifest
+  (so consumers inherit it) and pinned by a guard that was verified to fail first.
+- **Every Hub pull leaked a full copy of the package.** `HubDownloader` never deleted its `.download/`
+  staging tree, and the installer copied rather than moved into `.staging/`. A pull cost ~3× the
+  package in transient disk and left ~1× behind permanently — for a 3.87 GB package, ~11.6 GB free
+  needed instead of ~3.9 GB.
+- **Gemma-3 could not produce a training graph**, and the cause was not the dependency pin it had been
+  attributed to. `Gemma3TextOnnxConfig` declares `[input_ids, attention_mask]` where `LlamaOnnxConfig`
+  declares those plus `position_ids`; Optimum passes dummy inputs **positionally**, so the decoder
+  wrapper bound `labels` to `position_ids` and died inside `torch.jit`. Fixed with
+  `OnnxDecoderNoPositionIdsTrainerWrapper`, a per-architecture `trainer_wrapper_class` override, and a
+  fail-closed signature/inputs cross-check so this class of bug names itself.
+- **The train/inference parity probe was measuring nothing meaningful off the Llama family.** Its token
+  ids were Llama-family, so a Gemma-vocabulary model scored ~25 nats against a 12.48-nat uniform floor
+  and a sound package passed its own integrity gate by 0.06 nats. The probe now tokenizes real English
+  with the package's own tokenizer, resolved once and shared by both legs.
+- `package-model` could not repair a manifest missing its inference provenance, which is exactly the
+  state a two-profile train-capable export leaves behind; the model card had no Hub frontmatter, so a
+  published page showed no licence and no link to its base model.
+
+### Changed
+- **`ort-training-local` now declares `transformers>=4.50,<4.58`** (was `==4.46.2`). That pin was
+  believed load-bearing; three controls under 4.57.6 say otherwise — SmolLM2-135M at parity delta
+  0.0111 nats (identical to its 4.46.2 figure), `all-MiniLM-L6-v2` at 73,728 trainable parameters
+  (unchanged), and Gemma-3 working at all. `torch`, `peft`, `numpy` and `onnx` stay exactly pinned:
+  those are the genuine ABI couplings. `transformers` appears in the wheel's `paired_stack` as a record
+  of its build environment, not as a constraint — and treating the two as the same thing is what kept
+  on-device FunctionGemma training blocked.
+- `push` no longer creates the target repo unless `--create` is passed, so a mistyped repo id fails
+  instead of silently creating one; `push` and `pull` both take `--token`.
+
 ### Added
 - **Repository restructure complete.** All Python now lives in `src/mobiletransformers/`; the seven
   legacy roots (`trainer/`, `artifact/`, `inference/`, `tools/`, `peft_models/`, `database/`,

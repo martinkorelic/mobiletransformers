@@ -12,7 +12,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -118,5 +123,55 @@ fun TextField(label: String, value: String, onChange: (String) -> Unit) {
         label = { Text(label) },
         singleLine = true,
         modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/**
+ * A collapsible "what do I do here" card.
+ *
+ * The showcase app is the reference example for the SDK, and someone opening it for the first time on
+ * a real phone has no way to know that the order matters (nothing works before a package is pulled),
+ * that a pull is gigabytes, or that the Tool calls screen is *supposed* to refuse until the model has
+ * been fine-tuned. None of that is discoverable from the controls themselves, and a wrong expectation
+ * reads as a broken app.
+ *
+ * Collapsible because it is scaffolding: useful once, noise afterwards.
+ */
+@Composable
+fun Guide(title: String, steps: List<String>, initiallyExpanded: Boolean = true) {
+    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "Hide" else "Show")
+                }
+            }
+            if (expanded) {
+                steps.forEach { step ->
+                    Text(step, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One line saying what a screen does and what to expect from it.
+ *
+ * Deliberately separate from [Guide]: this always shows, because "what am I looking at" stays useful
+ * after "how do I start" stops being.
+ */
+@Composable
+fun ScreenIntro(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
     )
 }

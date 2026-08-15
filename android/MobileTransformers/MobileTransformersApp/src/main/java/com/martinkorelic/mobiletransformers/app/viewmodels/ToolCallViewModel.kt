@@ -29,9 +29,13 @@ import kotlinx.coroutines.launch
  * reachable intent set is fixed when the allowlist below is written.
  *
  * **It must not hide a refusal.** A rejection is the expected answer for untrusted output and is
- * rendered as a result, not an error. On an unconverged model it is also the *usual* answer: as of
- * 2026-08-14 the device gate (`ToolCallDeviceTest`) still fails, with the model emitting a repeated
- * newline rather than a call, so expect this screen to show Rejected until that is fixed.
+ * rendered as a result, not an error — and on a base model that has not been fine-tuned on this
+ * allowlist it is the *expected* answer, not a bug in the screen. Run the Train tab first.
+ *
+ * *(This block previously said the device gate "still fails … expect this screen to show Rejected
+ * until that is fixed". That is now false: `ToolCallDeviceTest` PASSES as of 2026-08-14 — 2 tests /
+ * 0 failures / 754 s on an S21 FE — once the merge-transpose defect was fixed. The model had been
+ * learning the task all along and the merge was corrupting the result on the way out.)*
  */
 class ToolCallViewModel(app: Application) : AndroidViewModel(app) {
 

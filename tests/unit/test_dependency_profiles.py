@@ -35,29 +35,55 @@ def _requirement(block_pattern: str, package: str) -> str | None:
     return found.group(1) if found else None
 
 
-def test_export_and_training_transformers_are_forked() -> None:
-    """The export profile must be able to resolve a NEWER transformers than the training profile.
+def test_the_abi_coupled_pins_stay_exact() -> None:
+    """The paired-stack pins that are REAL constraints must never float.
 
-    `[tool.uv] conflicts` already declares the group and the extra mutually exclusive, but that alone
-    does not force different versions: uv prefers a single version whenever one satisfies both, and
-    `transformers==4.46.2` satisfied the old `>=4.45`. The floor is what makes the fork real.
+    These four are ABI/format couplings to the source-built ORT-training wheel, and manifest.json's
+    notes call them out as such:
 
-    4.50 is the floor because Gemma-3 (`Gemma3ForCausalLM`, `Gemma3Config`, the `gemma3` row in
-    `CONFIG_MAPPING_NAMES`) does not exist before it — #37's gate could not load the model, which is
-    upstream of any question about the exported graph.
+    * ``torch==2.7.1`` / ``peft==0.13.2`` — floating peft to 0.19 renamed
+      ``PEFT_TYPE_TO_MODEL_MAPPING`` and required ``torch.distributed.tensor`` (torch>=2.8), so
+      ``get_peft_model`` died with ``AttributeError``.
+    * ``numpy<2`` — the C extension is built against the numpy 1.26 ABI.
+    * ``onnx<1.19`` — ORT 1.23 supports max ONNX IR 11; onnx>=1.19 emits IR 13.
+
+    ``transformers`` is deliberately NOT in this list. It is the one paired_stack entry with no ABI
+    relationship to the wheel — pure Python — and it was raised off ``==4.46.2`` on 2026-08-15 after
+    three controls (llama decoder, BERT encoder, gemma3) came back identical or better. Confusing
+    "recorded in paired_stack" with "load-bearing" is what kept Gemma-3 training blocked for months
+    behind a pin that was never the cause.
     """
-    export = _requirement(r"^export\s*=\s*\[.*$", "transformers")
-    training = _requirement(r'^\s*"transformers==[^"]*",\s*$', "transformers")
+    for requirement in ("torch==2.7.1", "peft==0.13.2"):
+        assert f'"{requirement}"' in PYPROJECT, (
+            f"{requirement} is an ABI coupling to the source-built ORT wheel and must stay exact"
+        )
+    for requirement in ("numpy<2", "onnx<1.19"):
+        assert f"\"{requirement}; python_version == '3.12'\"" in PYPROJECT, (
+            f"{requirement} is a runtime constraint of the ORT extension and must stay pinned"
+        )
 
-    assert export is not None, "no transformers requirement in the export extra"
-    assert training is not None, "no exact transformers pin in ort-training-local"
-    assert ">=4.50" in export, f"export must floor transformers at 4.50 for Gemma-3, got {export!r}"
-    assert training == "transformers==4.46.2", (
-        "the ort-training-local pin reproduces the ORT wheel's paired stack and must stay exact; "
-        f"got {training!r}"
+
+def test_training_can_resolve_a_gemma3_capable_transformers() -> None:
+    """The training profile must be able to LOAD Gemma-3, or it cannot export a graph for it.
+
+    ``transformers`` below 4.50 has no ``Gemma3ForCausalLM``, no ``Gemma3Config`` and no ``gemma3`` row
+    in ``CONFIG_MAPPING_NAMES``, so ``AutoModelForCausalLM.from_pretrained`` fails before any question
+    about the exported graph arises. This is the floor that makes
+    ``mobiletransformers/functiongemma-270m-it`` buildable at all.
+
+    Asserted as a FLOOR, not an exact version: the point is the capability, not a particular release.
+    """
+    training = _requirement(r'^\s*"transformers>=[^"]*",\s*$', "transformers")
+    assert training is not None, "no transformers requirement in ort-training-local"
+    assert ">=4.50" in training, (
+        f"the training profile must floor transformers at 4.50 to load Gemma-3, got {training!r}"
     )
-    # The floors must be incompatible, or uv collapses back to one version and the fork is a no-op.
-    assert "4.46.2" not in export
+    # A REQUIREMENT line, not a mention: the pin's history is written in the comment right above it,
+    # and a substring search for "==4.46.2" matches that prose too.
+    assert not re.search(r'^\s*"transformers==', PYPROJECT, re.MULTILINE), (
+        "an exact transformers== pin is back in pyproject — 4.46.2 cannot load Gemma-3 at all, and it "
+        "was removed with evidence (three controls) rather than by guess"
+    )
 
 
 def test_upstream_ceiling_is_preserved() -> None:
@@ -66,17 +92,25 @@ def test_upstream_ceiling_is_preserved() -> None:
     assert export is not None and "<4.58" in export
 
 
-def test_lock_carries_both_transformers_lines() -> None:
-    """The resolved lock must actually contain both versions — the proof the fork survived `uv lock`."""
+def test_lock_carries_a_gemma3_capable_transformers() -> None:
+    """The resolved lock must actually contain a transformers that can load Gemma-3.
+
+    This test used to assert the OPPOSITE — that the lock carried both 4.46.2 and a newer line, proving
+    the export/training fork survived `uv lock`. That fork was retired on 2026-08-15 when the training
+    profile adopted the same range, so a single version now satisfies both and the lock holds one. The
+    invariant worth guarding is the capability, not the split.
+    """
     lock = (REPO_ROOT / "uv.lock").read_text()
     versions = set()
     for block in lock.split("[[package]]"):
         if re.search(r'^name = "transformers"', block, re.MULTILINE):
             versions.update(re.findall(r'^version = "([^"]+)"', block, re.MULTILINE))
 
-    assert "4.46.2" in versions, f"training pin missing from the lock; found {sorted(versions)}"
-    newer = [v for v in versions if v != "4.46.2"]
-    assert newer, (
-        "the lock holds only transformers 4.46.2 — the export fork collapsed, and Gemma-3 is "
-        "unavailable again"
+    assert versions, "no transformers in the lock at all"
+
+    def _parts(version: str) -> tuple[int, ...]:
+        return tuple(int(p) for p in re.findall(r"\d+", version)[:2])
+
+    assert any(_parts(v) >= (4, 50) for v in versions), (
+        f"the lock holds no transformers >= 4.50, so Gemma-3 cannot be loaded; found {sorted(versions)}"
     )

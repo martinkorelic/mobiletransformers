@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.martinkorelic.mobiletransformers.app.AppConfig
 import com.martinkorelic.mobiletransformers.app.ModelHolder
 import com.martinkorelic.mobiletransformers.app.ModelState
+import com.martinkorelic.mobiletransformers.app.SampleData
+import com.martinkorelic.mobiletransformers.packages.PackageFormat
 import com.martinkorelic.mobiletransformers.scheduler.TrainingScheduleConfig
 import com.martinkorelic.mobiletransformers.scheduler.TrainingScheduler
 import com.martinkorelic.mobiletransformers.training.TrainingEvent
@@ -64,6 +66,48 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Copy the bundled tool-call training set into the installed package and point [AppConfig] at it.
+     *
+     * Without this the Start button could not work on a freshly pulled package: the trainer reads
+     * `<cacheDir>/<repoId>/train/<trainFile>.jsonl`, model packages deliberately ship no training
+     * data, and the app had no way to create one. That made the whole Train screen unreachable for
+     * anyone who had not `adb push`ed a dataset by hand.
+     *
+     * The cache root mirrors what `ModelHolder` lets `fromPretrained` default to (`context.filesDir`);
+     * `sanitizeRepoId` is the public mapping from repo id to cache directory name.
+     */
+    fun installSampleDataset() {
+        val loaded = ModelHolder.state.value as? ModelState.Loaded ?: return
+        val app = getApplication<Application>()
+        runCatching {
+            SampleData.installTrainingSet(
+                context = app,
+                // The cache root ModelHolder lets `fromPretrained` default to.
+                cacheDir = app.filesDir,
+                sanitizedRepoId = PackageFormat.sanitizeRepoId(loaded.model.repoId),
+            )
+        }
+            .onSuccess { installed ->
+                if (installed == null) {
+                    _ui.value = _ui.value.copy(
+                        error = "this package has no train/ stage, so there is nowhere to put a " +
+                            "training set — pull one with the Training feature requested",
+                    )
+                } else {
+                    AppConfig.updateDataset {
+                        it.copy(trainFile = SampleData.TRAIN_FILE, task = SampleData.TRAIN_TASK)
+                    }
+                    _ui.value = _ui.value.copy(
+                        error = null,
+                        datasetNote = "installed ${installed.name} (${installed.length()} bytes) and " +
+                            "set trainFile=${SampleData.TRAIN_FILE}, task=${SampleData.TRAIN_TASK}",
+                    )
+                }
+            }
+            .onFailure { _ui.value = _ui.value.copy(error = it.message ?: "could not install sample data") }
+    }
+
     fun cancel() {
         val loaded = ModelHolder.state.value as? ModelState.Loaded ?: return
         viewModelScope.launch {
@@ -113,6 +157,7 @@ data class TrainUiState(
     val events: List<String> = emptyList(),
     val canResume: Boolean = false,
     val scheduled: String? = null,
+    val datasetNote: String? = null,
     val error: String? = null,
 )
 

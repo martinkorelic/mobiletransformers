@@ -35,6 +35,11 @@ fun ChatScreen(vm: ChatViewModel) {
         )
 
         Column(Modifier.fillMaxSize()) {
+            ScreenIntro(
+                "Generate text, optionally grounded in documents you ingest. Tokens stream as they " +
+                    "arrive. A small model on a phone is slow and not very fluent — that is the " +
+                    "hardware and the model size, not a defect.",
+            )
             Section("Engine") {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -59,7 +64,7 @@ fun ChatScreen(vm: ChatViewModel) {
             }
 
             Section("Retrieval") {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     LabeledSwitch("Ground answers with RAG", ui.useRag, vm::onRagToggled)
                     if (ui.useRag && !model.capabilities.supportsRag) {
                         Text(
@@ -68,6 +73,18 @@ fun ChatScreen(vm: ChatViewModel) {
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
+                    // Retrieval reads a store that only `ingest` fills. Without something here the
+                    // toggle above is decorative: every grounded query returns zero sources.
+                    Text(
+                        "Retrieval searches documents you have ingested — the store starts empty, so " +
+                            "grounding an answer before ingesting anything returns no sources.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(
+                        onClick = vm::ingestSampleDocument,
+                        enabled = !ui.ingesting && model.capabilities.supportsRag,
+                    ) { Text(if (ui.ingesting) "Ingesting…" else "Ingest sample document") }
+                    ui.ingestNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 }
             }
 

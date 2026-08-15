@@ -16,6 +16,7 @@ and the validator's boundary come out of one command, so they cannot drift.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from mobiletransformers.exceptions import MobileTransformersError
@@ -45,6 +46,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParse
     parser.add_argument("--split", default="train", help="Corpus split to keep ('train'/'eval'/'all').")
     parser.add_argument("--limit", type=int, default=None, help="Keep at most N rows (after shuffling).")
     parser.add_argument("--per-action", type=int, default=8, help="Rows per action for 'generated'.")
+    parser.add_argument(
+        "--templates",
+        default=None,
+        help="JSON {actionName: [prompt template, ...]} overriding the built-in phrasings for "
+        "'generated'. Slots name the action's OWN parameters. Needed whenever your allowlist declares "
+        "different parameters than the built-in demo actions — the generator refuses a template that "
+        "references a parameter the action does not declare, so without this an app whose 'set_alarm' "
+        "takes only 'time' cannot use the built-in 'set_alarm' phrasings at all.",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Determinism for 'generated' and --limit.")
     parser.add_argument(
         "--prompt-style",
@@ -84,7 +94,21 @@ def run(args: argparse.Namespace) -> int:
             if not args.allowlist:
                 raise MobileTransformersError("--source generated requires --allowlist <action_schema.json>")
             specs = load_allowlist(args.allowlist)
-            rows = generate_examples(specs, per_action=args.per_action, seed=args.seed)
+            templates = None
+            if args.templates:
+                try:
+                    templates = {
+                        action: tuple(phrasings)
+                        for action, phrasings in json.loads(
+                            Path(args.templates).read_text(encoding="utf-8")
+                        ).items()
+                    }
+                except (OSError, ValueError, AttributeError) as exc:
+                    raise MobileTransformersError(
+                        f"--templates {args.templates} is not a readable "
+                        f'{{"actionName": ["phrasing", ...]}} JSON object: {exc}'
+                    ) from exc
+            rows = generate_examples(specs, per_action=args.per_action, seed=args.seed, templates=templates)
         else:
             from mobiletransformers.agent.mobile_actions import write_jsonl
             from mobiletransformers.agent.mobile_actions_import import (

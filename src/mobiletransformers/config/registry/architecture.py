@@ -88,6 +88,22 @@ class ArchitectureSpec:
     #: replacing the decoder-only ``q_proj``/``gate_proj`` string tests it used to hardcode.
     projection_names: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PROJECTION_NAMES))
     task: TaskType = TaskType.TEXT_GENERATION
+
+    #: Dotted path to the training-graph wrapper, overriding the one the TASK declares. ``None`` = use
+    #: the task's default.
+    #:
+    #: The task owns the *objective* (what is supervised, and therefore the label contract), which is
+    #: why ``TaskSpec.trainer_wrapper_class`` is the right default. But the exported **input set** is
+    #: decided by this row's ``onnx_config_class``, and two architectures with the same objective can
+    #: disagree about it: ``LlamaOnnxConfig`` declares ``position_ids`` and ``Gemma3TextOnnxConfig``
+    #: does not. Optimum feeds the dummy inputs positionally, so a wrapper with one parameter too many
+    #: silently shifts every argument. The override lives here because the OnnxConfig that causes the
+    #: difference lives here.
+    #:
+    #: ``export/training_export.py`` cross-checks the chosen wrapper's signature against the resolved
+    #: config's inputs, so a wrong value here fails closed with both lists named rather than as a
+    #: ``TypeError`` inside ``torch.jit``.
+    trainer_wrapper_class: str | None = None
     # Variant selection (e.g. Phi3 4K vs 128K keyed on config.max_position_embeddings).
     variant_key: str | None = None
     variant_values: dict[int, str] = field(default_factory=dict)  # {variant_value: inference dotted path}
@@ -190,8 +206,22 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
     # `inference_model_class` stays None: that field is the vendored GenAI builder path, and the
     # shipping inference export goes through optimum's `main_export` (#7), which resolves its own
     # config via TasksManager. Gemma-3 inference export is PROVEN (2026-08-09, full package).
+    #
+    # `trainer_wrapper_class`: Gemma-3 is the first architecture whose OnnxConfig declares a DIFFERENT
+    # input set from the other decoders. `LlamaOnnxConfig.inputs` is
+    # `[input_ids, attention_mask, position_ids]`; `Gemma3TextOnnxConfig.inputs` is
+    # `[input_ids, attention_mask]` — no `position_ids`. Optimum passes dummy inputs to the traced
+    # module positionally, so the standard four-parameter decoder wrapper received `labels` in the
+    # `position_ids` slot and died inside `torch.jit` with "missing 1 required positional argument:
+    # 'labels'". This row picks the three-parameter wrapper instead. Measured 2026-08-15.
     "Gemma3ForCausalLM": ArchitectureSpec(
-        "Gemma3ForCausalLM", f"{_OC}.Gemma3TextOnnxConfig", ("q_proj", "v_proj"), None
+        "Gemma3ForCausalLM",
+        f"{_OC}.Gemma3TextOnnxConfig",
+        ("q_proj", "v_proj"),
+        None,
+        trainer_wrapper_class=(
+            "mobiletransformers.export.training_export.OnnxDecoderNoPositionIdsTrainerWrapper"
+        ),
     ),
     "Phi3ForCausalLM": ArchitectureSpec(
         "Phi3ForCausalLM",

@@ -3,6 +3,7 @@ package com.martinkorelic.mobiletransformers.app
 import android.content.Context
 import com.martinkorelic.mobiletransformers.MobileTransformerModel
 import com.martinkorelic.mobiletransformers.MobileTransformers
+import com.martinkorelic.mobiletransformers.config.HubConfig
 import com.martinkorelic.mobiletransformers.packages.CacheIndex
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
@@ -47,6 +48,22 @@ object ModelHolder {
     }
 
     /**
+     * The Hub credentials to pull with, or `null` for an anonymous pull.
+     *
+     * `null` rather than `HubConfig(token = "")`: an empty token is not "no token", and sending an
+     * empty `Authorization: Bearer` header is a different request from sending none. [HubResolver]
+     * already treats blank as absent, and this keeps that decision in one place.
+     *
+     * See `BuildConfig.HF_TOKEN` in the app's `build.gradle.kts` for where the value comes from and
+     * why baking one into an APK is a development affordance rather than a shipping pattern.
+     */
+    private fun hubConfig(): HubConfig? =
+        BuildConfig.HF_TOKEN.takeIf { it.isNotBlank() }?.let { HubConfig(token = it) }
+
+    /** Whether this build carries a Hub token — surfaced by the Models screen, never the token itself. */
+    val hasHfToken: Boolean get() = BuildConfig.HF_TOKEN.isNotBlank()
+
+    /**
      * Load [repoId], pulling it from the Hub first when it is not installed.
      *
      * Requests Training as well as Inference **only when the package can provide it** — asking for a
@@ -69,6 +86,10 @@ object ModelHolder {
                 repoId = repoId,
                 engine = engine,
                 features = features,
+                // Without this the app could only ever pull PUBLIC packages: the facade has always
+                // taken a HubConfig, and this screen never passed one, so a private or gated repo was
+                // unreachable from the UI even though the whole download stack supported it.
+                hubConfig = hubConfig(),
                 onDownloadProgress = { p ->
                     onDownloadProgress(DownloadUi(p.filesDone, p.filesTotal, p.path, p.fraction))
                 },

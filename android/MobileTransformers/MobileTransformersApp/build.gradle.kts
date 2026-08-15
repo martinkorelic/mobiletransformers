@@ -19,6 +19,27 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // Hub token for pulling a PRIVATE or GATED package, taken from the build environment.
+        //
+        // An Android app cannot read the host's environment at runtime, so the value has to be baked
+        // in at build time. Source order: `-PmtHubToken=...` wins, else the `HF_TOKEN` environment
+        // variable, else empty. Empty is the normal case and means "anonymous" — public packages pull
+        // without any of this.
+        //
+        //   HF_TOKEN=hf_xxx ./gradlew :MobileTransformersApp:assembleDebug
+        //   ./gradlew :MobileTransformersApp:assembleDebug -PmtHubToken=hf_xxx
+        //
+        // ⚠️ A token compiled into an APK is EXTRACTABLE by anyone holding the APK — `strings` on the
+        // dex is enough. This is a development and demo affordance for reaching your own private repo,
+        // not a way to ship credentials. Never build a release this way, and never commit a token to
+        // `gradle.properties`. A real app should obtain a token at runtime from the user or from an
+        // authenticated backend and hand it to `MobileTransformers.fromPretrained(hubConfig = ...)`,
+        // which is the same public entry point this uses.
+        val hubToken = (project.findProperty("mtHubToken") as String?)
+            ?: System.getenv("HF_TOKEN")
+            ?: ""
+        buildConfigField("String", "HF_TOKEN", "\"$hubToken\"")
+
         vectorDrawables {
             useSupportLibrary = true
         }
@@ -45,6 +66,8 @@ android {
     buildFeatures {
         viewBinding = true
         compose = true
+        // Carries HF_TOKEN (above), so the app can reach a private package without a UI keyboard.
+        buildConfig = true
     }
 
     composeOptions {

@@ -8,6 +8,7 @@ import com.martinkorelic.mobiletransformers.GenerateProgress
 import com.martinkorelic.mobiletransformers.app.AppConfig
 import com.martinkorelic.mobiletransformers.app.ModelHolder
 import com.martinkorelic.mobiletransformers.app.ModelState
+import com.martinkorelic.mobiletransformers.app.SampleData
 import com.martinkorelic.mobiletransformers.rag.PromptAssembler
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,6 +38,43 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onRagToggled(value: Boolean) {
         _ui.value = _ui.value.copy(useRag = value)
+    }
+
+    /**
+     * Ingest the bundled sample document into the on-device vector store.
+     *
+     * Retrieval reads a store that only `ingest` fills, and nothing in this app called it — so the RAG
+     * switch above was structurally dead: every grounded query retrieved zero sources and the model
+     * answered ungrounded while the UI implied otherwise. Ingest is the missing half of the #26/#27
+     * story and belongs in the worked example, not just in the tests.
+     *
+     * Requires a package pulled WITH the RAG feature: the embedding encoder is its own download group,
+     * so without it there is nothing to embed with. The failure says so rather than reporting an empty
+     * store.
+     */
+    fun ingestSampleDocument() {
+        val model = (ModelHolder.state.value as? ModelState.Loaded)?.model ?: return
+        if (!model.capabilities.supportsRag) {
+            _ui.value = _ui.value.copy(
+                error = "this package has no embedding stage — re-pull it with the RAG feature " +
+                    "requested on the Models screen (it is a separate ~91 MB download group)",
+            )
+            return
+        }
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(ingesting = true, error = null, ingestNote = null)
+            try {
+                val doc = SampleData.installRagDocument(getApplication())
+                val result = model.ingest(doc.absolutePath, AppConfig.rag.value)
+                _ui.value = _ui.value.copy(
+                    ingestNote = "ingested ${doc.name}: ${result.chunkCount} chunks",
+                )
+            } catch (e: Throwable) {
+                _ui.value = _ui.value.copy(error = e.message ?: e::class.java.simpleName)
+            } finally {
+                _ui.value = _ui.value.copy(ingesting = false)
+            }
+        }
     }
 
     fun send() {
@@ -105,6 +143,8 @@ data class ChatUiState(
     val streaming: String = "",
     val generating: Boolean = false,
     val useRag: Boolean = false,
+    val ingesting: Boolean = false,
+    val ingestNote: String? = null,
     val sources: List<SourceCard> = emptyList(),
     val assembledPrompt: String? = null,
     val stats: String? = null,

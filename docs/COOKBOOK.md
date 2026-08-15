@@ -34,6 +34,33 @@ val model = MobileTransformers.fromPretrained(
 Ask for a feature only if you need it. Requesting one the package does not ship fails closed with
 `FeatureNotInstalledException` at construction rather than at first use.
 
+### Private or gated repos
+
+Pass a `HubConfig`. Without one the pull is anonymous, and a private repo fails with a 401 that looks
+like any other network error:
+
+```kotlin
+val model = MobileTransformers.fromPretrained(
+    context = context,
+    repoId = "your-org/your-private-package",
+    hubConfig = HubConfig(token = yourToken),
+)
+```
+
+**Where `yourToken` comes from is your app's decision, and it matters.** A production app should obtain
+one at runtime — from the user, or from a backend that authenticates them — and never store it in the
+APK. The sample app takes the development shortcut instead, and says so: its `build.gradle.kts` reads
+the `HF_TOKEN` environment variable at build time into `BuildConfig.HF_TOKEN`.
+
+```bash
+HF_TOKEN=hf_xxx ./gradlew :MobileTransformersApp:assembleDebug
+# or, without exporting it:
+./gradlew :MobileTransformersApp:assembleDebug -PmtHubToken=hf_xxx
+```
+
+A token compiled into an APK is **extractable** — `strings` over the dex is enough. That is acceptable
+for reaching your own private repo on your own device, and not acceptable for anything you distribute.
+
 ### What is already installed?
 
 ```kotlin

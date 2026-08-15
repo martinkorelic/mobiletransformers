@@ -35,6 +35,33 @@ fun ModelsScreen(vm: ModelsViewModel) {
 
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         item {
+            Guide(
+                "Start here — the tabs are in dependency order",
+                listOf(
+                    "1. MODELS (this tab). Enter a repo id and tap Pull & load. Nothing on any other " +
+                        "tab works until a package is installed. Tick 'training' if you want the " +
+                        "Train and Tool calls tabs; tick 'RAG' if you want grounding in Chat — each " +
+                        "is a separate download group, and you cannot add one later without " +
+                        "re-pulling.",
+                    "2. Expect a big download. A real package is 1–4 GB and needs roughly its own " +
+                        "size again free while it installs. Progress is per-file, and it resumes if " +
+                        "interrupted.",
+                    "3. CHAT. Type and Send. Tokens stream as they arrive. To try RAG, tap 'Ingest " +
+                        "sample document' first — retrieval searches only what you have ingested, so " +
+                        "grounding before that returns no sources.",
+                    "4. TRAIN. Tap 'Install sample dataset' first — packages ship no training data, " +
+                        "by design. Then Start. On a phone a short run is minutes, not seconds; watch " +
+                        "the Events list. Merge writes the learned weights into the inference graph.",
+                    "5. TOOL CALLS. On a freshly pulled model this will usually say Rejected, and " +
+                        "that is the correct answer, not a bug — the validator refuses anything that " +
+                        "is not a call it recognises. Train first (step 4), then come back and the " +
+                        "same instruction should be Accepted.",
+                    "6. FEDERATED is off unless the build enables it, and CONFIG edits the knobs every " +
+                        "other tab uses. Both show their state honestly rather than hiding it.",
+                ),
+            )
+        }
+        item {
             Section("Pull from the Hub") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextField("Repo id", ui.repoId, vm::onRepoIdChanged)
@@ -43,9 +70,25 @@ fun ModelsScreen(vm: ModelsViewModel) {
                         ui.requestTraining,
                         vm::onTrainingRequestedChanged,
                     )
+                    LabeledSwitch(
+                        "Also request the RAG feature (~91 MB encoder)",
+                        ui.requestRag,
+                        vm::onRagRequestedChanged,
+                    )
                     Text(
                         "Requesting Training fails closed when the package has no train/ stage — that " +
-                            "is deliberate, not a bug.",
+                            "is deliberate, not a bug. RAG is a separate download group: without it " +
+                            "no embedding encoder is fetched and the Chat tab's grounding cannot work, " +
+                            "so it is asked here where the cost is visible rather than discovered later.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        if (vm.hasHfToken) {
+                            "Hub credentials: HF_TOKEN present — private and gated repos are reachable."
+                        } else {
+                            "Hub credentials: none. Public repos work as-is; a private one will fail " +
+                                "with 401. Rebuild with HF_TOKEN=… to reach it."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

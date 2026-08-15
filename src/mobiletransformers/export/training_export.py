@@ -4,9 +4,11 @@ Script that fetches the Huggingface LLM model and converts it into a ONNX graph 
 
 import argparse
 import gc
+import inspect
 import json
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import onnx
@@ -135,6 +137,67 @@ class OnnxTrainerWrapper(torch.nn.Module):
         return self.backbone(
             input_ids=input_ids, attention_mask=attention_mask, position_ids=position_ids, labels=labels
         )
+
+
+def _check_wrapper_matches_config_inputs(wrapper_cls: type, onnx_config: Any) -> None:
+    """Fail closed when the trainer wrapper's forward signature disagrees with the config's inputs.
+
+    Optimum hands the generated dummy inputs to the traced module **positionally**, so the wrapper's
+    parameter list and ``OnnxConfig.inputs`` are one contract with two authors — and nothing checked
+    that they agreed. When they did not, the mismatch surfaced as a bare
+
+        TypeError: OnnxTrainerWrapper.forward() missing 1 required positional argument: 'labels'
+
+    raised from ``torch/jit/_trace.py``, with nothing in the message naming the config, the
+    architecture, or the actual input sets. Diagnosing it meant reproducing the dummy-input generation
+    by hand. This turns that into one sentence at the boundary, before the model is wrapped.
+
+    Compares against the wrapped config's ``inputs`` (which already include ``labels``), because that
+    is exactly the dict whose values are passed positionally.
+    """
+    declared = [p for p in inspect.signature(wrapper_cls.forward).parameters if p != "self"]
+    expected = list(onnx_config.inputs.keys())
+    if declared != expected:
+        raise UnsupportedModelError(
+            f"{wrapper_cls.__name__}'s forward signature does not match "
+            f"{type(onnx_config).__name__}'s inputs, and Optimum passes them positionally, so the "
+            f"export would bind the wrong tensor to each name.\n"
+            f"  wrapper forward : {declared}\n"
+            f"  config inputs   : {expected}\n"
+            "Set `trainer_wrapper_class` on this architecture's ARCHITECTURE_REGISTRY row to a wrapper "
+            "whose parameters are exactly the config's inputs, in order."
+        )
+
+
+class OnnxDecoderNoPositionIdsTrainerWrapper(torch.nn.Module):
+    """Decoder training-graph wrapper for architectures whose ``OnnxConfig`` omits ``position_ids``.
+
+    Same objective as :class:`OnnxTrainerWrapper` — causal LM, one label per token — differing only in
+    the exported input set. It exists because **Gemma-3 does not declare `position_ids`**:
+    ``LlamaOnnxConfig.inputs`` is ``[input_ids, attention_mask, position_ids]`` while
+    ``Gemma3TextOnnxConfig.inputs`` is ``[input_ids, attention_mask]``, and Optimum passes the dummy
+    inputs to the traced module **positionally**. Against the four-parameter decoder wrapper that made
+    ``labels`` land in ``position_ids``' slot and left ``labels`` unbound, which surfaces as
+
+        TypeError: OnnxTrainerWrapper.forward() missing 1 required positional argument: 'labels'
+
+    thrown from inside ``torch.jit`` tracing, several frames below anything this repo owns.
+
+    A separate class rather than an optional parameter for the reason given on
+    :class:`OnnxTrainerWrapper`: ``torch.onnx`` derives the exported ONNX input names from the forward
+    signature by introspection, so the signature IS the on-device contract and has to be written out
+    literally. The model still receives correct positions — HF computes them from the attention mask
+    when the argument is absent.
+    """
+
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.backbone = model
+        self.config = model.config
+        self.training = True
+
+    def forward(self, input_ids, attention_mask, labels):
+        return self.backbone(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
 
 
 class OnnxEncoderTrainerWrapper(torch.nn.Module):
@@ -506,7 +569,13 @@ def optimum_hf_export(
 
     if training_mode:
         # The registry picks the wrapper, because its forward signature IS the exported input set.
-        trainer_wrapper = import_from_path(get_task_spec(spec.task).trainer_wrapper_class)
+        # The ARCHITECTURE row wins over the task's default when it sets one: the task owns the
+        # objective, but this row's OnnxConfig owns the input set, and Gemma-3 disagrees with the
+        # other decoders about `position_ids`.
+        trainer_wrapper = import_from_path(
+            spec.trainer_wrapper_class or get_task_spec(spec.task).trainer_wrapper_class
+        )
+        _check_wrapper_matches_config_inputs(trainer_wrapper, ocl)
         if peft_method is not PEFTMethod.ALL:
             my_model = trainer_wrapper(lora_model.base_model.model)
         else:

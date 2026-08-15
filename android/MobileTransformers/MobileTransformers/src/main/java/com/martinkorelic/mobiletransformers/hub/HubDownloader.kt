@@ -82,6 +82,15 @@ object HubDownloader {
                 onProgress = onProgress,
             )
 
-            ModelPackageInstaller.install(staging, cacheDir, repoId, variantId)
+            // The download staging tree is a FULL SECOND COPY of the package and must not outlive the
+            // install. It used to be cleared only by the *next* pull of the same repo, so a 1.3 GB
+            // package left 1.3 GB of `.download/` sitting in app storage indefinitely, and a user who
+            // pulled two models paid for both. `finally`, not a trailing statement: a failed install
+            // is exactly when the device is most likely to be out of space.
+            try {
+                ModelPackageInstaller.install(staging, cacheDir, repoId, variantId, consumeSource = true)
+            } finally {
+                staging.deleteRecursively()
+            }
         }
 }

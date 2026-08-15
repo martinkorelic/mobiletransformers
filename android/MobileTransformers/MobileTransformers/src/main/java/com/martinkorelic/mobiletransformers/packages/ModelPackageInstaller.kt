@@ -18,12 +18,20 @@ object ModelPackageInstaller {
      * @param cacheDir the app cache root.
      * @param repoId the HF repo id (sanitized internally).
      * @param variantId the selected variant to materialize.
+     * @param consumeSource move the staged files instead of copying them, destroying
+     *   [stagedPackageDir] in the process. Only pass `true` when the caller OWNS a throwaway staging
+     *   tree — [com.martinkorelic.mobiletransformers.hub.HubDownloader] does, and for a real package
+     *   the copy it avoids is over a gigabyte. Defaults to `false` because the staged tree is not
+     *   generally the installer's to destroy: the JVM suite installs the same checked-in
+     *   `tiny_package` fixture twice, and a hand-provisioned directory is a legitimate source.
      */
+    @JvmOverloads
     fun install(
         stagedPackageDir: File,
         cacheDir: File,
         repoId: String,
         variantId: String,
+        consumeSource: Boolean = false,
     ): Installed {
         val sanitized = PackageFormat.sanitizeRepoId(repoId)
         val stagingRoot = File(cacheDir, ".staging/$sanitized").apply { deleteRecursively(); mkdirs() }
@@ -31,10 +39,10 @@ object ModelPackageInstaller {
 
         for (stage in PackageFormat.VARIANT_SUBDIRS) {
             val src = File(variantRoot, stage)
-            if (src.isDirectory) src.copyRecursively(File(stagingRoot, stage), overwrite = true)
+            if (src.isDirectory) materialize(src, File(stagingRoot, stage), consumeSource)
         }
         val tokenizer = File(stagedPackageDir, "shared/tokenizer")
-        if (tokenizer.isDirectory) tokenizer.copyRecursively(File(stagingRoot, "tokenizer"), overwrite = true)
+        if (tokenizer.isDirectory) materialize(tokenizer, File(stagingRoot, "tokenizer"), consumeSource)
 
         for (name in listOf(PackageFormat.MANIFEST_FILENAME, "variants/$variantId/checksums.json")) {
             val src = File(stagedPackageDir, name)
@@ -74,5 +82,24 @@ object ModelPackageInstaller {
 
         if (hadPrevious) retired.deleteRecursively()
         return Installed(target, sanitized)
+    }
+
+    /**
+     * Put [src]'s contents at [dest], moving when [consume] allows it and copying otherwise.
+     *
+     * When the caller owns the staged tree this is a directory-entry update rather than bytes copied.
+     * The unconditional `copyRecursively` it replaces wrote a real package a second time, which put
+     * peak usage at roughly **three** simultaneous copies of a 1.3 GB model on a phone (download
+     * staging + install staging + the published tree) and made install time scale with model size for
+     * no reason.
+     *
+     * The copy stays as the fallback even when [consume] is set: a rename genuinely can fail when the
+     * staged tree is on a different mount, and the caller — not this function — chooses where staging
+     * lives.
+     */
+    private fun materialize(src: File, dest: File, consume: Boolean) {
+        dest.parentFile?.mkdirs()
+        if (consume && src.renameTo(dest)) return
+        src.copyRecursively(dest, overwrite = true)
     }
 }

@@ -144,10 +144,36 @@ Notes that survive the close, for anyone extending the demo:
 - **`maxSteps` is an upper bound, not a target**: training stops at the end of the epoch. 216 rows at
   batch 2 gives the 108 steps above.
 
-For FunctionGemma specifically, on-device training stays blocked by `ort-training-local`'s
-`transformers==4.46.2` — a **#2/#3 dependency decision, not a #37 one**; floating that pin has broken
-`get_peft_model` before. The demo runs on a trainable decoder plus the Gemma-3 inference graph, which
-is worth stating plainly since it weakens the "FunctionGemma" framing.
+> **SUPERSEDED 2026-08-15 — FunctionGemma is now exportable train-capable, and the pin was never the
+> reason it was not.** This paragraph used to read: *"on-device training stays blocked by
+> `ort-training-local`'s `transformers==4.46.2` … floating that pin has broken `get_peft_model`
+> before."* Both halves turned out to be wrong.
+>
+> The experiment ran in a throwaway sibling group with only `transformers` raised to 4.57.6 and every
+> other pin held. Under it **`get_peft_model` works** and the training export succeeds. **The sibling
+> has since been retired: `ort-training-local` itself now carries `transformers>=4.50,<4.58`,** after a
+> third control (the BERT encoder, `all-MiniLM-L6-v2` text-classification) also came back identical —
+> 73,728 trainable parameters, unchanged. There is one training profile again, and it can build Gemma-3.
+> `torch`, `peft`, `numpy` and `onnx` remain exactly pinned: those are the real ABI couplings, and
+> `tests/unit/test_dependency_profiles.py` now guards that distinction instead of the retired fork. The real blocker was an input-set mismatch: `Gemma3TextOnnxConfig` declares
+> `[input_ids, attention_mask]` where `LlamaOnnxConfig` declares
+> `[input_ids, attention_mask, position_ids]`, and Optimum passes dummy inputs **positionally**, so the
+> four-parameter decoder wrapper received `labels` in the `position_ids` slot and died inside
+> `torch.jit` with *"missing 1 required positional argument: 'labels'"*. Fixed by
+> `OnnxDecoderNoPositionIdsTrainerWrapper` + an `ArchitectureSpec.trainer_wrapper_class` override, with
+> a fail-closed signature/inputs cross-check so this class of bug names itself in future.
+>
+> **The control is what makes this trustworthy:** SmolLM2-135M through the same bumped group exports
+> fine at parity delta 0.0111 nats — the identical figure its 2026-08-10 export recorded under 4.46.2.
+> Raising the pin moved nothing for a model that already worked.
+>
+> **Published 2026-08-15:** `mobiletransformers/functiongemma-270m-it` (private, 102 files, 3.87 GB)
+> from `google/functiongemma-270m-it` — 18 layers, 72 LoRA tensors, rank 8, 368,640 trainable of
+> 268,098,176. The `sha256` of downloaded files verifies against the published manifest.
+>
+> **NOT proven: on-device Gemma-3 training.** This is a train-capable *package*; no training step has
+> run on a phone for this architecture. That is the next device leg, and the demo in §1a above still
+> ran on a SmolLM2 decoder.
 
 **Do not chase #37's DoD gate 1 literally.** It asks for `inference_model_class = Gemma3Model` on the
 Gemma-3 `ArchitectureSpec`; `config/registry/architecture.py:193-195` sets it to `None` on purpose —
@@ -186,12 +212,33 @@ sharpest: federation had *no* public entry point at all.
 `test_docs.py::test_cookbook_snippets_only_name_kotlin_types_that_exist`, which parses the ```kotlin
 fences and fails when a snippet names a type the facade does not declare (also verified able to fail).
 
+**Three of those screens were structurally dead on a freshly pulled package** — found and fixed
+2026-08-15, which is exactly the class of problem "no screen has been walked on hardware" hides:
+
+- **Train** reads `<cacheDir>/<repo>/train/<trainFile>.jsonl`, packages deliberately ship no training
+  data, and the app had no way to create one — so Start could only ever fail for a real user. Every
+  instrumented test writes its own copy; a person had no equivalent. Now: a bundled 48-row tool-call
+  set generated from the *same allowlist the Tool calls screen declares* (so every completion is one
+  `FunctionCallValidator` accepts), plus an "Install sample dataset" action.
+- **RAG** — `MobileTransformerModel.ingest` was called **nowhere in the app**, so the vector store was
+  always empty and the Chat RAG toggle always returned zero sources. Now there is an ingest control and
+  a bundled document.
+- **The `rag` download group was never requested** (`ModelsViewModel` only ever asked for Inference +
+  Training), so no embedding encoder was ever downloaded — meaning even a correct ingest call had
+  nothing to embed with. Now a checkbox on the Models screen, where the ~91 MB cost is visible.
+
 **What is left on the app**, none of it blocking:
 
 - **It has never been run on the device.** It compiles, `make android-build` passes, and its pure state
   logic has 6 JVM tests, but no screen has been walked on hardware. That is the obvious next step and
   the one thing that would find the ergonomic problems JVM tests cannot.
-- The Tool calls screen shows `Rejected` for the reason in §1a — that is the model, not the screen.
+- **No Hub token field.** `MobileTransformers.fromPretrained` takes a `HubConfig`, but `ModelHolder`
+  does not plumb one, so the app can only pull **public** repos. `HubPullDeviceTest` accepts a token
+  (`-e mtHubToken`); the app does not. This matters for
+  `mobiletransformers/functiongemma-270m-it`, which is currently private.
+- The Tool calls screen shows `Rejected` against a base model that has not been fine-tuned on the
+  allowlist — that is the expected outcome, not a screen defect. *(This bullet used to say "for the
+  reason in §1a", which contradicted §1a directly above it once the gate started passing.)*
 - The engine picker renders `availableEngines` but switching engines requires a reload from the Models
   tab (the engine is fixed at load). A single-tap switch would need the facade to re-open a session.
 - The old `ui/theme/` (`AppTheme.FRI`/`BETTER`) survived the rewrite untouched.
@@ -238,8 +285,23 @@ runs it as a named step.)*
   `PROBE` is now real tokenized English. See Operational knowledge → "Magnitude-based checks cannot
   detect a permutation" for why every numeric probe was blind.
 - #9: on-device atomic-overwrite-under-kill remains untested.
-- #21: Kotlin `VariantSelector` parity + the on-device load leg. #22: a real authenticated adapter
-  upload with a checkpoint factor read.
+- **#21's on-device Hub pull — now RUNNABLE for the first time, and never was before.**
+  `android.permission.INTERNET` was declared **nowhere** in the tree (verified against the merged
+  manifests Gradle produced, not just the sources). The whole download stack — resolver, planner,
+  streaming downloader with Range-resume and sha256 verify, WorkManager worker, installer — is complete
+  and JVM-tested against MockWebServer, and could not have run on any device: the first real GET throws
+  `SecurityException`. MockWebServer is localhost on the JVM, where no permission model applies, so no
+  existing test could see it. Fixed, and pinned by
+  `test_guards.py::test_the_library_manifest_declares_the_permissions_its_own_code_needs` (verified to
+  fail first). **The leg itself is still unrun**: `make device-hub-test REPO=<org>/<name>` drives the
+  new `HubPullDeviceTest`.
+- **Two staging trees used to survive a pull.** `HubDownloader` never deleted `.download/<repo>`, and
+  the installer `copyRecursively`'d into `.staging/` — so a pull cost ~3x the package in transient disk
+  and left ~1x behind permanently. For the 3.87 GB FunctionGemma package that is the difference between
+  needing ~11.6 GB free and ~3.9 GB. Both fixed (`consumeSource` + `finally`-delete), JVM-tested,
+  falsifiability-checked.
+- #21: Kotlin `VariantSelector` parity. #22: a real authenticated adapter upload with a checkpoint
+  factor read.
 - **The rewritten showcase app has never been run on hardware** (§1b). It compiles and its pure state
   logic is JVM-tested, but no screen has been walked on a device. Highest-value manual leg available:
   it exercises the whole public facade in one pass, including the six gaps just closed.

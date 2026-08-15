@@ -27,6 +27,15 @@ class ModelsViewModel(app: Application) : AndroidViewModel(app) {
 
     val modelState: StateFlow<ModelState> = ModelHolder.state
 
+    /**
+     * Whether this build carries an `HF_TOKEN`, so a private-repo pull that 401s is diagnosable.
+     *
+     * The boolean, never the token: "you have no credentials" and "your credentials were rejected" are
+     * different problems with the same symptom, and a screen that shows neither leaves the user
+     * guessing. Rendering the token itself would put it on screen and in screenshots for no benefit.
+     */
+    val hasHfToken: Boolean get() = ModelHolder.hasHfToken
+
     init {
         refresh()
     }
@@ -54,6 +63,19 @@ class ModelsViewModel(app: Application) : AndroidViewModel(app) {
         _ui.value = _ui.value.copy(requestTraining = value)
     }
 
+    /**
+     * RAG is a **download-time** decision, not a runtime toggle.
+     *
+     * The embedding encoder lives in its own `rag` feature group (~91 MB), and `DownloadPlanner` only
+     * fetches that group when the feature is requested. Without this the Chat screen's RAG switch was
+     * structurally dead: no encoder was ever downloaded, so ingest had nothing to embed with and every
+     * grounded query returned zero sources. Asking here, where the cost is visible next to the other
+     * groups, is the honest place for it.
+     */
+    fun onRagRequestedChanged(value: Boolean) {
+        _ui.value = _ui.value.copy(requestRag = value)
+    }
+
     /** Pull-if-absent then load, reporting download progress through the facade's new callback. */
     fun loadSelected(repoId: String = _ui.value.repoId) {
         if (repoId.isBlank()) {
@@ -65,6 +87,7 @@ class ModelsViewModel(app: Application) : AndroidViewModel(app) {
             val features = buildSet {
                 add(ModelFeature.Inference)
                 if (_ui.value.requestTraining) add(ModelFeature.Training)
+                if (_ui.value.requestRag) add(ModelFeature.Rag)
             }
             ModelHolder.load(
                 context = getApplication(),
@@ -89,6 +112,7 @@ class ModelsViewModel(app: Application) : AndroidViewModel(app) {
 data class ModelsUiState(
     val repoId: String = "HuggingFaceTB/SmolLM2-135M-Instruct",
     val requestTraining: Boolean = false,
+    val requestRag: Boolean = false,
     val installed: List<InstalledRow> = emptyList(),
     val download: DownloadUi? = null,
     val message: String? = null,

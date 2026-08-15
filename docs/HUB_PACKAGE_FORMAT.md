@@ -72,13 +72,26 @@ rule — see [MODEL_FORMAT.md](MODEL_FORMAT.md#checksum-precedence-the-sidecar-w
 
 ```bash
 mobiletransformers export --model <hf-id> --output build/pkg --genai --validate
-mobiletransformers push  --package build/pkg --repo <org>/<name>
+mobiletransformers push  --package build/pkg --repo <org>/<name> --token "$HF_TOKEN_ORG"
 ```
 
 `push` validates the package against the manifest contract before uploading, so a broken package fails
 locally rather than becoming a broken repo. See [EXPORT.md](EXPORT.md).
 
+- **The repo must already exist.** Pass `--create` to create it. That is off by default so a mistyped
+  repo id fails instead of silently making a new one — under an organisation account, a typo would
+  otherwise leave a stray repo behind.
+- **`--token` is explicit for a reason.** Without it `huggingface_hub` falls back to `$HF_TOKEN` and
+  then to the cached CLI login, so an organisation push can succeed as the *wrong identity* and look
+  exactly like success. `--dry-run` renders the model card and writes `README.md` without uploading.
+- The card carries a **YAML frontmatter block** (`base_model`, `library_name`, `pipeline_tag`, `tags`,
+  and `license` when the package records the base weights' licence). Without it the Hub page shows no
+  licence and no link back to the model the package was exported from — the prose body says both, and
+  the Hub does not read prose.
+
 ## Pulling
+
+Pass `--token` for a private or gated repo (defaults to `$HF_TOKEN`, and honours `.env`).
 
 ```bash
 mobiletransformers pull --repo-id <org>/<name> --output <cache-root>

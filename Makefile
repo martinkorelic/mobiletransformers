@@ -7,7 +7,7 @@
 
 .PHONY: help setup setup-export setup-train setup-genai \
         lint format typecheck parity guard test test-smoke test-train test-jvm test-cpp test-integration check consumer-app \
-        export-model package-model android-build device-package device-test device-rss device-federated build-aar publish-local docs requirements clean-generated
+        export-model package-model android-build device-package device-test device-hub-test device-rss device-federated build-aar publish-local docs requirements clean-generated
 
 # Overridable export knobs (used by `export-model`).
 MODEL   ?=
@@ -107,6 +107,13 @@ device-package:  ## MODEL=<hf-id> [VARIANT= TRAIN=1 RAG=1 TASK=] -> export + adb
 
 device-test:  ## Run the instrumented device suites over the pushed package (skips w/o a device/package).
 	$(GRADLE) :MobileTransformers:connectedDebugAndroidTest
+
+device-hub-test:  ## REPO=<org>/<name> [HUB_TOKEN=] -> pull that repo from the Hub ONTO THE DEVICE and load it (#21).
+	@[ -n "$(REPO)" ] || { echo "set REPO=<org>/<name>, e.g. REPO=mobiletransformers/functiongemma-270m-it" >&2; exit 1; }
+	$(GRADLE) :MobileTransformers:connectedDebugAndroidTest \
+	  -Pandroid.testInstrumentationRunnerArguments.class=com.martinkorelic.mobiletransformers.HubPullDeviceTest \
+	  -Pandroid.testInstrumentationRunnerArguments.mtHubRepoId=$(REPO) \
+	  $(if $(HUB_TOKEN),-Pandroid.testInstrumentationRunnerArguments.mtHubToken=$(HUB_TOKEN),)
 
 device-rss:  ## Collect the four-point RSS table (copy vs mmap, both engines) and evaluate Gate 0.1 #4 / Gate 0.2.
 	scripts/device_rss.sh

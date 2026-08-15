@@ -1,0 +1,22 @@
+[
+  {
+    "actionName": "set_alarm",
+    "parameters": {"time": "string"},
+    "allowedIntent": "android.intent.action.SET_ALARM",
+    "validationRules": {"time": "HH:mm"},
+    "privacyClass": "harmless-demo"
+  },
+  {
+    "actionName": "set_timer",
+    "parameters": {"seconds": "string"},
+    "allowedIntent": "android.intent.action.SET_TIMER",
+    "validationRules": {"seconds": "/[0-9]{1,4}/"},
+    "privacyClass": "harmless-demo"
+  },
+  {
+    "actionName": "open_wifi_settings",
+    "parameters": {},
+    "allowedIntent": "android.settings.WIFI_SETTINGS",
+    "privacyClass": "harmless-demo"
+  }
+]

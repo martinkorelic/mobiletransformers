@@ -27,12 +27,35 @@ fun TrainScreen(vm: TrainViewModel) {
 
     ModelGate(state, needs = "Training needs a package exported with TRAIN=1.") { model ->
         Column(Modifier.fillMaxSize()) {
+            ScreenIntro(
+                "Fine-tune on this device. Order: Install sample dataset -> Start -> Merge. Only the " +
+                    "LoRA adapter trains, so this is minutes rather than hours, but it is still " +
+                    "minutes — watch Events for per-step loss. Cancel is safe: it stops at the next " +
+                    "step boundary and writes a checkpoint you can resume from.",
+            )
             if (!model.capabilities.supportsTraining) {
                 EmptyState(
                     title = "This package cannot train",
                     detail = "No train/ stage is installed. Pull or export one with TRAIN=1 — the " +
                         "buttons below would fail closed.",
                 )
+            }
+
+            Section("Data") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Model packages ship no training data — the task belongs with the data, and " +
+                            "the data is yours. This installs a small tool-call set generated from the " +
+                            "same allowlist the Tool calls screen declares, so what the model learns " +
+                            "is exactly what the validator there accepts.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Button(
+                        onClick = vm::installSampleDataset,
+                        enabled = !ui.running && model.capabilities.supportsTraining,
+                    ) { Text("Install sample dataset") }
+                    ui.datasetNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                }
             }
 
             Section("Run") {

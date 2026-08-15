@@ -31,6 +31,12 @@ fun ToolCallScreen(vm: ToolCallViewModel) {
 
     ModelGate(state, needs = "Tool calls need an inference-capable package.") {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            ScreenIntro(
+                "Turn an instruction into a validated tool call, then show the intent it WOULD fire. " +
+                    "Nothing is executed — dry-run is the only mode. Expect Rejected on a model you " +
+                    "have not fine-tuned yet: that is the validator doing its job. Train on the Train " +
+                    "tab first, then try 'wake me at 07:30' here.",
+            )
             Section("What this app allows") {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     ui.allowedActions.forEach { Text("• $it", style = MaterialTheme.typography.bodyMedium) }

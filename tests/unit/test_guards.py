@@ -417,3 +417,51 @@ def test_the_sample_app_uses_only_the_public_facade() -> None:
         "FACADE and record it against #17/#19 — a reach-around is the debt reappearing under a new "
         "name:\n" + "\n".join(violations)
     )
+
+
+# --- #21/#22: the library manifest must declare the permissions its own code needs ----------------
+
+#: The library manifest. Permissions belong HERE, not in the consuming app: an integrator who calls
+#: only the documented entry point cannot be expected to discover that it opens a socket.
+_SDK_MANIFEST = "android/MobileTransformers/MobileTransformers/src/main/AndroidManifest.xml"
+
+#: Permission -> the library code path that cannot run without it. Each entry names a call an app
+#: reaches through the PUBLIC facade, which is what makes the permission the library's to declare.
+_REQUIRED_PERMISSIONS: dict[str, str] = {
+    "android.permission.INTERNET": (
+        "HubDownloader/PackageDownloader (OkHttp) and AdapterUploader — reached from "
+        "MobileTransformers.fromPretrained whenever the package is not already installed"
+    ),
+    "android.permission.FOREGROUND_SERVICE": "TrainingScheduler's foreground WorkManager worker (#34)",
+    "android.permission.POST_NOTIFICATIONS": "the foreground worker's mandatory progress notification",
+    "android.permission.WAKE_LOCK": "held by WorkManager for the duration of a training chunk",
+}
+
+
+def test_the_library_manifest_declares_the_permissions_its_own_code_needs() -> None:
+    """Every permission the SDK's own code paths require must be in the LIBRARY manifest.
+
+    This guard exists because ``INTERNET`` was absent for the entire life of the #21 Hub-download
+    feature. The whole stack — ``HubResolver``, ``DownloadPlanner``, ``PackageDownloader`` (streaming,
+    HTTP Range-resume, sha256 verify-and-retry), ``PackageDownloadWorker``, ``ModelPackageInstaller`` —
+    was written, reviewed and JVM-tested against MockWebServer, and **could never have run on a
+    device**: the first real GET throws ``SecurityException``. MockWebServer talks to localhost from
+    the JVM, where no Android permission applies, so the test suite could not see it either.
+
+    That is the general shape worth guarding: a permission is invisible to every automated test that
+    is not an instrumented one, so nothing else in this repo can catch its absence.
+    """
+    manifest = REPO_ROOT / _SDK_MANIFEST
+    assert manifest.is_file(), f"{_SDK_MANIFEST} is missing — this guard would pass vacuously"
+    declared = set(
+        re.findall(r'<uses-permission\s+android:name="([^"]+)"', manifest.read_text(encoding="utf-8"))
+    )
+    assert declared, f"{_SDK_MANIFEST} declares no permissions at all — the guard would pass vacuously"
+
+    missing = {name: reason for name, reason in _REQUIRED_PERMISSIONS.items() if name not in declared}
+    assert not missing, (
+        f"{_SDK_MANIFEST} is missing permissions the library's OWN code needs. A consumer calling the "
+        "public facade cannot be expected to discover these, and no JVM test can catch their absence "
+        "— only a device run can:\n"
+        + "\n".join(f"  {name} — {reason}" for name, reason in sorted(missing.items()))
+    )

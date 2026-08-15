@@ -33,13 +33,19 @@ mobiletransformers = "mobiletransformers.cli.main:main"
 # This floor is also what FORCES the fork. `ort-training-local` pins `transformers==4.46.2` as part of
 # the source-built ORT wheel's paired stack; `[tool.uv] conflicts` already declares that group and this
 # extra mutually exclusive, but uv still prefers ONE version when a single version satisfies both — and
-# 4.46.2 satisfied `>=4.45,<4.58`. With `>=4.50` no single version can, so the two profiles resolve
-# separately, exactly as `numpy` and `onnx` already do for the 3.12 split.
+# 4.46.2 satisfied `>=4.45,<4.58`.
 #
-# The training profile is deliberately NOT moved: its pin reproduces the environment the ORT-training
-# wheel was BUILT against, and floating a pin in that block has broken `get_peft_model` before. The
-# consequence is recorded: on-device FunctionGemma *training* stays blocked; the inference-graph gate,
-# which `04_code_plans/05` calls the real blocker, does not.
+# ⚠️ **RESOLVED 2026-08-15 — the two profiles are no longer forked on transformers, and this paragraph
+# describes history.** The fork existed to let the export profile reach Gemma-3 while the training
+# profile stayed at 4.46.2. `ort-training-local` now declares this same range, so a single version
+# satisfies both and the lock carries one transformers. That is fine and intended: `[tool.uv] conflicts`
+# keeps the two profiles apart on the thing that actually collides — the `onnxruntime` import — which
+# is a group/extra conflict, not a version one. `numpy` and `onnx` remain genuinely forked for the 3.12
+# split, because those pins ARE ABI constraints on the source-built wheel.
+#
+# Why moving the training pin was safe, in one line: transformers is the only paired_stack entry with
+# no ABI relationship to that wheel, and three controls (llama decoder, BERT encoder, gemma3) came back
+# identical or better. The full evidence is recorded on the pin itself, in `ort-training-local` below.
 #
 # `<4.58` is upstream's own ceiling (optimum-onnx 0.1.0 declares `transformers<4.58`), not our choice.
 export = ["optimum-onnx[onnxruntime]>=0.1.0", "transformers>=4.50,<4.58", "onnx", "onnxscript>=0.3"]
@@ -79,7 +85,27 @@ ort-training-local = [
   "peft==0.13.2",
   "onnxscript>=0.3",
   "torch==2.7.1",
-  "transformers==4.46.2",
+  # transformers is the ONE entry of the paired stack that is NOT ABI-coupled to the wheel.
+  #
+  # It was `==4.46.2` (the manifest's paired_stack value) until 2026-08-15, on the assumption that
+  # every paired_stack pin was load-bearing. It is not: `numpy<2` and `onnx<1.19` are genuine C-ABI /
+  # IR-version constraints on the source-built ORT extension and are called out as such in
+  # manifest.json's notes; transformers is pure Python and appears there as a RECORD of the build
+  # environment, not a requirement of it.
+  #
+  # Raised to the export extra's range after three controls under 4.57.6, all green:
+  #   * SmolLM2-135M-Instruct (llama decoder)      parity delta 0.0111 nats — the IDENTICAL figure its
+  #                                                2026-08-10 export recorded under 4.46.2
+  #   * all-MiniLM-L6-v2 (BERT encoder, text-cls)  73,728 trainable params — identical to before
+  #   * functiongemma-270m-it / gemma-3-270m       now exports at all, which 4.46.2 could never do
+  #     (no `Gemma3ForCausalLM`, no `Gemma3Config`, no `gemma3` row in CONFIG_MAPPING_NAMES)
+  #
+  # `get_peft_model` did NOT break — that specific failure is what the pin was held against, and it
+  # did not reproduce. The Gemma-3 blocker turned out to be an input-set mismatch in our own trainer
+  # wrapper, not a dependency at all (see export/training_export.py).
+  #
+  # The pins that ARE load-bearing stay exact: torch, peft, numpy, onnx. Do not float those.
+  "transformers>=4.50,<4.58",
   # The source-built ORT-training wheel's C extension is compiled against the numpy 1.26 ABI
   # (manifest paired_stack: numpy 1.26.4). numpy 2.x breaks it ("import numpy failed" at
   # onnxruntime_pybind11_state load). Scope to 3.12 (numpy 1.26.x has no cp313 wheel, and this
