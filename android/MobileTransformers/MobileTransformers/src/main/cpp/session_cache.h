@@ -278,6 +278,19 @@ struct EmbeddingSessionCache {
 
     bool has_token_type_ids;
 
+    // Owns the embedding tensor of the most recent forward pass.
+    //
+    // Exactly the bug, and exactly the fix, already applied to `InferenceSessionCache::last_output`:
+    // `generateEmbedding` returned a raw `float*` into a tensor held by a LOCAL `unique_ptr` that was
+    // destroyed at the `return`, so every caller read freed memory. It appeared to work because the
+    // caller copies the vector out immediately, before the allocator reuses the pages — the same way
+    // the generation path appeared to work until something read a larger block.
+    //
+    // Holding it on the cache keeps the data valid until the next forward pass overwrites it, which is
+    // the lifetime every caller already assumed. Affects RAG today and classification next: both go
+    // through this one function.
+    std::unique_ptr<Ort::Value> last_output;
+
     EmbeddingSessionCache(const std::string& embedding_model_path,
                           const std::string& embedding_model_name,
                           const std::string& cache_dir_path,

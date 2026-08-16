@@ -44,8 +44,11 @@ def _frontmatter(manifest: dict[str, Any], base: str, lic: dict[str, Any]) -> li
         # model, so the upstream terms are the ones that govern what is in it.
         out.append(f"license: {weights_licence}")
     tags = ["mobiletransformers", "onnx", "on-device", "android"]
-    if "lora" in (manifest.get("peftMethods") or []):
-        tags.append("lora")
+    # EVERY declared method, not a hardcoded `lora` test. A MARS package is this project's own
+    # research contribution and used to publish with no tag naming it at all, so a reader browsing the
+    # org — or anyone filtering the Hub by tag — could not tell a MARS export from a LoRA one.
+    for method in manifest.get("peftMethods") or []:
+        tags.append(str(method))
     for quant in manifest.get("quantization") or []:
         tags.append(str(quant))
     out.append("tags:")
@@ -53,6 +56,64 @@ def _frontmatter(manifest: dict[str, Any], base: str, lic: dict[str, Any]) -> li
     out.append("---")
     out.append("")
     return out
+
+
+#: Human-readable names for the PEFT vocabulary. A card that prints the bare enum value asks its
+#: reader to already know what `lora-xs` is; the point of the page is that they do not.
+_PEFT_DESCRIPTIONS: dict[str, str] = {
+    "lora": "LoRA — low-rank adapters on the attention projections.",
+    "lora-xs": "LoRA-XS — LoRA with a frozen SVD basis, training only a small r x r core.",
+    "mars": (
+        "MARS (Multi-Adapter Rank Sharing) — this project's own method: adapters shared across "
+        "layers, so parameter count grows with rank rather than with depth."
+    ),
+}
+
+
+def _read_peft_details(package_dir: str | None) -> dict[str, Any]:
+    """Rank and adapted modules for the training stage, or ``{}`` when there is no train stage.
+
+    These are **not** in the manifest — it carries `peftMethods` and nothing else about the tuning
+    setup. They live beside the training graph, in `train/trainable_parameters.json` (`peftMethod`,
+    `rank`) and `train/training_config.json` (`rank`, `peft_target`).
+
+    Best-effort by construction: a package exported for inference only has no train stage, and an
+    unreadable file must not fail a push. Every failure path returns ``{}`` and the caller omits the
+    lines rather than printing `None` — the mistake that once published "Framework: None" on a live
+    model page.
+    """
+    if not package_dir:
+        return {}
+    import json
+    from pathlib import Path
+
+    root = Path(package_dir)
+    details: dict[str, Any] = {}
+    # Variant-scoped, and the variant id is not knowable here — glob rather than guess a layout.
+    for name, keys in (
+        ("trainable_parameters.json", ("peftMethod", "rank")),
+        ("training_config.json", ("rank", "peft_target")),
+    ):
+        for path in sorted(root.glob(f"variants/*/train/{name}")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            for key in keys:
+                if payload.get(key) not in (None, "", [], {}):
+                    details.setdefault(key, payload[key])
+            break
+    return details
+
+
+def _cell(variant: dict[str, Any], key: str) -> str:
+    """One variant-table cell, rendering an undeclared value as ``—`` rather than ``None``.
+
+    A table full of the word ``None`` reads as a broken renderer, and leaves the reader unable to tell
+    it from a value that is genuinely absent. Every package the exporter has produced has nulls here.
+    """
+    value = variant.get(key)
+    return str(value) if value not in (None, "") else "—"
 
 
 def render_model_card(manifest: dict[str, Any], package_dir: str | None = None) -> str:
@@ -70,18 +131,62 @@ def render_model_card(manifest: dict[str, Any], package_dir: str | None = None) 
     lines.append("")
     lines.append(f"On-device (Android) package exported from **{base}** with MobileTransformers.")
     lines.append("")
+    # What the package can DO, before how it was made: it decides which of the app's screens light up,
+    # and it is the first thing someone choosing between shelf entries needs.
+    features: list[str] = []
+    for variant in manifest.get("variants", []):
+        for feature in variant.get("features", []):
+            if feature not in features:
+                features.append(str(feature))
+    if features:
+        lines.append("## What this package can do")
+        explanations = {
+            "inference": "generate or score on device",
+            "train": "**fine-tune on device**, then merge the adapter back into the base weights",
+            "rag": "retrieve over documents you ingest, and ground answers in them",
+            "core": "shared files every other group needs",
+        }
+        for feature in features:
+            lines.append(f"- `{feature}` — {explanations.get(feature, 'see the docs')}")
+        if "train" not in features:
+            lines.append("- *(no `train` group: this package is inference-only)*")
+        lines.append("")
+
+    peft_methods = [str(m) for m in manifest.get("peftMethods") or []]
+    if peft_methods:
+        details = _read_peft_details(package_dir)
+        lines.append("## Fine-tuning method")
+        for method in peft_methods:
+            described = _PEFT_DESCRIPTIONS.get(method)
+            lines.append(f"- **{method}**{' — ' + described if described else ''}")
+        # Omit rather than guess: a rank printed for a package whose train stage says nothing is a
+        # number the reader would reasonably trust.
+        rank = details.get("rank")
+        if rank is not None:
+            lines.append(f"- Rank: `{rank}`")
+        targets = details.get("peft_target")
+        if targets:
+            lines.append(f"- Adapted modules: {', '.join(f'`{t}`' for t in targets)}")
+        lines.append("")
+
     lines.append("## Provenance")
     lines.append(f"- Base model: `{base}`")
     lines.append(f"- Selected task: `{manifest.get('selectedTask')}`")
-    lines.append(f"- PEFT methods: {', '.join(manifest.get('peftMethods', [])) or 'n/a'}")
     lines.append(f"- Quantization: {', '.join(manifest.get('quantization', [])) or 'n/a'}")
-    lines.append(
-        "- Toolchain: "
-        f"optimum-onnx {manifest.get('optimumOnnxVersion')}, "
-        f"transformers {manifest.get('transformersVersion')}, "
-        f"ort-training {manifest.get('onnxRuntimeTrainingVersion')}, "
-        f"ort-genai {manifest.get('onnxRuntimeGenAIVersion')}"
-    )
+    # Same rule as the licence lines below: a toolchain entry whose version is null is not evidence
+    # that the tool was absent, only that the export did not record it — and "optimum-onnx None"
+    # reads as a version literally named None. List the ones that are known; say so when none are.
+    toolchain = [
+        (label, manifest.get(key))
+        for label, key in (
+            ("optimum-onnx", "optimumOnnxVersion"),
+            ("transformers", "transformersVersion"),
+            ("ort-training", "onnxRuntimeTrainingVersion"),
+            ("ort-genai", "onnxRuntimeGenAIVersion"),
+        )
+    ]
+    known = [f"{label} {version}" for label, version in toolchain if version]
+    lines.append(f"- Toolchain: {', '.join(known) if known else 'not recorded in this package'}")
     lines.append("")
     lines.append("## Licenses")
     # `or`, not a dict default: the keys EXIST with a null value on every package the exporter has
@@ -96,8 +201,12 @@ def render_model_card(manifest: dict[str, Any], package_dir: str | None = None) 
     )
     lines.append("")
     lines.append("## Android runtime")
-    lines.append(f"- Minimum API: {android.get('minimumAndroidApi')}")
-    lines.append(f"- Recommended device memory (MB): {android.get('recommendedDeviceMemoryMb')}")
+    lines.append(f"- Minimum API: {android.get('minimumAndroidApi') or 'not declared'}")
+    memory = android.get("recommendedDeviceMemoryMb")
+    # Only when measured. A device-memory recommendation is the number a reader uses to decide whether
+    # their phone can run this at all, so inventing one — or printing None — is worse than omitting it.
+    if memory:
+        lines.append(f"- Recommended device memory (MB): {memory}")
     lines.append(f"- Required ABIs: {', '.join(android.get('requiredAbis', [])) or 'any'}")
     lines.append("")
     lines.append("## Variants")
@@ -106,9 +215,10 @@ def render_model_card(manifest: dict[str, Any], package_dir: str | None = None) 
     lines.append("| --- | --- | --- | --- | --- | --- | --- |")
     for v in manifest.get("variants", []):
         lines.append(
-            f"| {v.get('id')} | {v.get('executionProvider')} | {v.get('quantization')} "
-            f"| {', '.join(v.get('supportedEngines', []))} | {', '.join(v.get('features', []))} "
-            f"| {v.get('minimumAndroidApi')} | {v.get('recommendedDeviceMemoryMb')} |"
+            f"| {_cell(v, 'id')} | {_cell(v, 'executionProvider')} | {_cell(v, 'quantization')} "
+            f"| {', '.join(v.get('supportedEngines', [])) or '—'} "
+            f"| {', '.join(v.get('features', [])) or '—'} "
+            f"| {_cell(v, 'minimumAndroidApi')} | {_cell(v, 'recommendedDeviceMemoryMb')} |"
         )
     lines.append("")
     default = manifest.get("defaultVariant")

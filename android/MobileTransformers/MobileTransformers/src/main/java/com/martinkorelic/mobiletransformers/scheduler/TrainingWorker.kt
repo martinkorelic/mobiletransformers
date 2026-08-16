@@ -17,7 +17,10 @@ import androidx.work.workDataOf
 import com.martinkorelic.mobiletransformers.MobileTransformers
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
 import com.martinkorelic.mobiletransformers.training.CheckpointInfo
+import com.martinkorelic.mobiletransformers.training.TrainingEvent
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import com.martinkorelic.mobiletransformers.packages.PackagePaths
@@ -103,9 +106,22 @@ class TrainingWorker(
             // `cancelRequested` flag, the step loop breaks, and the existing save path persists a
             // checkpoint. The chunk is never killed mid-step.
             try {
+                // The ongoing notification used to be posted once, before the first step, and never
+                // touched again — `foregroundInfo` has always taken a `progress`, and the sole call
+                // site passed null. So a multi-hour run showed a static "Training chunk 1" with no
+                // sign it was alive. Feed it from the step stream instead.
+                coroutineScope {
+                    val reporter = launch { reportProgress(config, chunk, job) }
+            try {
                 job.start(
                     config.applyTo(TrainingJobCodec.fromData(inputData, repoId), stepsBefore),
                 )
+        } finally {
+            // `events` is a SharedFlow and never completes, so the collector has to be
+            // cancelled or `coroutineScope` would never return.
+            reporter.cancel()
+        }
+        }
             } catch (cancellation: kotlinx.coroutines.CancellationException) {
                 Log.i(TAG, "chunk $chunk stopped; checkpointing cooperatively")
                 withContext(NonCancellable) { job.cancel(saveCheckpoint = true) }
@@ -176,10 +192,49 @@ class TrainingWorker(
         }
     }
 
+    /**
+ * Drive the ongoing notification from the trainer's step stream for as long as the chunk runs.
+ *
+ * Throttled to whole percent changes, and to the step stream only. `setForeground` crosses a
+ * binder to the NotificationManager, and a training loop emits several events per optimizer step;
+ * posting each one would spend more time updating a notification than training.
+ *
+ * A null [TrainingScheduleConfig.totalSteps] means nobody declared a target, so there is no
+ * fraction to show — the notification keeps its indeterminate text rather than inventing one.
+ */
+    private suspend fun reportProgress(
+        config: TrainingScheduleConfig,
+        chunk: Int,
+        job: com.martinkorelic.mobiletransformers.training.TrainingJob,
+    ) {
+        val total = config.totalSteps?.takeIf { it > 0 } ?: return
+        var lastPercent = -1
+        job.events.collect { event ->
+            val progress = (event as? TrainingEvent.Step)?.progress ?: return@collect
+            val percent = percentComplete(progress.currentStep, total) ?: return@collect
+            if (percent == lastPercent) return@collect
+            lastPercent = percent
+
+            // Same reason as the initial promotion: a refused foreground update must not kill the
+            // chunk. Losing a notification frame is not worth losing the work.
+        runCatching {
+                setForeground(
+                    foregroundInfo(
+                        config,
+                        chunk,
+                        progress = percent,
+                        detail = "Step ${progress.currentStep}/$total · loss %.4f".format(progress.stepLoss),
+                ),
+            )
+            }.onFailure { Log.d(TAG, "notification update refused at $percent%", it) }
+        }
+        }
+
     private fun foregroundInfo(
         config: TrainingScheduleConfig,
         chunk: Int,
         progress: Int?,
+        detail: String? = null,
     ): ForegroundInfo {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -198,7 +253,7 @@ class TrainingWorker(
         val notification =
             NotificationCompat.Builder(context, config.notificationChannelId)
                 .setContentTitle(config.notificationTitle)
-                .setContentText("Training chunk $chunk")
+.setContentText(detail ?: "Training chunk $chunk")
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setOngoing(true)
                 .addAction(android.R.drawable.ic_delete, "Cancel", cancel)
@@ -217,6 +272,23 @@ class TrainingWorker(
     companion object {
         private const val TAG = "MobileTransformers"
         const val NOTIFICATION_ID = 4211
+
+    /**
+ * Whole-percent completion, or null when there is no meaningful fraction to show.
+ *
+ * `currentStep` is the CUMULATIVE global step — `ORTTrainerNative` sets it from `globalStep`,
+ * which is restored from `training_state.json` — and `TrainingScheduleConfig.totalSteps` is
+ * likewise a cumulative target. So this is the whole-run fraction, not the chunk's, and a
+ * resumed chunk 3 correctly opens at wherever chunk 2 left off rather than back at 0%.
+ *
+ * Clamped because a chunk can legitimately overshoot: `maxSteps` is `resumedGlobalStep +
+ * maxStepsPerChunk`, which the last chunk may carry past `totalSteps`.
+ */
+        internal fun percentComplete(currentStep: Int, totalSteps: Int?): Int? {
+            val total = totalSteps?.takeIf { it > 0 } ?: return null
+            if (currentStep < 0) return null
+            return ((currentStep.toLong() * 100L) / total).toInt().coerceIn(0, 100)
+        }
 
         const val KEY_REPO_ID = "repoId"
         const val KEY_CACHE_DIR = "cacheDir"

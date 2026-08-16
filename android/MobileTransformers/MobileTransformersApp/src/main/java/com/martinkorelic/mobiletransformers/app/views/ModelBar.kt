@@ -129,6 +129,9 @@ fun ModelBar(
                     if (c.supportsTraining) Badge("train")
                     if (c.supportsRag) Badge("rag")
                     if (c.supportsClassification) Badge("classify")
+                    // Which fine-tuning technique this package carries. MARS is the project's own
+                    // method, and until now nothing in the app said which one you were running.
+                    c.primaryPeftMethod?.let { Badge(it) }
                 }
             }
 
@@ -272,6 +275,16 @@ private fun ModelDetail(
                 DetailRow("engines available here", c.availableEngines.joinToString())
                 DetailRow("features installed", c.availableFeatures.joinToString().ifEmpty { "none" })
                 DetailRow("training", if (c.supportsTraining) "yes" else "no train/ stage installed")
+                DetailRow(
+                    "fine-tuning method",
+                    c.peftMethods.joinToString().ifEmpty { "not declared by this package" },
+                )
+                DetailRow(
+                    "graph precision",
+                    // Deliberately named separately from the variant id: `cpu-int4` ships an fp32
+                    // graph, and the measured figure is the only honest one.
+                    c.graphPrecision ?: "not measured by this export",
+                )
                 DetailRow("retrieval", if (c.supportsRag) "yes" else "no embedding stage installed")
                 DetailRow(
                     "tool calling",

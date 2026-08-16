@@ -34,6 +34,16 @@ data class PackageTask(
     val modelType: String?,
     /** Label names by class index, for a classification head. Empty for every other task. */
     val id2label: Map<Int, String> = emptyMap(),
+        /**
+ * The precision **measured** in the graph that actually shipped, e.g. `fp32`.
+ *
+ * Distinct from the variant id's claim, and the two genuinely disagree: `cpu-int4` ships an fp32
+ * inference graph on every package published so far, because the inference export does not
+ * quantize. The variant id is a wire contract and deliberately not renamed, so this is the only
+ * honest answer available to a UI — and showing it beats letting a user infer "int4" from a
+ * directory name.
+ */
+    val inferenceGraphPrecision: String? = null,
 ) {
     /** The shared enum entry this task corresponds to, or `null` when it names something finer. */
     val taskType: TaskType?
@@ -51,6 +61,7 @@ data class PackageTask(
         @SerializedName("task") val task: String? = null,
         @SerializedName("modelType") val modelType: String? = null,
         @SerializedName("id2label") val id2label: Map<String, String>? = null,
+        @SerializedName("inferenceGraphPrecision") val inferenceGraphPrecision: String? = null,
     )
 
     companion object {
@@ -80,6 +91,7 @@ data class PackageTask(
                 id2label = wire.id2label.orEmpty()
                     .mapNotNull { (k, v) -> k.toIntOrNull()?.let { it to v } }
                     .toMap(),
+                inferenceGraphPrecision = wire.inferenceGraphPrecision?.takeIf { it.isNotBlank() },
             )
         }
     }

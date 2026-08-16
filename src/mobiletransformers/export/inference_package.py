@@ -230,6 +230,53 @@ def _split_external_data(
     return frozen_base, trainable_bins
 
 
+def _drop_orphaned_external_data(model_path: Path, output_dir: Path) -> int:
+    """Delete the upstream export's external-data blob once the split has superseded it.
+
+    Optimum writes the whole model's weights to a single ``model.onnx_data`` beside ``model.onnx``.
+    :func:`_split_external_data` then re-points **every** initializer at either ``frozen_base.onnx.data``
+    or a per-tensor ``<name>.bin``, and writes those — so the original blob is left in the package
+    referenced by nothing.
+
+    Nothing noticed, because a package with a spare file still validates: the graph is self-consistent,
+    every declared file resolves, and the checksums match. But ``downloadPlan`` ships the inference
+    stage as the glob ``variants/<id>/inference/**``, so the dead copy is **downloaded to every
+    device**. It was roughly **45% of every package published so far** — 1,743 MB of FunctionGemma's
+    3,875 MB, 651 MB of SmolLM2's 1,586 MB — which is most of the reason a first pull looked so
+    expensive.
+
+    Deliberately narrow. Only ``*.onnx_data`` files are considered (the upstream naming; our own blobs
+    are ``frozen_base.onnx.data`` and ``*.bin``), and only when the freshly saved graph does not
+    reference them. A file that is referenced is never touched, so a future layout that keeps using the
+    upstream blob degrades to a no-op rather than to a corrupt package.
+
+    :return: how many files were removed.
+    """
+    from onnx.external_data_helper import ExternalDataInfo
+
+    saved = onnx.load(str(model_path), load_external_data=False)
+    referenced = {
+        ExternalDataInfo(init).location
+        for init in saved.graph.initializer
+        if init.HasField("data_location") and init.external_data
+    }
+
+    removed = 0
+    for candidate in sorted(output_dir.glob("*.onnx_data")):
+        if candidate.name in referenced:
+            continue
+        freed = candidate.stat().st_size
+        candidate.unlink()
+        removed += 1
+        logger.info(
+            "removed orphaned external data %s (%.0f MB): the split graph references %s instead",
+            candidate.name,
+            freed / 1e6,
+            FROZEN_BASE_BLOB,
+        )
+    return removed
+
+
 def _emit_merger_models(
     output_dir: Path, peft_method: PEFTMethod, quant_in: bool, quant_out: bool
 ) -> dict[str, str]:
@@ -397,6 +444,8 @@ def export_inference_package(
     # Save the graph with external refs only (raw_data was cleared by write_external_data_tensors).
     final_model_path = output_dir / MODEL_FILENAME
     onnx.save(model, str(final_model_path))
+
+    _drop_orphaned_external_data(final_model_path, output_dir)
 
     _sanitize_genai_session_options(output_dir)
 

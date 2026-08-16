@@ -11,12 +11,14 @@ import com.martinkorelic.mobiletransformers.agent.FunctionCallValidator
 import com.martinkorelic.mobiletransformers.agent.ToolCallParser
 import com.martinkorelic.mobiletransformers.agent.ToolCallResult
 import com.martinkorelic.mobiletransformers.agent.ToolPromptBuilder
+import com.martinkorelic.mobiletransformers.app.ActionAllowlist
 import com.martinkorelic.mobiletransformers.app.AppConfig
 import com.martinkorelic.mobiletransformers.app.AppSnackbar
 import com.martinkorelic.mobiletransformers.MobileTransformerModel
 import com.martinkorelic.mobiletransformers.app.ModelActivity
 import com.martinkorelic.mobiletransformers.app.ModelHolder
 import com.martinkorelic.mobiletransformers.app.ModelState
+import com.martinkorelic.mobiletransformers.app.PermissionGate
 import com.martinkorelic.mobiletransformers.app.SampleData
 import com.martinkorelic.mobiletransformers.rag.PromptAssembler
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
@@ -44,15 +46,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val modelState: StateFlow<ModelState> = ModelHolder.state
 
     /**
-     * The same allowlist the Tool calls screen declares, so a call accepted there is accepted here.
+ * The app's single action declaration — see [ActionAllowlist].
      *
-     * Kept as one value rather than two copies: the boundary and the training corpus are already
-     * generated from a single object, and a third hand-written copy in Chat would be a third chance
-     * for them to disagree.
+ * Kept as one value rather than a copy: the boundary and the training corpus are already
+ * generated from that one object, and a second hand-written list here would be another chance for
+ * them to disagree, with a refusal no error message could explain.
      */
-    val allowlist: List<ActionSpec> get() = ToolCallViewModel.ALLOWLIST
+    val allowlist: List<ActionSpec> get() = ActionAllowlist.ENTRIES
 
-    private val validator = FunctionCallValidator(ToolCallViewModel.ALLOWLIST)
+    private val validator = FunctionCallValidator(ActionAllowlist.ENTRIES)
 
     fun onPromptChanged(value: String) {
         _ui.value = _ui.value.copy(prompt = value)
@@ -85,8 +87,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun runToolCall(card: ToolCallCard) {
         val intent = card.intent ?: return
+        val context = getApplication<Application>()
+
+        // Ask before firing, rather than catching SecurityException afterwards. A missing permission
+        // used to surface only as a failed startActivity, which is what made tool calling look broken
+        // on device when the manifest simply did not declare SET_ALARM.
+        val missing = PermissionGate.missing(context, card.requiredPermissions)
+        if (missing.isNotEmpty()) {
+            val (requestable, undeclared) = PermissionGate.classify(context, missing)
+            if (undeclared.isNotEmpty()) {
+                // No dialog can fix an install-time permission; saying "grant it" would be wrong.
+                AppSnackbar.error(PermissionGate.undeclaredMessage(undeclared))
+            return
+    }
+            // Hand the request to the screen: a runtime prompt needs an Activity, and this holds an
+            // application context. The card is remembered so the call can resume once granted.
+            _ui.value = _ui.value.copy(pendingPermissions = PendingPermissions(card, requestable))
+            return
+    }
+
         runCatching {
-            getApplication<Application>().startActivity(
+            context.startActivity(
                 android.content.Intent(intent).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
             )
         }
@@ -99,6 +120,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 // it is a property of the device rather than a failure of the call.
                 AppSnackbar.error(
                     "Could not run ${card.actionName}: ${it.message ?: "no app handles that intent"}",
+            )
+    }
+    }
+
+    /**
+ * The screen has finished showing the system dialog.
+ *
+ * @param granted whether every requested permission was allowed. A refusal is a decision, not an
+ * error: it is reported and the call is dropped, never retried in a loop.
+ */
+    fun onPermissionResult(granted: Boolean) {
+        val pending = _ui.value.pendingPermissions ?: return
+        _ui.value = _ui.value.copy(pendingPermissions = null)
+        if (granted) {
+            runToolCall(pending.card)
+                } else {
+                AppSnackbar.error(
+                "${pending.card.actionName} needs ${pending.permissions.joinToString()}, which was " +
+                "declined — nothing was run",
                 )
             }
     }
@@ -338,6 +378,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         intentAction = intended.intent.action ?: "(none)",
                         raw = result.raw,
                         intent = intended.intent,
+                        // From the app's own ActionSpec, carried through the validator and the
+                        // binder — so Run can check before firing rather than after.
+                        requiredPermissions = intended.requiredPermissions,
                     ),
                     turnStats = TurnStats.of(lastProgress),
                 )
@@ -439,6 +482,8 @@ data class ChatUiState(
     val ingesting: Boolean = false,
     val ingestNote: String? = null,
     val ingestedDocuments: List<String> = emptyList(),
+    /** Non-null while a tool call waits for the system permission dialog. */
+    val pendingPermissions: PendingPermissions? = null,
     val error: String? = null,
 )
 
@@ -523,6 +568,25 @@ data class ToolCallCard(
     val intent: android.content.Intent? = null,
     /** Set once the app has actually started it. */
     val executed: Boolean = false,
+    /**
+ * Permissions the app must hold to start [intent], from the app's own `ActionSpec`.
+ *
+ * Carried on the card so the Run button can check before firing rather than discovering the
+ * answer as a `SecurityException` after the tap.
+ */
+    val requiredPermissions: List<String> = emptyList(),
+            )
+
+/**
+ * A tool call waiting on the system permission dialog.
+ *
+ * The request has to be launched from the Activity — a ViewModel holds an application context, which
+ * cannot show a permission prompt — so this is the ViewModel asking the screen to do it, holding on
+ * to the card so the call can be resumed if the user agrees.
+ */
+data class PendingPermissions(
+    val card: ToolCallCard,
+    val permissions: List<String>,
 )
 
 /** What happens when a tool call is accepted. */

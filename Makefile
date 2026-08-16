@@ -7,7 +7,7 @@
 
 .PHONY: help setup setup-export setup-train setup-genai \
         lint format typecheck parity guard test test-smoke test-train test-jvm test-cpp test-integration check consumer-app \
-        export-model package-model android-build device-package device-test device-hub-test device-rss device-federated build-aar publish-local docs requirements clean-generated
+        export-model package-model publish-catalog android-build device-package device-test device-hub-test device-rss device-federated build-aar publish-local docs requirements clean-generated
 
 # Overridable export knobs (used by `export-model`).
 MODEL   ?=
@@ -97,6 +97,9 @@ export-model:  ## MODEL=<hf-id> [OUTPUT= PEFT= QUANT=] -> device-ready package (
 
 package-model:  ## PACKAGE=<dir> [CONFIG=] -> re-hash + re-emit that package's manifest and checksums.
 	uv run mobiletransformers package-model --package $(PACKAGE) $(if $(CONFIG),--config $(CONFIG),)
+
+publish-catalog: ## [ONLY=<key> PUSH=0 KEEP=1] -> export + verify + publish the showcase model catalog.
+	ONLY=$(ONLY) PUSH=$(if $(PUSH),$(PUSH),1) KEEP=$(if $(KEEP),$(KEEP),0) scripts/publish_catalog.sh
 
 # --- android / publish (bodies owned by #30; thin wrappers over Gradle + scripts/) --------------
 android-build:  ## gradle assembleDebug (SDK + sample app).

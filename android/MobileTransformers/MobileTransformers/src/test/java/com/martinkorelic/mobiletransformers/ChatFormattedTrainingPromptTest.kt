@@ -20,10 +20,13 @@ import org.robolectric.RobolectricTestRunner
  * one and the same instruction. `TaskPreprocessor.formatsPromptForGeneration` closes that.
  *
  * **Scope, honestly stated.** The BOS half of the mismatch was real and is fixed. The chat-template
- * half is *latent for the package this was measured on*: `ORTTokenizerNative` reads the template only
- * from `tokenizer_config.json`, and SmolLM2's export writes it to a sibling `chat_template.jinja`, so
- * `chatTemplate` was null and neither side templated. The device log says so in as many words —
- * `W/ORTTokenizerNative: Chat template not found … No chat template will be used`.
+ * half *was* latent for the package this was measured on, and is no longer: `ORTTokenizerNative` read
+ * the template only from `tokenizer_config.json` while SmolLM2's export writes it to a sibling
+ * `chat_template.jinja`, so `chatTemplate` was null and neither side templated. The device log said so
+ * in as many words — `W/ORTTokenizerNative: Chat template not found … No chat template will be used`.
+ * `ORTTokenizerNative.resolveChatTemplate` now reads the sibling file, so both sides of this seam
+ * template for real; see `ChatTemplateResolutionTest`. The measurements below predate that fix and
+ * describe the untemplated behaviour — re-measure before citing them.
  *
  * **This did not fix the #37 gate.** With BOS parity and EOS in place, training reaches a loss of
  * ~0.006, the merge completes over all 60 adapted tensors, 60 merged initializers load at inference

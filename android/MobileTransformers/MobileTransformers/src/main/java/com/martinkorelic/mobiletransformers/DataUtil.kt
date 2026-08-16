@@ -104,11 +104,12 @@ interface TaskPreprocessor {
      *     `maxNewTokens`.
      *
      * (2) was a real, measured mismatch: training tokenized without BOS while every generation began
-     * with it. (1) is latent for packages whose `tokenizer_config.json` carries no `chat_template`
-     * key — SmolLM2's export puts the template in a sibling `chat_template.jinja` that
-     * `ORTTokenizerNative` does not read, so `chatTemplate` is null and *neither* side templates.
-     * That is why this is expressed as "match the generate path" rather than "apply the chat
-     * template": the two coincide only when a template is actually loaded.
+ * with it. (1) *was* latent for every package: the export puts the template in a sibling
+ * `chat_template.jinja` that `ORTTokenizerNative` did not read, so `chatTemplate` was null and
+ * neither side templated. It reads the sibling now, so (1) is live wherever Pebble can render the
+ * template — SmolLM2's it can, FunctionGemma's it cannot. That is still why this is expressed as
+ * "match the generate path" rather than "apply the chat template": the two coincide only when a
+ * template is actually loaded, and whether one loads is now a per-package fact.
      *
      * **This does not, on its own, make the #37 tool-call demo converge.** With BOS parity and EOS in
      * place the run still collapses to a single repeated token at inference despite a training loss

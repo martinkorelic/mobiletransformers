@@ -187,7 +187,17 @@ class MobileTransformerModel internal constructor(
         } else {
             instruction
         }
-        val raw = session.generate(prompt, config, callback).text
+        // Suppress the tokenizer's chat template only when the builder above emitted turns of its own
+        // (the FunctionGemma dialect), or the two framings nest. The JSON dialect emits no turn
+        // markers, so there the template is still what supplies them and must be left alone.
+        // Harmless before the tokenizer learned to read `chat_template.jinja` — no package had a
+        // template to apply — and a live distinction now that they do.
+        val framedHere = declareTools && ToolPromptBuilder.framesOwnTurns(parser)
+        val raw = session.generate(
+            prompt,
+            if (framedHere) config.copy(applyChatTemplate = false) else config,
+            callback,
+).text
         val call = parser.parse(raw)
             // Not a refusal: the model said something that is not a call. The raw text is the answer,
             // and reporting it as "rejected" both misleads the user and hides parser mismatches —

@@ -54,6 +54,16 @@ object ModelCatalog {
          */
         @SerializedName("published") val published: Boolean = false,
         @SerializedName("recommendedFor") val recommendedFor: String = "",
+        /**
+ * The fine-tuning technique this package was exported with — `lora`, `lora-xs`, `mars`.
+ *
+ * Shown on the card *before* installing, because it is part of what distinguishes one shelf
+ * entry from another: MARS is the project's own method, and picking the MARS package is the
+ * whole point of trying it. The loaded model reports the same thing from its manifest
+ * (`RuntimeCapabilities.peftMethods`), which is authoritative — this is the catalog's claim,
+ * and the two disagreeing means the catalog is stale.
+ */
+        @SerializedName("peft") val peft: String = "",
     ) {
         /** The feature groups to request when installing this entry, mapped to the SDK's enum. */
         val modelFeatures: Set<ModelFeature>

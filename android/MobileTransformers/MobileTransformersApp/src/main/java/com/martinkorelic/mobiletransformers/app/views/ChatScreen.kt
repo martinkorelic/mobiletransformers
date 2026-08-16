@@ -52,10 +52,19 @@ import com.martinkorelic.mobiletransformers.app.viewmodels.ToolExecution
  * sources belonging to none of them in particular.
  */
 @Composable
-fun ChatScreen(vm: ChatViewModel) {
+fun ChatScreen(vm: ChatViewModel, onOpenSettings: () -> Unit = {}) {
     val ui by vm.ui.collectAsState()
     val state by vm.modelState.collectAsState()
-    var settingsOpen by remember { mutableStateOf(false) }
+
+    // The system permission dialog, launched from the Activity — a ViewModel holds an application
+    // context and cannot show one. The ViewModel asks by setting `pendingPermissions`; this answers.
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+) { granted -> vm.onPermissionResult(granted.values.all { it }) }
+
+    LaunchedEffect(ui.pendingPermissions) {
+        ui.pendingPermissions?.let { permissionLauncher.launch(it.permissions.toTypedArray()) }
+        }
 
     ModelGate(state, needs = "Chat needs an inference-capable package.") { model ->
         val listState = rememberLazyListState()
@@ -68,16 +77,11 @@ fun ChatScreen(vm: ChatViewModel) {
         Column(Modifier.fillMaxSize()) {
             ChatToolbar(
                 useRag = ui.useRag,
-                settingsOpen = settingsOpen,
                 supportsRag = model.capabilities.supportsRag,
                 supportsTools = model.capabilities.supportsToolCalling,
                 onRag = vm::onRagToggled,
-                onToggleSettings = { settingsOpen = !settingsOpen },
+                onOpenSettings = onOpenSettings,
             )
-
-            if (settingsOpen) {
-                ChatSettings(vm, model)
-            }
 
             LazyColumn(
                 Modifier.weight(1f),
@@ -143,16 +147,24 @@ fun ChatScreen(vm: ChatViewModel) {
  *
  * Grounding stays a toggle, because "answer from the documents I ingested" genuinely is a decision
  * the user makes in advance.
+ *
+ * ### Why "Setup" became a link to Configuration
+ *
+ * It used to expand a panel here holding three things, none of which belonged in a conversation: the
+ * engine (a read-only fact about the loaded model, now in the model bar), the ingest controls (a
+ * property of retrieval, now on the Retrieval screen) and the tool-call allowlist (now in
+ * Configuration). Meanwhile the settings a user actually wants mid-chat — temperature, length,
+ * sampling — were never there at all, so "Setup" opened a panel that could not do the thing its name
+ * promised. It now opens the Generation settings, which is what was wanted.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChatToolbar(
     useRag: Boolean,
-    settingsOpen: Boolean,
     supportsRag: Boolean,
     supportsTools: Boolean,
     onRag: (Boolean) -> Unit,
-    onToggleSettings: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     FlowRow(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
@@ -168,7 +180,7 @@ private fun ChatToolbar(
                 label = { Text("can call tools") },
             )
         }
-        TextButton(onClick = onToggleSettings) { Text(if (settingsOpen) "Hide setup" else "Setup") }
+        TextButton(onClick = onOpenSettings) { Text("Settings") }
     }
 }
 
@@ -180,105 +192,6 @@ private fun ModeChip(label: String, selected: Boolean, enabled: Boolean = true, 
         enabled = enabled,
         label = { Text(label) },
     )
-}
-
-/** The things a conversation needs set up once — collapsed, because they are scaffolding. */
-@Composable
-private fun ChatSettings(vm: ChatViewModel, model: com.martinkorelic.mobiletransformers.MobileTransformerModel) {
-    val ui by vm.ui.collectAsState()
-    val picker = EnginePickerState(
-        selected = model.capabilities.engine,
-        available = model.capabilities.availableEngines,
-    )
-    // The document picker: retrieval over a file you chose is a different demo from retrieval over
-    // ours, and `ingest` cannot open a content:// URI, so the ViewModel copies it in first.
-    val pickDocument = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument(),
-    ) { uri -> uri?.let(vm::ingest) }
-
-    Section("Engine") {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                "Running on ${picker.selected.name}. Available here: ${picker.available.joinToString()}.",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            picker.genAiNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            Text(
-                "The engine is fixed when the model is loaded, so switching means reloading from " +
-                    "Models. Naming GenAI and being given Native would be a wrong answer, so the SDK " +
-                    "refuses instead of falling back silently.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
-
-    Section("Documents to retrieve from") {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (!model.capabilities.supportsRag) {
-                Text(
-                    "This package has no embedding stage, so retrieval fails closed. Re-pull it with " +
-                        "the RAG feature requested — it is a separate download group.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            } else {
-                Text(
-                    "Retrieval searches only what you have ingested; the store starts empty, so " +
-                        "grounding an answer before ingesting anything returns no sources.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            ActionRow {
-                Button(
-                    onClick = { vm.ingest() },
-                    enabled = !ui.ingesting && model.capabilities.supportsRag,
-                ) { Text(if (ui.ingesting) "Ingesting…" else "Ingest sample") }
-                OutlinedButton(
-                    onClick = { pickDocument.launch(arrayOf("text/*", "text/markdown", "application/json")) },
-                    enabled = !ui.ingesting && model.capabilities.supportsRag,
-                ) { Text("Pick a file…") }
-            }
-            ui.ingestNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            if (ui.ingestedDocuments.isNotEmpty()) {
-                Text(
-                    "In the store: ${ui.ingestedDocuments.joinToString(", ")}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
-    }
-
-    Section("Tool calls") {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                if (model.capabilities.supportsToolCalling) {
-                    "This model has a tool-call grammar (${
-                        model.capabilities.toolCalling.dialect.name.lowercase()
-                    }), so every message is sent with the actions below declared. Whether a reply is " +
-                        "a call is read from the reply. Nothing is executed — an accepted call shows " +
-                        "the intent that WOULD fire."
-                } else {
-                    "This model has no tool-call grammar of its own, so messages are sent as plain " +
-                        "chat. Fine-tuning it on the Training screen teaches it the JSON call shape " +
-                        "these actions are validated against."
-                },
-                style = MaterialTheme.typography.bodySmall,
-            )
-            vm.allowlist.forEach { Text("• ${it.actionName}", style = MaterialTheme.typography.bodySmall) }
-
-            ChipPicker(
-                label = "When a call is accepted",
-                options = ToolExecution.entries,
-                selected = ui.toolExecution,
-                optionLabel = { it.label },
-                onSelect = vm::onToolExecutionChanged,
-            )
-            Text(
-                "Only calls that clear the allowlist can run, and the intent comes from this app's " +
-                    "own action list — a model picks an action, it never names an intent.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-    }
 }
 
 @Composable

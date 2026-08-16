@@ -19,6 +19,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.martinkorelic.mobiletransformers.Tasks
+import com.martinkorelic.mobiletransformers.app.ActionAllowlist
+import com.martinkorelic.mobiletransformers.app.PermissionGate
 import com.martinkorelic.mobiletransformers.app.viewmodels.ConfigurationViewModel
 import com.martinkorelic.mobiletransformers.app.viewmodels.label
 import com.martinkorelic.mobiletransformers.app.viewmodels.peftDescription
@@ -47,20 +49,44 @@ import com.martinkorelic.mobiletransformers.constants.SearchType
  * screen — which is the worst possible place to learn about a typo. Anything with a knowable set of
  * values is a [Dropdown] or a [ChipPicker] now.
  */
+
+/**
+ * The tabs of the Configuration screen, in order.
+ *
+ * An enum rather than bare indices because other screens now link *into* a specific tab — Chat's
+ * "Settings" opens [Generation] — and `destination = Configuration; tab = 0` is the kind of coupling
+ * that silently points somewhere else the moment a tab is inserted.
+ */
+enum class ConfigurationTab(val label: String) {
+    Generation("Generation"),
+    Training("Training"),
+    Dataset("Dataset"),
+    Retrieval("Retrieval"),
+    Actions("Actions"),
+    Device("Device"),
+}
+
 @Composable
-fun ConfigurationScreen(vm: ConfigurationViewModel) {
-    var tab by remember { mutableIntStateOf(0) }
+fun ConfigurationScreen(
+    vm: ConfigurationViewModel,
+    initialTab: ConfigurationTab = ConfigurationTab.Generation,
+) {
+    // Keyed on `initialTab` so arriving from Chat's "Settings" lands on Generation even if this
+    // screen was last left on another tab — otherwise the link would sometimes open the wrong page,
+    // which is exactly the confusion it exists to remove.
+    var tab by remember(initialTab) { mutableIntStateOf(initialTab.ordinal) }
 
     Column(Modifier.fillMaxSize()) {
-        SubTabs(listOf("Generation", "Training", "Dataset", "Retrieval", "Device"), tab) { tab = it }
+        SubTabs(ConfigurationTab.entries.map { it.label }, tab) { tab = it }
 
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-            when (tab) {
-                0 -> GenerationTab(vm)
-                1 -> TrainingTab(vm)
-                2 -> DatasetTab(vm)
-                3 -> RetrievalTab(vm)
-                else -> DeviceTab(vm)
+            when (ConfigurationTab.entries[tab]) {
+                ConfigurationTab.Generation -> GenerationTab(vm)
+                ConfigurationTab.Training -> TrainingTab(vm)
+                ConfigurationTab.Dataset -> DatasetTab(vm)
+                ConfigurationTab.Retrieval -> RetrievalTab(vm)
+                ConfigurationTab.Actions -> ActionsTab()
+                ConfigurationTab.Device -> DeviceTab(vm)
             }
 
             OutlinedButton(onClick = vm::reset, modifier = Modifier.padding(16.dp)) {
@@ -368,4 +394,60 @@ private fun DeviceTab(vm: ConfigurationViewModel) {
             style = MaterialTheme.typography.bodySmall,
         )
     }
+}
+
+/**
+ * What this app will let a model do — the allowlist, read-only.
+ *
+ * Moved here from a collapsible panel inside Chat, where it was three sentences of security rationale
+ * sitting in the middle of a conversation. It is reference material: a user consults it once to learn
+ * what "can call tools" actually permits, and never again mid-chat.
+ *
+ * Read-only on purpose. Editing the allowlist at runtime would make it a setting, and its whole value
+ * is that it is fixed when the app is built — the set of intents any model output can reach is decided
+ * in source, not in a preferences screen.
+ */
+@Composable
+private fun ActionsTab() {
+    val context = LocalContext.current
+
+    Section("What a model may ask for") {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(
+                "A model picks an action from this list by name. It can never name an intent — those " +
+                "come only from here — so this is the complete set of things any reply can reach.",
+                    style = MaterialTheme.typography.bodySmall,
+            )
+            ActionAllowlist.ENTRIES.forEach { spec ->
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(spec.actionName, style = MaterialTheme.typography.titleSmall)
+                    Text(spec.allowedIntent, style = MaterialTheme.typography.labelSmall)
+                    if (spec.parameters.isNotEmpty()) {
+            Text(
+                            "takes ${spec.parameters.keys.joinToString()}",
+                    style = MaterialTheme.typography.bodySmall,
+            )
+            }
+                    // Granted or not, stated plainly: a permission the app is missing is the
+                    // difference between an action that runs and one that fails at the last step.
+                    spec.requiredPermissions.forEach { permission ->
+                        val granted = PermissionGate.missing(context, listOf(permission)).isEmpty()
+            Text(
+                            "needs $permission — ${if (granted) "granted" else "NOT granted"}",
+                    style = MaterialTheme.typography.bodySmall,
+            )
+            }
+            }
+            }
+            }
+            }
+
+    Section("Running a call") {
+            Text(
+            "An accepted call is shown in the conversation with a Run button; nothing fires on its " +
+            "own. Whether a reply is a call is read from the reply, so there is nothing to switch " +
+            "on beforehand.",
+                    style = MaterialTheme.typography.bodySmall,
+            )
+            }
 }

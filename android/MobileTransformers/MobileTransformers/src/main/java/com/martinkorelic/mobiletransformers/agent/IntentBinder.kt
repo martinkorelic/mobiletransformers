@@ -12,6 +12,15 @@ import android.content.Intent
 data class IntendedAction(
     val intent: Intent,
     val willExecute: Boolean = false,
+    /**
+ * Permissions the caller must hold before starting [intent] — copied from the app's own
+ * [ActionSpec], never from model output.
+ *
+ * Carried on the result so a caller can check and request them *before* firing. Without it the
+ * only way to discover a missing permission was to call `startActivity` and catch
+ * `SecurityException`, which is an exception used as a question.
+ */
+    val requiredPermissions: List<String> = emptyList(),
 )
 
 /**
@@ -44,6 +53,10 @@ object IntentBinder {
         for ((key, value) in call.parameters) {
             intent.putExtra(key, value)
         }
-        return IntendedAction(intent = intent, willExecute = false)
+        return IntendedAction(
+            intent = intent,
+            willExecute = false,
+            requiredPermissions = call.requiredPermissions,
+)
     }
 }

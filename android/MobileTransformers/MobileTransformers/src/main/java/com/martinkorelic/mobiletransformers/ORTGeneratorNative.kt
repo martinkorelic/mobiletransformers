@@ -151,7 +151,9 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
 
         try {
 
-            conversationState?.let {
+            // `applyChatTemplate = false` means the caller framed its own turns (generateToolCall via
+            // ToolPromptBuilder); templating again would nest one framing inside the other.
+            conversationState?.takeIf { generationArgs.applyChatTemplate }?.let {
                 // NOTE: Sometimes one token from the previous assistant message keeps prepending and sometimes not
                 // TODO: Will need fix
                 inputText = it.addUserMessage(inputText)
@@ -288,8 +290,10 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
                     break
             }
 
-            // If using multi-turn conversation, we need to add assistant message back
-            conversationState?.let {
+            // If using multi-turn conversation, we need to add assistant message back. Gated on the
+            // same flag as the user turn: recording a reply to a turn that was never added would leave
+            // the transcript describing a conversation that did not happen.
+            conversationState?.takeIf { generationArgs.applyChatTemplate }?.let {
                 it.addAssistantMessage(decodedText.toString())
                 // The native KV cache holds every token that has been *run through* the model. The loop
                 // appends a mask slot for each newly sampled token, and the last sampled token has not

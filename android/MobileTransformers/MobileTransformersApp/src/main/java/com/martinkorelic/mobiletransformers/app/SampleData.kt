@@ -57,6 +57,31 @@ object SampleData {
     const val RAG_ASSET = "sample_rag_document.md"
 
     /**
+ * The bundled retrieval corpus — four short documents on deliberately distinct subjects.
+ *
+ * One document is enough to show that retrieval *runs*, and useless for showing that it
+ * **works**: every query returns chunks of the only thing in the store, so a perfect ranking and a
+ * random one look identical. With four separable subjects — the package format, fine-tuning,
+ * privacy, and device behaviour — a query like "what leaves my phone during federated learning"
+ * has a right answer a user can check at a glance, which is the whole point of the Retrieval
+ * screen.
+ */
+    val RAG_ASSETS = listOf(
+        RAG_ASSET,
+        "sample_rag_training.md",
+        "sample_rag_privacy.md",
+        "sample_rag_device.md",
+)
+
+    /** Example queries whose best match is a *different* document each time. */
+    val RAG_EXAMPLE_QUERIES = listOf(
+        "what leaves my phone during federated learning?",
+        "how does MARS differ from LoRA?",
+        "why does a scheduled run start late?",
+        "how is a package verified before it is downloaded?",
+)
+
+    /**
      * Copy [TRAIN_ASSET] into the installed package's `train/` stage as `<TRAIN_FILE>.jsonl`.
      *
      * The stage directory is resolved through [PackagePaths], never by appending `"train"` to a path:
@@ -87,6 +112,19 @@ object SampleData {
         val target = File(context.filesDir, RAG_ASSET)
         copyAsset(context, RAG_ASSET, target)
         return target
+    }
+
+    /**
+ * Copy the whole [RAG_ASSETS] corpus into the app's files dir, ready to ingest.
+ *
+ * Returned in declaration order so the caller can report them predictably. Like
+ * [installRagDocument] these are written to app storage rather than into the package: an ingested
+ * document is user data, and putting it inside the package tree would make it collateral damage
+ * of the next reinstall.
+ */
+    fun installRagCorpus(context: Context): List<File> =
+    RAG_ASSETS.map { asset ->
+        File(context.filesDir, asset).also { copyAsset(context, asset, it) }
     }
 
     private fun copyAsset(context: Context, asset: String, target: File) {

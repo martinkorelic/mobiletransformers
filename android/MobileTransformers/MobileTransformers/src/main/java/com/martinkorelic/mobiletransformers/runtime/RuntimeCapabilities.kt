@@ -64,12 +64,49 @@ data class RuntimeCapabilities(
      * existed and nothing on the device read it.
      */
     val trainingParameterCount: Long = 0L,
+    /**
+ * The PEFT method(s) this package was exported for — `lora`, `lora-xs`, `mars`, …
+     *
+ * The exporter has recorded this in the manifest since the training stage existed and nothing on
+ * the device read it, so an app could not tell a MARS package from a LoRA one. That matters most
+ * for MARS, which is this project's own contribution: someone watching the fine-tuning demo could
+ * not see which technique they were watching.
+     *
+ * Empty for a package with no training stage, and for older exports that predate the field —
+ * absence means "not declared", never "no PEFT".
+ */
+    val peftMethods: Set<String> = emptySet(),
 ) {
+    /**
+ * The PEFT method to show when there is room for exactly one, or `null` when none is declared.
+     *
+ * Every package produced so far declares a single method; the field is a list because the format
+ * allows more, not because a package has ever had two.
+ */
+    val primaryPeftMethod: String? get() = peftMethods.firstOrNull()
+
+    /** The precision measured in the shipped graph — see [PackageTask.inferenceGraphPrecision]. */
+    val graphPrecision: String? get() = task.inferenceGraphPrecision
+
     /** This model has a tool-call grammar of its own; asking it for a call is reasonable. */
     val supportsToolCalling: Boolean get() = toolCalling.supported
 
     /** This package predicts a class per input rather than generating tokens. */
     val isClassifier: Boolean get() = task.isClassifier
+
+    /**
+ * This package has no generative head at all, so nothing that produces tokens can work with it.
+     *
+ * Broader than [isClassifier] on purpose. A plain embedding model (`feature-extraction`, e.g.
+ * `all-MiniLM-L6-v2` on its own) is not a classifier and cannot generate either — a check that
+ * tested only for classifiers offered it a chat box, which is a promise the package cannot keep.
+ * An UNKNOWN task is deliberately not included: an older package that declares nothing must keep
+ * working, and withholding generation from it would be a narrower answer than the evidence
+ * supports.
+ */
+    val isEncoderOnly: Boolean
+    get() = task.isClassifier ||
+    task.taskType == com.martinkorelic.mobiletransformers.constants.TaskType.FEATURE_EXTRACTION
 
     /**
      * `classify()` will work: the package is a classifier **and** it names its labels.

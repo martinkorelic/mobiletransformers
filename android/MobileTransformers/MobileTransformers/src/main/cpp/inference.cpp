@@ -285,13 +285,16 @@ namespace inference {
         session_cache->embedding_session->Run(session_run_opts, input_names.data(), input_values.data(),
                                               input_count, output_names.data(), output_values.data(), output_count);
 
-        std::unique_ptr<Ort::Value> output = std::make_unique<Ort::Value>(std::move(output_values.front()));
+        // Hand the tensor to the cache rather than a local: a local is destroyed at the `return`
+        // below, and the pointer we hand back would point into freed memory. See
+        // `EmbeddingSessionCache::last_output` — same defect and same fix as the generation path.
+        session_cache->last_output = std::make_unique<Ort::Value>(std::move(output_values.front()));
 
         // Explicitly release input values to free memory
         input_values.clear();
         output_values.clear();
 
-        return output->GetTensorMutableData<float>();
+        return session_cache->last_output->GetTensorMutableData<float>();
     }
 
 } // namespace inference

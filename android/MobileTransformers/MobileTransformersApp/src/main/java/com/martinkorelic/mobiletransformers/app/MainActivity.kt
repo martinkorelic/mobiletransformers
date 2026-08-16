@@ -13,10 +13,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
-import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Hub
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Label
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.Tune
@@ -55,11 +56,13 @@ import com.martinkorelic.mobiletransformers.app.ui.theme.AppTheme
 import com.martinkorelic.mobiletransformers.app.ui.theme.AppThemedContent
 import com.martinkorelic.mobiletransformers.app.views.AboutScreen
 import com.martinkorelic.mobiletransformers.app.views.ChatScreen
+import com.martinkorelic.mobiletransformers.app.views.ClassifyScreen
 import com.martinkorelic.mobiletransformers.app.views.ConfigurationScreen
+import com.martinkorelic.mobiletransformers.app.views.ConfigurationTab
 import com.martinkorelic.mobiletransformers.app.views.FederatedScreen
 import com.martinkorelic.mobiletransformers.app.views.ModelBar
 import com.martinkorelic.mobiletransformers.app.views.ModelsScreen
-import com.martinkorelic.mobiletransformers.app.views.ToolCallScreen
+import com.martinkorelic.mobiletransformers.app.views.RetrievalScreen
 import com.martinkorelic.mobiletransformers.app.views.TrainScreen
 import kotlinx.coroutines.launch
 
@@ -110,7 +113,8 @@ private val Destination.icon: ImageVector
     get() = when (this) {
         Destination.Models -> Icons.Outlined.Download
         Destination.Chat -> Icons.AutoMirrored.Outlined.Chat
-        Destination.ToolCalls -> Icons.Outlined.Bolt
+    Destination.Retrieval -> Icons.Outlined.Search
+    Destination.Classify -> Icons.Outlined.Label
         Destination.Train -> Icons.Outlined.School
         Destination.Federated -> Icons.Outlined.Hub
         Destination.Configuration -> Icons.Outlined.Tune
@@ -121,6 +125,8 @@ private val Destination.icon: ImageVector
 @Composable
 private fun ShowcaseApp() {
     var destination by remember { mutableStateOf(Destination.Models) }
+    // Which Configuration tab to open when something links into it (Chat's "Settings").
+    var configurationTab by remember { mutableStateOf(ConfigurationTab.Generation) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -198,11 +204,19 @@ private fun ShowcaseApp() {
 
                 when (destination) {
                     Destination.Models -> ModelsScreen(viewModel())
-                    Destination.Chat -> ChatScreen(viewModel())
-                    Destination.ToolCalls -> ToolCallScreen(viewModel())
+                    Destination.Chat -> ChatScreen(
+                        viewModel(),
+                        // "Settings" in Chat means the generation knobs, which live here.
+                        onOpenSettings = {
+                            configurationTab = ConfigurationTab.Generation
+                            destination = Destination.Configuration
+                },
+            )
+                    Destination.Retrieval -> RetrievalScreen(viewModel())
+                    Destination.Classify -> ClassifyScreen(viewModel())
                     Destination.Train -> TrainScreen(viewModel())
                     Destination.Federated -> FederatedScreen(viewModel())
-                    Destination.Configuration -> ConfigurationScreen(viewModel())
+                    Destination.Configuration -> ConfigurationScreen(viewModel(), configurationTab)
                     Destination.About -> AboutScreen(onGoToModels = { destination = Destination.Models })
                 }
             }

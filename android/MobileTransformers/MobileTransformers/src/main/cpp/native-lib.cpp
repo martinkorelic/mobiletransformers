@@ -963,15 +963,29 @@ Java_com_martinkorelic_mobiletransformers_ORTRetriever_performEmbeddingStep(JNIE
 
     jint total_size = batch_size * embedding_dim;
     jfloatArray result = env->NewFloatArray(total_size);
+
+    // JNI_ABORT: nothing was written back into these, so there is no copy worth committing. Without
+    // the release the three arrays pinned above leak on EVERY embedding call — once per chunk during
+    // a RAG ingest, which is the workload that makes it matter.
+    auto release_inputs = [&] {
+    env->ReleaseLongArrayElements(input_ids, input_ids_elements, JNI_ABORT);
+        env->ReleaseLongArrayElements(attention_mask, attention_mask_elements, JNI_ABORT);
+        env->ReleaseLongArrayElements(token_type_ids, token_type_ids_elements, JNI_ABORT);
+    };
+
     if (!result) {
         LOGE("Failed to create result float array");
-        // Clean up the embedding vector if it was dynamically allocated
-        delete[] embedding_vector; // or appropriate cleanup based on your memory management
+        // NB: `embedding_vector` is NOT ours to free. It points into
+        // `EmbeddingSessionCache::last_output`, owned by the cache and valid until the next forward
+        // pass. This path used to `delete` it — a pointer that was never `new`-allocated, and
+        // since the fix above, one that belongs to a live object.
+        release_inputs;
         return nullptr;
     }
 
     // Copy data to Java array
     env->SetFloatArrayRegion(result, 0, total_size, embedding_vector);
 
+    release_inputs;
     return result;
 }

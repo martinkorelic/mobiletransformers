@@ -43,6 +43,22 @@ data class ActionSpec(
      * — the model would be trained toward targets its own validator refuses.
      */
     val requiredParameters: Set<String>? = null,
+    /**
+ * Android permissions the app must hold before [allowedIntent] can actually be started.
+ *
+ * Declared here, beside the intent, because the two are one fact: `SET_ALARM` requires
+ * `com.android.alarm.permission.SET_ALARM`, and an app that declares the action without the
+ * permission has an allowlist entry that always fails. That is precisely what happened — the
+ * sample app offered `set_alarm`, the model produced a valid call, the validator accepted it, and
+ * `startActivity` threw `SecurityException` at the last possible moment, which reads to a user as
+ * the feature being broken rather than as a missing manifest line.
+ *
+ * The SDK does not check or request these; it only carries them, so a caller can ask **before**
+ * firing rather than catching a failure afterwards. Whether a permission is install-time (granted
+ * automatically, like `SET_ALARM`) or runtime-dangerous (a system dialog, like `READ_CALENDAR`)
+ * is Android's business, not the allowlist's — the app resolves that when it acts.
+ */
+    val requiredPermissions: List<String> = emptyList(),
 ) {
     /** The effective required set: all declared parameters unless [requiredParameters] narrows it. */
     val required: Set<String> get() = requiredParameters ?: parameters.keys
@@ -74,6 +90,9 @@ data class ValidatedCall(
 ) {
     val actionName: String get() = spec.actionName
     val allowedIntent: String get() = spec.allowedIntent
+
+    /** Permissions the app must hold to start [allowedIntent] — see [ActionSpec.requiredPermissions]. */
+    val requiredPermissions: List<String> get() = spec.requiredPermissions
 }
 
 /**
@@ -121,8 +140,28 @@ class FunctionCallValidator(
             } catch (e: JsonSyntaxException) {
                 throw RejectedCallException("${file.path} is not a valid action schema: ${e.message}")
             } ?: throw RejectedCallException("${file.path} parsed to null")
-            return FunctionCallValidator(specs.toList())
+            return FunctionCallValidator(specs.map { it.withGsonDefaults() })
         }
+
+    /**
+ * Repair the Kotlin defaults Gson skipped.
+ *
+ * Gson constructs objects through `Unsafe`, bypassing the constructor entirely — so a field
+ * absent from the JSON is left as **null**, even where Kotlin declares it non-null with a
+ * default. The type system then believes a lie, and the failure surfaces far away: the first
+ * read of the field throws `NullPointerException: Parameter specified as non-null is null`
+ * somewhere that never mentions JSON.
+ *
+ * Every schema file in the tree happened to declare `parameters` and `validationRules`, which
+ * is why this went unnoticed until `requiredPermissions` was added and no existing schema had
+ * it. Normalising all four means the next optional field added here is safe by default rather
+ * than by luck.
+ */
+        private fun ActionSpec.withGsonDefaults(): ActionSpec = @Suppress("USELESS_ELVIS") copy(
+            parameters = parameters ?: emptyMap(),
+            validationRules = validationRules ?: emptyMap(),
+            requiredPermissions = requiredPermissions ?: emptyList(),
+)
     }
 
     private val byName: Map<String, ActionSpec> = allowlist.associateBy { it.actionName }

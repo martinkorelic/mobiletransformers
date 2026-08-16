@@ -11,6 +11,7 @@ import com.martinkorelic.mobiletransformers.hub.HubResolver
 import com.martinkorelic.mobiletransformers.packages.CacheIndex
 import com.martinkorelic.mobiletransformers.internal.runtime.RepositoryBackedModelSession
 import com.martinkorelic.mobiletransformers.packages.MobileTransformersManifest
+import com.martinkorelic.mobiletransformers.packages.DeviceCapabilities
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
 import com.martinkorelic.mobiletransformers.packages.PackageFormat
 import com.martinkorelic.mobiletransformers.packages.PackageTask
@@ -55,11 +56,9 @@ object MobileTransformers {
         if (!modelDir.isDirectory) {
             // #21: not installed -> manifest-first pull + atomic install, then load.
             val genaiRequested = engine == InferenceEngine.GENAI || features.any { it == ModelFeature.GenAI }
-            val featureGroups = buildSet {
-                add("inference")
-                if (ModelFeature.Training in features) add("train")
-                if (ModelFeature.Rag in features || ModelFeature.Embedding in features) add("rag")
-            }
+            // Shared with PackageDownloadWorker: the two download paths must agree on which groups a
+            // feature set implies, or a background pull installs a different package than this one.
+            val featureGroups = DeviceCapabilities.downloadGroups(features)
             try {
                 HubDownloader.downloadAndInstall(
                     cacheDir = File(cacheDir),
@@ -70,8 +69,8 @@ object MobileTransformers {
                     genai = genaiRequested,
                     // #21: real device capabilities so VariantSelector can reject an incompatible
                     // variant BEFORE downloading it, instead of taking manifest.defaultVariant blind.
-                    abis = Build.SUPPORTED_ABIS?.toList() ?: emptyList(),
-                    totalMemMb = deviceMemoryMb(context),
+                    abis = DeviceCapabilities.abis(),
+                    totalMemMb = DeviceCapabilities.totalMemoryMb(context),
                     endpoint = hubConfig?.endpoint ?: HubResolver.DEFAULT_ENDPOINT,
                     token = hubConfig?.token,
                     // Forwarded whole: the pull reports bytes, rate and phase, and re-deriving a
@@ -165,6 +164,9 @@ object MobileTransformers {
                 // and because passing only the architecture (`gemma3_text`) is exactly the bug this
                 // replaces.
                 trainingParameterCount = manifestOf(modelDir)?.trainingParameterCount ?: 0L,
+            // Which fine-tuning technique this package carries. Recorded by the exporter since
+            // the training stage existed; read here for the first time.
+            peftMethods = manifestOf(modelDir)?.peftMethods.orEmpty().toSet(),
                 toolCalling = ToolCallSupport.read(
                     tokenizerDir = PackagePaths.forCache(modelDir.parentFile, modelDir.name).tokenizer,
                     hints = listOf(repoId, sanitized),
@@ -201,14 +203,6 @@ object MobileTransformers {
     @JvmStatic
     fun installed(context: Context): List<CacheIndex.InstalledPackage> =
         installed(context.filesDir.absolutePath)
-
-    /** Total device RAM in MB, for the #13 `recommendedDeviceMemoryMb` filter. Null when unavailable. */
-    private fun deviceMemoryMb(context: Context): Int? =
-        runCatching {
-            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            val info = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
-            (info.totalMem / (1024L * 1024L)).toInt()
-        }.getOrNull()
 
     /**
      * The installed variant's declared engines, or `null` when the package declares none.

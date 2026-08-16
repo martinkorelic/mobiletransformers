@@ -108,6 +108,7 @@ fun GenerationConfig.toOrt(
         loadMergedWeights = mergedLoaded,
         sampling = sampling.toOrt(),
         deviceOptions = device.toOrt(),
+    applyChatTemplate = applyChatTemplate,
     )
 
 /**

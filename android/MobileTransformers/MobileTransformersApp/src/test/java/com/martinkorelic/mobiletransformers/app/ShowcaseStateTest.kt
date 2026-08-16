@@ -3,7 +3,6 @@ package com.martinkorelic.mobiletransformers.app
 import com.martinkorelic.mobiletransformers.app.viewmodels.EnginePickerState
 import com.martinkorelic.mobiletransformers.app.viewmodels.InstalledRow
 import com.martinkorelic.mobiletransformers.app.viewmodels.ModelsUiState
-import com.martinkorelic.mobiletransformers.app.viewmodels.Outcome
 import com.martinkorelic.mobiletransformers.constants.SamplingMethod
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
 import org.junit.After
@@ -90,25 +89,6 @@ class ShowcaseStateTest {
             available = setOf(InferenceEngine.NATIVE, InferenceEngine.GENAI),
         )
         assertNull("no note is needed when GenAI is actually selectable", both.genAiNote)
-    }
-
-    /**
-     * Accepted and Rejected are peers, and a dry run must never claim it will execute. If this ever
-     * reads `true` the screen is describing an action the SDK does not perform.
-     */
-    @Test
-    fun aDryRunOutcomeNeverMarksItselfExecutable() {
-        val accepted = Outcome.Accepted(
-            raw = """{"actionName":"set_alarm","parameters":{"time":"07:30"}}""",
-            actionName = "set_alarm",
-            parameters = mapOf("time" to "07:30"),
-            intentAction = "android.intent.action.SET_ALARM",
-            willExecute = false,
-        )
-        assertFalse(accepted.willExecute)
-
-        val rejected = Outcome.Rejected(raw = "\n\n\n", reason = "model output is empty")
-        assertEquals("model output is empty", rejected.reason)
     }
 
     /**

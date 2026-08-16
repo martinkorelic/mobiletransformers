@@ -350,13 +350,30 @@ def test_the_derivation_agrees_with_a_real_exported_package() -> None:
     if not maps:
         pytest.skip("no exported package on disk (run scripts/device_package.sh)")
 
-    entries = json.loads(maps[0].read_text())["entries"]
-    assert entries, f"{maps[0]} declares no entries"
-
     from mobiletransformers.artifacts.handoff_map import (
         ALREADY_TRANSPOSED,
         derive_transpose_policy,
     )
+
+    # Take the first package that can actually ANSWER the question, not simply the first on disk.
+    #
+    # Orientation is only observable from a non-square adapted weight, and two real cases produce
+    # none: an encoder whose attention projections are square (all-MiniLM-L6-v2 adapts
+    # `query`/`value` at 384x384), and a package exported for inference only, whose map has no
+    # entries at all. Both are perfectly good packages — they just cannot settle this question — so
+    # picking `maps[0]` made the suite's result depend on which export happened to sort first.
+    chosen: Path | None = None
+    entries: list = []
+    for candidate in maps:
+        rows = json.loads(candidate.read_text()).get("entries") or []
+        if any(e["shape"][0] != e["shape"][1] for e in rows):
+            chosen, entries = candidate, rows
+            break
+    if chosen is None:
+        pytest.skip(
+            "no export on disk has a non-square adapted weight, so orientation is unobservable "
+            f"(looked at {len(maps)} package(s))"
+        )
 
     # The square layers (q_proj, [576,576]) genuinely cannot be decided alone and must NOT be
     # over-claimed; the non-square ones (v_proj) are what settles the package.

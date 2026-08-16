@@ -86,6 +86,10 @@ class ModelsViewModel(app: Application) : AndroidViewModel(app) {
         _ui.value = _ui.value.copy(requestRag = value)
     }
 
+    fun onWifiOnlyChanged(value: Boolean) {
+        _ui.value = _ui.value.copy(wifiOnly = value)
+    }
+
     /**
      * The in-flight pull, so it can be cancelled.
      *
@@ -113,11 +117,15 @@ class ModelsViewModel(app: Application) : AndroidViewModel(app) {
                 if (_ui.value.requestRag) add(ModelFeature.Rag)
             }
             try {
-                ModelHolder.load(
+                // Background rather than in-scope: the pull now survives leaving the app, which is
+                // the whole reason PackageDownloadWorker exists. Loading still happens through the
+                // one shared path once the worker reports Finished.
+                ModelHolder.loadInBackground(
                     context = getApplication(),
                     repoId = repoId,
                     engine = _ui.value.engine,
                     features = features,
+                    wifiOnly = _ui.value.wifiOnly,
                 )
             } catch (cancellation: CancellationException) {
                 // Cancelling is a user action with a normal outcome, not an error: say what survived.
@@ -149,8 +157,15 @@ class ModelsViewModel(app: Application) : AndroidViewModel(app) {
         loadSelected(entry.repoId)
     }
 
-    /** Stop the in-flight pull at the next 64 KB chunk boundary, keeping the `.partial` files. */
+    /**
+ * Stop the in-flight pull, keeping the `.partial` files so a retry resumes.
+ *
+ * Cancels the WORKER as well as the coroutine observing it. Cancelling only the coroutine would
+ * detach the UI from a download that kept running — which is the failure mode background work
+ * introduces and the reason this is not just `pullJob?.cancel` any more.
+ */
     fun cancelDownload() {
+        ModelHolder.cancelBackgroundDownload(getApplication(), _ui.value.repoId)
         pullJob?.cancel()
         pullJob = null
     }
@@ -171,6 +186,14 @@ data class ModelsUiState(
     val repoId: String = "HuggingFaceTB/SmolLM2-135M-Instruct",
     val requestTraining: Boolean = false,
     val requestRag: Boolean = false,
+    /**
+ * Constrain the background pull to unmetered networks.
+ *
+ * Visible rather than implicit: `PackageDownloadWorker` defaults `requireUnmetered` to true, so on
+ * mobile data the work sits in `ENQUEUED` indefinitely and looks exactly like a hang. A switch is
+ * the difference between "waiting for Wi-Fi" and "broken".
+ */
+    val wifiOnly: Boolean = true,
     /**
      * The engine to load with. Was hardcoded to `NATIVE` at the call site, which made the Chat
      * screen's engine picker decorative — GenAI could be *reported* as available and never selected.

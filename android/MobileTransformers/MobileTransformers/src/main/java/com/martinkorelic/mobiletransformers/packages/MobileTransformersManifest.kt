@@ -30,6 +30,15 @@ data class MobileTransformersManifest(
      */
     @SerializedName("trainingParameterCount") val trainingParameterCount: Long = 0L,
     @SerializedName("trainableParameterCount") val trainableParameterCount: Long = 0L,
+    /**
+ * The PEFT method(s) this package was exported for — `lora`, `lora-xs`, `mars`, …
+ *
+ * Written by the exporter since the training stage existed and read by nothing on the device, so
+ * an app could not tell a MARS package from a LoRA one. That matters most for MARS, which is this
+ * project's own contribution: a user running the fine-tuning demo had no way to see *which*
+ * technique they were watching.
+ */
+    @SerializedName("peftMethods") val peftMethods: List<String> = emptyList(),
     @SerializedName("downloadPlan") val downloadPlan: Map<String, Map<String, List<String>>> = emptyMap(),
     @SerializedName("weightHandoff") val weightHandoff: String = "",
 ) {

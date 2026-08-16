@@ -71,6 +71,14 @@ data class GenerationConfig(
     val systemPrompt: String? = null,
     val loadMerged: Boolean = false,
     val device: DeviceConfig = DeviceConfig(),
+    /**
+ * Wrap the prompt in the package's chat template, when it ships one the device can render.
+     *
+ * Leave it true for chat. Set it false when **you have already framed the turns yourself** — the
+ * two framings would otherwise nest. `generateToolCall` does exactly that, because
+ * `ToolPromptBuilder` writes a complete turn structure of its own.
+ */
+    val applyChatTemplate: Boolean = true,
 )
 
 /**

@@ -24,7 +24,22 @@ enum class Destination(val label: String, val group: NavGroup) {
     /** First for a reason: on a clean install nothing else can do anything until a package exists. */
     Models("Models", NavGroup.Run),
     Chat("Chat", NavGroup.Run),
-    ToolCalls("Tool calls", NavGroup.Run),
+    /**
+ * Search the ingested documents and show the closest passages, with nothing generated.
+ *
+ * Its own destination rather than a corner of Chat because it is the only part of the retrieval
+ * story an **encoder** package can show at all: an embedding model has no generative head, so
+ * Chat is hidden for it and grounding is unreachable. It is also the only place retrieval can be
+ * judged on its own — inside a grounded answer, bad retrieval and a model ignoring good retrieval
+ * are indistinguishable.
+ */
+    Retrieval("Retrieval", NavGroup.Run),
+    /**
+ * Hidden for everything except a classifier that names its labels — the exact inverse of [Chat].
+ * A decoder has no classification head, so this is a capability the package genuinely does not
+ * have rather than a step the user has not taken yet.
+ */
+    Classify("Classify", NavGroup.Run),
     Train("Training", NavGroup.Train),
     Federated("Federated", NavGroup.Train),
     Configuration("Configuration", NavGroup.Setup),
@@ -75,15 +90,44 @@ fun Destination.availability(state: ModelState): Availability {
             },
         )
 
-    val caps = model.capabilities
+    return availabilityFor(model.capabilities)
+}
+
+/**
+ * The half of [availability] that depends only on what the loaded package can do.
+ *
+ * Split out to be reachable from a JVM test: a `ModelState.Loaded` carries a `MobileTransformerModel`,
+ * which owns a native session and cannot be constructed off-device, so as one function every
+ * capability branch here was untestable — including the one that decides whether Classify exists.
+ */
+internal fun Destination.availabilityFor(
+    caps: com.martinkorelic.mobiletransformers.runtime.RuntimeCapabilities,
+): Availability {
     return when (this) {
-        Destination.Chat, Destination.ToolCalls ->
-            // A classification encoder has no generative head at all; offering a chat box for it is
-            // a promise the package cannot keep.
-            if (caps.isClassifier) {
-                Availability.Hidden
-            } else {
+        Destination.Chat ->
+        // Any encoder — a classifier OR a plain embedding model — has no generative head at all,
+        // so offering a chat box for it is a promise the package cannot keep. Testing only
+        // `isClassifier` covered the first and missed the second, which is exactly the package
+        // the Retrieval screen exists for.
+        if (caps.isEncoderOnly) Availability.Hidden else Availability.Enabled
+
+        Destination.Retrieval ->
+        // The embedding stage is the whole requirement; whether the package can also generate is
+        // irrelevant here, which is what lets a pure encoder use this screen.
+        if (caps.supportsRag || caps.supportsEmbedding) {
                 Availability.Enabled
+            } else {
+            Availability.Blocked("this package has no embedding stage — pull one with RAG requested")
+            }
+
+        Destination.Classify ->
+        // `supportsClassification`, not `isClassifier`: a classification graph whose labels are
+        // unknown runs fine and answers `LABEL_3`, which is a number in a costume. The screen
+        // would show bars with no meaning, so the honest report is that it is not applicable.
+        if (caps.supportsClassification) {
+                Availability.Enabled
+            } else {
+                Availability.Hidden
             }
 
         Destination.Train, Destination.Federated ->

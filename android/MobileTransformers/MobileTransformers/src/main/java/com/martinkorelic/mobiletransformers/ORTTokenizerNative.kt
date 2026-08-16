@@ -35,7 +35,6 @@ class ORTTokenizerNative (private val tokenizerDir : String) {
 
     // Tokenizer config
     private val tokenizerConfigFileName = "tokenizer_config.json"
-    private var applyChatTemplate : Boolean = false
 
     // Important text control tokens
     // This tokens should be set
@@ -74,6 +73,11 @@ class ORTTokenizerNative (private val tokenizerDir : String) {
         loadTokenizerConfiguration("${tokenizerDir}/${tokenizerConfigFileName}")
         // Load special token map
         loadSpecialTokensMapFromFile("$tokenizerDir/$specialTokenFileName")
+
+        // Deliberately AFTER the special-token map is populated. The probe render feeds the same
+        // context a real turn does, and templates routinely reference `bos_token`/`eos_token`; probing
+        // before the map exists would fail templates that work perfectly in use.
+        validateChatTemplate()
 
         if (!modelFields) {
             Log.e(LOG_TAG, "Error reading training_config.json fields for tokenizer.")
@@ -184,20 +188,30 @@ class ORTTokenizerNative (private val tokenizerDir : String) {
                 tokenizerConfig["model_max_length"]?.asInt?.let { maxLength -> maximumTokenLength = if (maxLength == 0) Int.MAX_VALUE else maxLength }
             }
 
-            // Extract the chat template
-            chatTemplate = tokenizerConfig["chat_template"]?.asString
+            // Extract the chat template. Only a CANDIDATE at this point — [validateChatTemplate]
+            // decides whether it survives, once the special-token map is loaded.
+            chatTemplate = resolveChatTemplate(tokenizerConfig, tokenizerConfigFile.parentFile)
 
             if (chatTemplate == null)   {
-                Log.w(LOG_TAG, "Chat template not found in $tokenizerConfigPath. No chat template will be used.")
+                Log.w(LOG_TAG, "Chat template not found for $tokenizerDir. Prompts will NOT be turn-wrapped.")
                 return
             }
-
-            applyChatTemplate = true
 
         } catch (e: Exception) {
             e.printStackTrace()
             return
         }
+    }
+
+    /**
+ * Drop the resolved template unless Pebble can actually evaluate it.
+     *
+ * Delegates to [validatedChatTemplate]; the logic lives in the companion because this class
+ * cannot be constructed off-device — its `init` loads the native library — and the resolution
+ * rules are exactly the part worth testing on the JVM.
+ */
+    private fun validateChatTemplate() {
+        chatTemplate = validatedChatTemplate(chatTemplate, getSpecialTokensWithContent())
     }
 
     fun readModelFieldsFromJson(filePath: String): Boolean {
@@ -705,4 +719,95 @@ class ORTTokenizerNative (private val tokenizerDir : String) {
     external fun createTokenizerSession(tokenizerFilePath : String) : Long
 
     external fun releaseTokenizerSession(tokenizerModel: Long)
+
+    /**
+ * Chat-template resolution, kept static and side-effect-free so it can be tested on the JVM.
+     *
+ * The instance side of this class cannot be constructed off-device — `init` runs
+ * `System.loadLibrary` — so anything living only there is unreachable by the host suite. That is
+ * how the sibling-file bug survived: nothing host-side could observe [resolveChatTemplate]'s
+ * result. Mirrors the shape of `packages.ToolCallSupport`.
+ */
+    companion object {
+        private const val TAG = "ORTTokenizerNative"
+
+        /** Where the exporter puts the template, as a sibling of `tokenizer_config.json`. */
+        const val CHAT_TEMPLATE_FILE_NAME = "chat_template.jinja"
+
+    /**
+ * The package's Jinja chat template, from either place it may live.
+     *
+ * The sibling file is the normal case, and reading only the inline key was the bug:
+ * `export/pipeline.py::_emit_chat_template` writes the template to
+ * [CHAT_TEMPLATE_FILE_NAME] beside `tokenizer_config.json` and leaves **no** `chat_template`
+ * key behind, and the installers flatten it into `tokenizer/`. So the key lookup found
+ * nothing for every package the exporter has ever produced, [ORTConversationState] was never
+ * constructed, and no plain-chat prompt was ever wrapped in the model's turn format.
+     *
+ * The inline key is still checked first: packages predating that change carry it, and one
+ * shipping both is stating a deliberate override.
+     *
+ * Note this does NOT share `ToolCallSupport.readChatTemplate`. That function's fallback
+ * returns the whole of `tokenizer_config.json` when the substring matches — correct for
+ * sniffing a dialect out of it, useless as a template, and megabytes wide on a large vocab.
+ */
+        @JvmStatic
+        fun resolveChatTemplate(tokenizerConfig: JsonObject?, tokenizerDir: File?): String? {
+            // Guard the type instead of calling asString blind: chat_template is sometimes a LIST of
+            // named templates ({name, template}) rather than a string, and asString throws on that.
+            val inline = tokenizerConfig?.get("chat_template")
+            ?.takeIf { it.isJsonPrimitive }
+            ?.asString
+            ?.takeIf { it.isNotBlank() }
+            if (inline != null) return inline
+
+            val sibling = tokenizerDir?.let { File(it, CHAT_TEMPLATE_FILE_NAME) } ?: return null
+            if (!sibling.isFile) return null
+            return runCatching { sibling.readText(Charsets.UTF_8) }
+.onFailure { Log.w(TAG, "Could not read $sibling", it) }
+.getOrNull()
+            ?.takeIf { it.isNotBlank() }
+}
+
+    /**
+ * [candidate] if Pebble can evaluate it against a probe turn, otherwise null.
+     *
+ * A template that throws is strictly worse than no template: without this check the failure
+ * lands mid-generation, once per turn, rather than once at load. Pebble is not Jinja —
+ * FunctionGemma's template alone uses `namespace`, `dictsort` and macros it does not
+ * implement — so catching that here and falling back to an unwrapped prompt is the designed
+ * outcome, not a regression.
+     *
+ * @param specialTokens must already be populated; templates routinely reference
+ * `bos_token`/`eos_token`, and probing against an empty map would reject working templates.
+ */
+        @JvmStatic
+        fun validatedChatTemplate(candidate: String?, specialTokens: Map<String, String>): String? {
+            if (candidate == null) return null
+            val rendered = runCatching {
+                val context = mutableMapOf<String, Any>(
+                    "messages" to listOf(
+                        mapOf("role" to "user", "content" to "ping"),
+                        mapOf("role" to "assistant", "content" to "pong"),
+),
+                    "add_generation_prompt" to true,
+        )
+                context.putAll(specialTokens)
+                ORTChatTemplateHandler(candidate).buildInput(context)
+            }.getOrElse { failure ->
+                Log.w(TAG, "Chat template failed its probe render; continuing unwrapped.", failure)
+                return null
+    }
+
+            // A template evaluating to nothing is a silent prompt-eater — generation would be handed
+            // an empty string every turn. Treat it exactly like one that threw.
+            if (rendered.isBlank()) {
+                Log.w(TAG, "Chat template rendered empty on probe; continuing unwrapped.")
+                return null
+    }
+
+            Log.i(TAG, "Chat template active (${candidate.length} chars); prompts are turn-wrapped.")
+            return candidate
+    }
+    }
 }

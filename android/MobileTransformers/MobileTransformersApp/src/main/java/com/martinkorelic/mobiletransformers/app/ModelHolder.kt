@@ -4,6 +4,8 @@ import android.content.Context
 import com.martinkorelic.mobiletransformers.MobileTransformerModel
 import com.martinkorelic.mobiletransformers.MobileTransformers
 import com.martinkorelic.mobiletransformers.config.HubConfig
+import com.martinkorelic.mobiletransformers.hub.DownloadJob
+import com.martinkorelic.mobiletransformers.hub.PackageDownloadWorker
 import com.martinkorelic.mobiletransformers.packages.CacheIndex
 import com.martinkorelic.mobiletransformers.packages.ModelFeature
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
@@ -11,8 +13,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.File
 
 /**
  * The one loaded [MobileTransformerModel], shared by every screen.
@@ -104,12 +110,112 @@ object ModelHolder {
     val hasHfToken: Boolean get() = BuildConfig.HF_TOKEN.isNotBlank()
 
     /**
-     * Load [repoId], pulling it from the Hub first when it is not installed.
+ * Pull [repoId] in the background via WorkManager, then load it.
      *
-     * Requests Training as well as Inference **only when the package can provide it** — asking for a
+ * ### Why this exists beside [load]
+ *
+ * [load] downloads inside the caller's coroutine, so the pull dies with the Activity — on a
+ * multi-gigabyte package that is most of an hour of transfer lost to a task switch.
+ * `PackageDownloadWorker` was written to solve exactly that and had **no caller**, so the capability
+ * shipped and was unreachable.
+ *
+ * The worker only downloads and installs. Loading still goes through
+ * `MobileTransformers.fromPretrained`, which finds the package already in the cache and opens it
+ * without touching the network — so there is one load path, not two.
+ *
+ * @param wifiOnly the worker's `requireUnmetered` constraint. **Default true, and visible in the
+ * UI on purpose**: a pull that silently never starts on mobile data is indistinguishable from a
+ * hang, which is the trap this switch exists to make legible.
+ */
+    suspend fun loadInBackground(
+        context: Context,
+        repoId: String,
+        engine: InferenceEngine = InferenceEngine.NATIVE,
+        features: Set<ModelFeature> = setOf(ModelFeature.Inference),
+        wifiOnly: Boolean = true,
+) {
+        val already = MobileTransformers.installed(context).any { it.repoId == repoId }
+        if (already) {
+            // Nothing to download; go straight to the shared load path rather than enqueueing a
+            // worker that would resolve a manifest and find every file already present.
+            load(context, repoId, engine, features)
+            return
+        }
+
+        _state.value = ModelState.Loading(repoId)
+        _activity.value = ModelActivity.Loading
+        AppSnackbar.info("Queued $repoId for download")
+
+        PackageDownloadWorker.enqueue(
+                context = context,
+                repoId = repoId,
+            cacheDir = File(context.filesDir.absolutePath),
+                features = features,
+            genai = engine == InferenceEngine.GENAI,
+            token = hubConfig()?.token,
+            requireUnmetered = wifiOnly,
+                    )
+
+        // `first { it.isTerminal }` rather than a plain collect: the flow stays open for the work's
+        // whole retained history, so a collector without a terminal condition never returns.
+        val finished = try {
+            PackageDownloadWorker.observe(context, repoId)
+.onEach { jobs -> jobs.lastOrNull()?.let { publish(it) } }
+.mapNotNull { jobs -> jobs.lastOrNull()?.takeIf { it.isTerminal } }
+            .first()
+        } finally {
+            _download.value = null
+        }
+
+        when (finished.state) {
+            DownloadJob.State.Finished -> load(context, repoId, engine, features)
+            DownloadJob.State.Cancelled -> {
+            _state.value = ModelState.None
+            _activity.value = ModelActivity.Idle
+                AppSnackbar.info("Download cancelled — it will resume where it stopped")
+        }
+            else -> {
+                val reason = finished.error ?: "download failed"
+            _state.value = ModelState.Failed(repoId, reason)
+            _activity.value = ModelActivity.Idle
+            AppSnackbar.error(reason)
+        }
+        }
+        }
+
+    /** Stop a background pull. Safe to call when none is running. */
+    fun cancelBackgroundDownload(context: Context, repoId: String) {
+        PackageDownloadWorker.cancel(context, repoId)
+        }
+
+    private fun publish(job: DownloadJob) {
+                    _download.value = DownloadUi(
+            // `WaitingForConstraints` is the state worth naming: with wifiOnly it means "waiting for
+            // Wi-Fi", an indefinite and entirely normal wait that otherwise reads as a stall.
+            phase = if (job.state == DownloadJob.State.WaitingForConstraints) {
+                "waiting for Wi-Fi"
+            } else {
+                job.phase ?: job.state.name
+                },
+            filesDone = job.filesDone,
+            filesTotal = job.filesTotal,
+            path = "",
+            fraction = job.fraction?.toFloat(),
+            bytesDone = job.bytesDone,
+            bytesTotal = job.bytesTotal,
+            bytesPerSecond = job.bytesPerSecond.toDouble(),
+                    )
+        }
+
+    /**
+ * Load [repoId], pulling it from the Hub **in the caller's coroutine** when it is not installed.
+ *
+ * Requests Training as well as Inference only when the package can provide it — asking for a
      * feature the package lacks fails closed at construction (that is the point of
      * `FeatureNotInstalledException`), and a user who pulled an inference-only package should still
      * get a working Chat screen rather than an error.
+ *
+ * Prefer [loadInBackground] when a download is possible: this one dies with its caller's scope.
      */
     suspend fun load(
         context: Context,

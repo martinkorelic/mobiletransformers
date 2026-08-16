@@ -130,6 +130,9 @@ private fun CatalogTab(vm: ModelsViewModel) {
                         AssistChip(onClick = {}, label = { Text(entry.task) })
                         if (entry.supportsTraining) AssistChip(onClick = {}, label = { Text("train") })
                         if (entry.supportsRag) AssistChip(onClick = {}, label = { Text("rag") })
+                        if (entry.peft.isNotBlank()) {
+                            AssistChip(onClick = {}, label = { Text(entry.peft) })
+        }
                     }
 
                     if (entry.recommendedFor.isNotBlank()) {
@@ -253,12 +256,19 @@ private fun PullByIdTab(vm: ModelsViewModel) {
                         ui.requestRag,
                         vm::onRagRequestedChanged,
                     )
+                    LabeledSwitch(
+                        "Download over Wi-Fi only",
+                        ui.wifiOnly,
+                        vm::onWifiOnlyChanged,
+            )
                     Text(
                         "Requesting Training fails closed when the package has no train/ stage — " +
                             "that is deliberate, not a bug. RAG is a separate download group: " +
                             "without it no embedding encoder is fetched and Chat's grounding cannot " +
                             "work, so it is asked here where the cost is visible rather than " +
-                            "discovered later.",
+                        "discovered later. Pulls run in the background and survive leaving the " +
+                        "app; with Wi-Fi only on, one started on mobile data waits rather than " +
+                        "failing.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

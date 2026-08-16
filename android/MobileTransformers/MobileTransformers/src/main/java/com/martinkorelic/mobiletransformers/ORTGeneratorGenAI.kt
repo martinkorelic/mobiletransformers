@@ -89,7 +89,13 @@ class ORTGeneratorGenAI(
         try {
             check(handle != 0L) { "GenAI session not loaded" }
             generationArgs.systemPrompt?.let { conversationState?.setSystemPrompt(it) }
-            val renderedPrompt = conversationState?.addUserMessage(promptText) ?: promptText
+            // Skipped when the caller framed its own turns — see ORTGenerationConfig.applyChatTemplate.
+            // Kept in step with Native deliberately: the whole point of rendering here is that the two
+            // engines feed the model the SAME token sequence for one generate(prompt) call.
+            val renderedPrompt = conversationState
+            ?.takeIf { generationArgs.applyChatTemplate }
+            ?.addUserMessage(promptText)
+            ?: promptText
             if (!nativeStart(handle, renderedPrompt, generationArgs.maxSequenceLength)) {
                 throw IllegalStateException("GenAI failed to start generation")
             }
@@ -129,8 +135,11 @@ class ORTGeneratorGenAI(
             }
 
             // Multi-turn parity with Native: the reply has to go back into the transcript, or a second
-            // generate() would re-render the conversation without it.
-            conversationState?.addAssistantMessage(decodedText.toString())
+            // generate would re-render the conversation without it. Gated on the same flag as the
+            // user turn — see ORTGenerationConfig.applyChatTemplate.
+            conversationState
+            ?.takeIf { generationArgs.applyChatTemplate }
+            ?.addAssistantMessage(decodedText.toString())
 
             callback?.onCompletion(
                 InferenceProgress(

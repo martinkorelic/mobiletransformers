@@ -46,24 +46,46 @@ object ToolPromptBuilder {
      * trained on `<start_of_turn>developer … <end_of_turn><start_of_turn>user …
      * <end_of_turn><start_of_turn>model`, and normally the tokenizer's chat template supplies that
      * framing — but the exporter writes the template to a sibling `chat_template.jinja` that
-     * `ORTTokenizerNative` does not read, so on device `chatTemplate` is null and **nothing wraps the
+ * `ORTTokenizerNative` did not read, so on device `chatTemplate` was null and **nothing wrapped the
      * prompt at all**. The model was being handed a naked instruction in a format it has never seen
      * and asked to produce a grammar it only emits inside a model turn.
+ *
+ * The tokenizer reads that file now — but this builder is still the framing that runs for tool
+ * calls, and deliberately so: FunctionGemma's own template is 13 KB of `namespace`, `dictsort`
+ * and macros that Pebble cannot evaluate, so it fails the load-time probe and leaves
+ * `chatTemplate` null for precisely the family that needs this most.
      *
      * Framing it here is the fix that does not depend on a Jinja engine rendering a 400-line
      * template on a phone. It is dialect-specific for the same reason the parser is: the two are
      * chosen together, and a declaration in one grammar with a reply parsed in the other is the
      * mismatch this whole seam exists to prevent.
      *
-     * **Assumes the caller's session does not apply a chat template of its own.** When
-     * `ORTTokenizerNative.chatTemplate` is non-null the generator already wraps each prompt, and this
-     * would nest one framing inside another; that combination does not arise for the packages that
-     * ship today (none carries a template the device reads), and is called out here so it is noticed
-     * rather than discovered.
+ * **The caller's session must not apply a chat template on top of this.** When
+ * `ORTTokenizerNative.chatTemplate` is non-null the generator wraps each prompt itself, and that
+ * would nest one framing inside another. This used to be merely a documented assumption, safe
+ * because no package carried a template the device read; the tokenizer now reads
+ * `chat_template.jinja`, so it is enforced instead — `generateToolCall` passes
+ * `applyChatTemplate = false` for exactly this reason, pinned by
+ * `ToolCallFramingTest.toolCallPromptsAreNotWrappedTwice`.
+ */
+    /**
+ * Whether [prompt] emits its own turn structure for [parser] — and therefore whether the caller
+ * must suppress the tokenizer's chat template to avoid nesting one framing inside the other.
+ *
+ * Only the FunctionGemma branch frames turns. The JSON branch returns `declarations + instruction`
+ * with no turn markers at all, so a package whose chat template the device can render *should*
+ * still wrap it: suppressing there would strip the framing rather than de-duplicate it.
+ *
+ * Exposed so `generateToolCall` and [prompt] cannot drift apart on the question. They did not
+ * share this predicate at first, and the blanket version silently unwrapped every JSON-dialect
+ * tool call on any package with a working template.
      */
     @JvmStatic
+    fun framesOwnTurns(parser: ToolCallParser): Boolean = parser === ToolCallParser.FunctionGemma
+
+    @JvmStatic
     fun prompt(allowlist: List<ActionSpec>, parser: ToolCallParser, instruction: String): String =
-        if (parser === ToolCallParser.FunctionGemma) {
+    if (framesOwnTurns(parser)) {
             buildString {
                 append("<start_of_turn>developer\n")
                 append(functionGemmaDeclarations(allowlist).trim())
