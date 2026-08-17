@@ -1,6 +1,6 @@
 ![MobileTransformers](docs/assets/mobiletransformers_banner.png)
 
-# MobileTransformers: An On-Device LLM PEFT Framework for Fine-Tuning and Inference
+# MobileTransformers: An On-Device LLM PEFT Framework for Fine-Tuning, Inference, RAG & more all on your mobile device
 
 [![checks](https://github.com/martinkorelic/mobiletransformers/actions/workflows/checks.yml/badge.svg)](https://github.com/martinkorelic/mobiletransformers/actions/workflows/checks.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
