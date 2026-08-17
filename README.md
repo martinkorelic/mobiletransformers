@@ -180,10 +180,11 @@ and what you should see.
 
 ## Where this is going
 
-- Beyond generation and classification: NER, question answering, summarization
+- Beyond generation and classification: NER, visual question answering, summarization
 - On-device reinforcement learning
 - More PEFT methods and quantization techniques
 - Additional hardware acceleration backends, and platforms beyond Android
+- Hopefully mobile GPU support
 
 ## References
 
@@ -193,7 +194,7 @@ and what you should see.
   — the research behind MARS, the on-device training methodology, and the experimental results.
 - [**AI health agents on mobile**](https://link.springer.com/article/10.1186/s12919-026-00367-3#Sec27),
   *BMC Proceedings* 2026, 20(12):A7 (EHRCON25 — openEHR International Conference).
-  The first on-device RAG prototype over openEHR personal health records: a small language model, an
+  On-device RAG prototype over openEHR personal health records: a small language model, an
   embedding model and a vector database of vital signs, medications, allergies and lab results, all
   running on the phone. Built on this framework.
 
