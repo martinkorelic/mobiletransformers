@@ -1,0 +1,5 @@
+{
+  "set_alarm": ["wake me at {time}", "set an alarm for {time}", "alarm at {time} please", "get me up at {time}"],
+  "set_timer": ["timer for {seconds} seconds", "count down {seconds} seconds", "set a {seconds} second timer"],
+  "open_wifi_settings": ["open wifi settings", "show me the wifi settings", "take me to wi-fi settings"]
+}

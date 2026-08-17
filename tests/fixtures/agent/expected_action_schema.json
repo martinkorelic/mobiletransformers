@@ -1,0 +1,85 @@
+[
+  {
+    "actionName": "create_calendar_event",
+    "allowedIntent": "android.intent.action.INSERT",
+    "parameters": {
+      "datetime": "string",
+      "title": "string"
+    },
+    "privacyClass": "imported-corpus",
+    "requiredParameters": [
+      "datetime",
+      "title"
+    ],
+    "validationRules": {
+      "datetime": "/\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}/"
+    }
+  },
+  {
+    "actionName": "create_contact",
+    "allowedIntent": "android.intent.action.INSERT",
+    "parameters": {
+      "email": "string",
+      "first_name": "string",
+      "last_name": "string",
+      "phone_number": "string"
+    },
+    "privacyClass": "imported-corpus",
+    "requiredParameters": [
+      "first_name",
+      "last_name"
+    ],
+    "validationRules": {}
+  },
+  {
+    "actionName": "open_wifi_settings",
+    "allowedIntent": "android.settings.WIFI_SETTINGS",
+    "parameters": {},
+    "privacyClass": "imported-corpus",
+    "requiredParameters": [],
+    "validationRules": {}
+  },
+  {
+    "actionName": "send_email",
+    "allowedIntent": "android.intent.action.SENDTO",
+    "parameters": {
+      "body": "string",
+      "subject": "string",
+      "to": "string"
+    },
+    "privacyClass": "imported-corpus",
+    "requiredParameters": [
+      "subject",
+      "to"
+    ],
+    "validationRules": {}
+  },
+  {
+    "actionName": "show_map",
+    "allowedIntent": "android.intent.action.VIEW",
+    "parameters": {
+      "query": "string"
+    },
+    "privacyClass": "imported-corpus",
+    "requiredParameters": [
+      "query"
+    ],
+    "validationRules": {}
+  },
+  {
+    "actionName": "turn_off_flashlight",
+    "allowedIntent": "",
+    "parameters": {},
+    "privacyClass": "imported-corpus",
+    "requiredParameters": [],
+    "validationRules": {}
+  },
+  {
+    "actionName": "turn_on_flashlight",
+    "allowedIntent": "",
+    "parameters": {},
+    "privacyClass": "imported-corpus",
+    "requiredParameters": [],
+    "validationRules": {}
+  }
+]

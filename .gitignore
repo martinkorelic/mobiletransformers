@@ -13,5 +13,28 @@ merged_models/
 data/
 experiment/
 dist/
-.deepeval/
 experiment_results/
+
+# Packaging / restructure
+*.egg-info/
+third_party/wheels/*.whl
+third_party/onnxruntime/build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.venv-genai-spike/
+
+# Gradle daemon caches (67 files of examples/consumer-app/.gradle were tracked until 2026-08-14)
+.gradle/
+# Implementation plans, audits and per-cycle handoff notes. Working material for whoever is building
+# this, not user documentation — `docs/` is the shipped set. Untracked 2026-08-17 at the owner's
+# request; the directory stays on disk. `tests/unit/test_docs.py` enumerates via `git ls-files`, so
+# its link check drops these automatically rather than by an exclude list.
+agent_docs/
+
+# Generated documentation site (`make docs-build`). Published by CI from source, never committed.
+site/
+
+# Agent/editor local state. Ignored here rather than relying on a personal global ignore file:
+# a contributor without that global rule would otherwise see it as untracked noise in a clean clone.
+.claude/settings.local.json

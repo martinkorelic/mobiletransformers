@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Colours for the XML/View layer only. The app's real palette lives in Compose
+  (`ui/theme/Theme.kt`), which owns four schemes — FRI and Better, each light and dark.
+
+  These exist because the window is painted before Compose composes: on a cold start the system draws
+  `Theme.MobileTransformersApp` for a beat, and if that disagrees with the Compose theme the launch
+  flashes the wrong colour. They are keyed to the FRI scheme, which is what `MainActivity` selects.
+
+  The Android Studio template's `purple_200/500/700` and `teal_200/700` were removed on 2026-08-17:
+  nothing but themes.xml referenced them, and `colorPrimaryVariant` -> `purple_700` was what painted a
+  strip of #3700B3 above the app bar in both day and night.
+-->
+<resources>
+    <!-- FRI light scheme: `primary` and `surfaceContainer` from Theme.kt. -->
+    <color name="brand_primary">#FFE03229</color>
+    <color name="brand_surface">#FFFDFBFB</color>
+    <color name="brand_surface_container">#FFF5F0EF</color>
+
+    <!-- FRI dark scheme, same two roles. -->
+    <color name="brand_primary_dark">#FFFFB4AA</color>
+    <color name="brand_surface_dark">#FF141313</color>
+    <color name="brand_surface_container_dark">#FF201F1F</color>
+
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

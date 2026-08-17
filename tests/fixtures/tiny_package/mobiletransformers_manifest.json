@@ -1,0 +1,211 @@
+{
+  "androidRuntime": {
+    "minimumAndroidApi": 28,
+    "recommendedDeviceMemoryMb": 3072,
+    "requiredAbis": [
+      "arm64-v8a"
+    ]
+  },
+  "architectures": [
+    "LlamaForCausalLM"
+  ],
+  "artifactFormatVersion": 1,
+  "baseModelId": "MobileTransformers/Tiny-0.1B",
+  "defaultVariant": "cpu-int4",
+  "downloadPlan": {
+    "cpu-fp16": {
+      "checksums": [
+        "variants/cpu-fp16/checksums.json"
+      ],
+      "core": [
+        "mobiletransformers_manifest.json",
+        "shared/tokenizer/**",
+        "shared/chat_template.jinja",
+        "shared/config.json",
+        "shared/generation_config.json"
+      ],
+      "genai": [],
+      "inference": [
+        "variants/cpu-fp16/inference/**"
+      ],
+      "rag": [],
+      "train": [
+        "variants/cpu-fp16/train/**"
+      ]
+    },
+    "cpu-int4": {
+      "checksums": [
+        "variants/cpu-int4/checksums.json"
+      ],
+      "core": [
+        "mobiletransformers_manifest.json",
+        "shared/tokenizer/**",
+        "shared/chat_template.jinja",
+        "shared/config.json",
+        "shared/generation_config.json"
+      ],
+      "genai": [
+        "variants/cpu-int4/inference/genai_config.json"
+      ],
+      "inference": [
+        "variants/cpu-int4/inference/**"
+      ],
+      "rag": [
+        "variants/cpu-int4/embedding/**"
+      ],
+      "train": [
+        "variants/cpu-int4/train/**"
+      ]
+    }
+  },
+  "exportedAt": "2026-07-14T00:00:00Z",
+  "fileSizes": {
+    "README.md": 42,
+    "licenses/BASE_MODEL_LICENSE": 11,
+    "licenses/FRAMEWORK_LICENSE": 11,
+    "optimum/export_report.json": 46,
+    "optimum/optimum_config.json": 14,
+    "optimum/supported_tasks.json": 49,
+    "shared/chat_template.jinja": 15,
+    "shared/config.json": 28,
+    "shared/generation_config.json": 24,
+    "shared/tokenizer/tokenizer.json": 19,
+    "variants/cpu-fp16/checksums.json": 1025,
+    "variants/cpu-fp16/inference/frozen_base.onnx.data": 24,
+    "variants/cpu-fp16/inference/generation_config.json": 23,
+    "variants/cpu-fp16/inference/model.layers.0.attn.q_proj.MatMul.weight.bin": 23,
+    "variants/cpu-fp16/inference/model.layers.0.attn.q_proj.MatMul.weight.bin.sha256": 65,
+    "variants/cpu-fp16/inference/model.onnx": 17,
+    "variants/cpu-fp16/inference/weight_handoff_map.json": 1038,
+    "variants/cpu-fp16/train/training_config.json": 40,
+    "variants/cpu-fp16/train/weight_handoff_map.json": 1038,
+    "variants/cpu-int4/checksums.json": 1383,
+    "variants/cpu-int4/embedding/embedding_model.onnx": 23,
+    "variants/cpu-int4/embedding/rag_config.json": 32,
+    "variants/cpu-int4/inference/frozen_base.onnx.data": 24,
+    "variants/cpu-int4/inference/genai_config.json": 41,
+    "variants/cpu-int4/inference/generation_config.json": 23,
+    "variants/cpu-int4/inference/model.layers.0.attn.q_proj.MatMul.weight.bin": 23,
+    "variants/cpu-int4/inference/model.layers.0.attn.q_proj.MatMul.weight.bin.sha256": 65,
+    "variants/cpu-int4/inference/model.onnx": 17,
+    "variants/cpu-int4/inference/weight_handoff_map.json": 1038,
+    "variants/cpu-int4/train/training_config.json": 40,
+    "variants/cpu-int4/train/weight_handoff_map.json": 1038
+  },
+  "license": {
+    "baseModelWeights": "Apache-2.0",
+    "framework": "Apache-2.0",
+    "noticeFile": "licenses/BASE_MODEL_LICENSE"
+  },
+  "minReaderVersion": "1.0",
+  "mobiletransformersVersion": "0.2.0",
+  "onnxRuntimeGenAIVersion": "0.14.0",
+  "onnxRuntimeTrainingVersion": "1.23.0",
+  "optimumOnnxVersion": "0.1.0",
+  "peftMethods": [
+    "lora"
+  ],
+  "quantization": [
+    "int4",
+    "fp16"
+  ],
+  "requiredFiles": [
+    "mobiletransformers_manifest.json",
+    "shared/tokenizer/tokenizer.json",
+    "variants/cpu-int4/inference/model.onnx"
+  ],
+  "schemaVersion": "1.0",
+  "selectedTask": "text-generation-with-past",
+  "sha256": {
+    "README.md": "51aba426dcfe1a3e908b8742381ba6cd976f7082ab60c31dc2f0e9c97055ae65",
+    "licenses/BASE_MODEL_LICENSE": "31d33b6815f84ee57fd784c7a88333a776bd3df1532d650bfdad7305d9efbf35",
+    "licenses/FRAMEWORK_LICENSE": "31d33b6815f84ee57fd784c7a88333a776bd3df1532d650bfdad7305d9efbf35",
+    "optimum/export_report.json": "1ba45986e4bf74432bb87710d3918c9cb95a53a476e9d673656b81ecdcb9ed9c",
+    "optimum/optimum_config.json": "0fd5383b862cc607421383946b9e9a93c428bf0560fc0e9573a63d455a761a07",
+    "optimum/supported_tasks.json": "53890b58122830323c1e4f6663601cb9923d62b068e97dcc896020912ba26caa",
+    "shared/chat_template.jinja": "7f3de14b4a359865a98f84be7a9314754b7e14e8e23524e2553e4effaa9d18e1",
+    "shared/config.json": "779942ebb16708036af3626823520ad296c3b78c42d5a1dababbdfc2dc496a09",
+    "shared/generation_config.json": "e06158a364deea17a6e26014b87b9048179dd5990f6371889cee4ad7e042de1a",
+    "shared/tokenizer/tokenizer.json": "e0e77b70ca77d0be8f321590c0deb449d364cc3c4edaeaa6eef40636d56a298e",
+    "variants/cpu-fp16/checksums.json": "ddfb6aab04f028f8ccd8d0bf4952cda5c3bf02c76acfcab1bf20adf008d38dad",
+    "variants/cpu-fp16/inference/frozen_base.onnx.data": "3b9d3e0ca40fedc16823b2a0d15ebb760aa9b1c2f68ce2fe229688cf36a4b42d",
+    "variants/cpu-fp16/inference/generation_config.json": "1d985e40e0f3c082e41afef928f2c2d2362acae574b1b0e5550de0d51edef52f",
+    "variants/cpu-fp16/inference/model.layers.0.attn.q_proj.MatMul.weight.bin": "b39a7c6175b60a789569dd83dafebc0ef35cd78d53f955bdcd05fd8142895da3",
+    "variants/cpu-fp16/inference/model.layers.0.attn.q_proj.MatMul.weight.bin.sha256": "827d096d92f3deeaa0e8070d79f45beb176768e57a958a1cd325f5f4b754b048",
+    "variants/cpu-fp16/inference/model.onnx": "f41027621d842764ef7f3b12331cec51ede487a823c41b445cc84d1414030147",
+    "variants/cpu-fp16/inference/weight_handoff_map.json": "f8208cd160431f9942a4c4d9487a59ebc91dad9b3a0e739519e72964bbc1f452",
+    "variants/cpu-fp16/train/training_config.json": "b19bcfdda05b80cca28138805de0fd2480fa673684cf6d13baa7b13aea1c04c0",
+    "variants/cpu-fp16/train/weight_handoff_map.json": "f8208cd160431f9942a4c4d9487a59ebc91dad9b3a0e739519e72964bbc1f452",
+    "variants/cpu-int4/checksums.json": "3a519b0e51c30b28d70b6e86d3d7f9e2ee8b7324f9033991a1ecbc046304b613",
+    "variants/cpu-int4/embedding/embedding_model.onnx": "60a7c170d9e49b7edb8c14a08385667f330d5e762cd42179297028719ec4d941",
+    "variants/cpu-int4/embedding/rag_config.json": "aebdb4b9641d0da9344a75bb753bd4b8c31ce66183f2b6780d9b43a39377fa20",
+    "variants/cpu-int4/inference/frozen_base.onnx.data": "3b9d3e0ca40fedc16823b2a0d15ebb760aa9b1c2f68ce2fe229688cf36a4b42d",
+    "variants/cpu-int4/inference/genai_config.json": "86dfd3eb783dd928ccefe7deb60ba8b0c6fe3c1399584f1934b15543ec6c3496",
+    "variants/cpu-int4/inference/generation_config.json": "1d985e40e0f3c082e41afef928f2c2d2362acae574b1b0e5550de0d51edef52f",
+    "variants/cpu-int4/inference/model.layers.0.attn.q_proj.MatMul.weight.bin": "b39a7c6175b60a789569dd83dafebc0ef35cd78d53f955bdcd05fd8142895da3",
+    "variants/cpu-int4/inference/model.layers.0.attn.q_proj.MatMul.weight.bin.sha256": "827d096d92f3deeaa0e8070d79f45beb176768e57a958a1cd325f5f4b754b048",
+    "variants/cpu-int4/inference/model.onnx": "f41027621d842764ef7f3b12331cec51ede487a823c41b445cc84d1414030147",
+    "variants/cpu-int4/inference/weight_handoff_map.json": "f8208cd160431f9942a4c4d9487a59ebc91dad9b3a0e739519e72964bbc1f452",
+    "variants/cpu-int4/train/training_config.json": "b19bcfdda05b80cca28138805de0fd2480fa673684cf6d13baa7b13aea1c04c0",
+    "variants/cpu-int4/train/weight_handoff_map.json": "f8208cd160431f9942a4c4d9487a59ebc91dad9b3a0e739519e72964bbc1f452"
+  },
+  "supportedTasks": [
+    "text-generation",
+    "text-generation-with-past"
+  ],
+  "transformersVersion": "4.46.2",
+  "trustRemoteCode": false,
+  "variants": [
+    {
+      "abi": [
+        "arm64-v8a"
+      ],
+      "executionProvider": "cpu",
+      "features": [
+        "core",
+        "inference",
+        "train",
+        "rag",
+        "genai"
+      ],
+      "id": "cpu-int4",
+      "minimumAndroidApi": 28,
+      "paths": {
+        "embedding": "variants/cpu-int4/embedding",
+        "inference": "variants/cpu-int4/inference",
+        "tokenizer": "shared/tokenizer",
+        "train": "variants/cpu-int4/train"
+      },
+      "quantization": "int4",
+      "recommendedDeviceMemoryMb": 3072,
+      "supportedEngines": [
+        "native",
+        "genai"
+      ],
+      "weightHandoff": "variants/cpu-int4/inference/weight_handoff_map.json"
+    },
+    {
+      "abi": null,
+      "executionProvider": "cpu",
+      "features": [
+        "core",
+        "inference",
+        "train"
+      ],
+      "id": "cpu-fp16",
+      "minimumAndroidApi": 28,
+      "paths": {
+        "inference": "variants/cpu-fp16/inference",
+        "tokenizer": "shared/tokenizer",
+        "train": "variants/cpu-fp16/train"
+      },
+      "quantization": "fp16",
+      "recommendedDeviceMemoryMb": 6144,
+      "supportedEngines": [
+        "native"
+      ],
+      "weightHandoff": "variants/cpu-fp16/inference/weight_handoff_map.json"
+    }
+  ],
+  "weightHandoff": "variants/cpu-int4/inference/weight_handoff_map.json"
+}

@@ -1,0 +1,117 @@
+{
+  "$defs": {
+    "CoreConfigId": {
+      "enum": [
+        "opt1",
+        "opt2",
+        "opt3"
+      ],
+      "title": "CoreConfigId",
+      "type": "string"
+    },
+    "DeviceOptions": {
+      "properties": {
+        "coreConfigId": {
+          "$ref": "#/$defs/CoreConfigId",
+          "default": "opt1"
+        },
+        "enableProfiling": {
+          "default": false,
+          "title": "Enableprofiling",
+          "type": "boolean"
+        },
+        "executionProvider": {
+          "$ref": "#/$defs/ExecutionProvider",
+          "default": "cpu"
+        },
+        "memoryConfigId": {
+          "$ref": "#/$defs/MemoryConfigId",
+          "default": "high_perf"
+        }
+      },
+      "title": "DeviceOptions",
+      "type": "object"
+    },
+    "ExecutionProvider": {
+      "enum": [
+        "cpu",
+        "xnnpack",
+        "nnapi"
+      ],
+      "title": "ExecutionProvider",
+      "type": "string"
+    },
+    "MemoryConfigId": {
+      "enum": [
+        "low_mem",
+        "high_perf"
+      ],
+      "title": "MemoryConfigId",
+      "type": "string"
+    },
+    "SamplingConfig": {
+      "properties": {
+        "method": {
+          "$ref": "#/$defs/SamplingMethod",
+          "default": "greedy"
+        },
+        "seed": {
+          "default": 42,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "temperature": {
+          "default": 1.0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "topK": {
+          "default": 10,
+          "title": "Topk",
+          "type": "integer"
+        },
+        "topP": {
+          "default": 0.9,
+          "title": "Topp",
+          "type": "number"
+        }
+      },
+      "title": "SamplingConfig",
+      "type": "object"
+    },
+    "SamplingMethod": {
+      "enum": [
+        "greedy",
+        "top_k",
+        "top_p"
+      ],
+      "title": "SamplingMethod",
+      "type": "string"
+    }
+  },
+  "properties": {
+    "deviceOptions": {
+      "$ref": "#/$defs/DeviceOptions"
+    },
+    "maxSequenceLength": {
+      "default": 128,
+      "title": "Maxsequencelength",
+      "type": "integer"
+    },
+    "minReaderVersion": {
+      "default": "1.0",
+      "title": "Minreaderversion",
+      "type": "string"
+    },
+    "sampling": {
+      "$ref": "#/$defs/SamplingConfig"
+    },
+    "schemaVersion": {
+      "default": "1.0",
+      "title": "Schemaversion",
+      "type": "string"
+    }
+  },
+  "title": "GenerationConfig",
+  "type": "object"
+}

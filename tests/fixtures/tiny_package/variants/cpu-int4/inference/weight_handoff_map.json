@@ -1,0 +1,40 @@
+{
+  "engines": [
+    "native",
+    "genai"
+  ],
+  "entries": [
+    {
+      "checkpointNames": {
+        "weight": "backbone.model.layers.0.self_attn.q_proj.base_layer.weight"
+      },
+      "dtype": "float32",
+      "externalDataLocation": {
+        "weight": "model.layers.0.attn.q_proj.MatMul.weight.bin"
+      },
+      "genaiInputNames": {},
+      "inferenceInitializerNames": {
+        "weight": "model.layers.0.attn.q_proj.MatMul.weight"
+      },
+      "mergedTensorNames": {
+        "weight": "model.layers.0.attn.q_proj.MatMul.weight"
+      },
+      "mergerOutputNames": {
+        "weight": "merged_weight"
+      },
+      "sha256": {},
+      "shape": [
+        4,
+        3
+      ],
+      "trainingBaseLayerName": "backbone.model.layers.0.self_attn.q_proj.base_layer",
+      "transposePolicy": "no_transpose"
+    }
+  ],
+  "externalDataLayout": "one_file_per_tensor",
+  "frozenBaseBlob": "frozen_base.onnx.data",
+  "handoffMode": "external_initializer",
+  "mergerModels": {},
+  "minReaderVersion": "1.0",
+  "schemaVersion": "1.0"
+}

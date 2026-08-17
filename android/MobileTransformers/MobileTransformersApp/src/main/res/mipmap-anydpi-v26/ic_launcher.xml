@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cut from docs/assets/mobiletransformers_logo.png — see docs/assets/README.md before replacing it.
+
+  `foreground` is scaled into the 66dp safe zone: the launcher masks this 108dp canvas to a
+  circle/squircle/rounded square and only that centre is guaranteed to survive, so art that fills the
+  canvas loses its edges on most phones.
+
+  `monochrome` is the logo's dark line art alone, not a filled silhouette — a filled silhouette of a
+  sticker is a featureless blob, whereas the outlines, eyes, smile and phone frame stay recognisable
+  at icon size.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
+</adaptive-icon>

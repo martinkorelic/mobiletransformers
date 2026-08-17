@@ -1,0 +1,48 @@
+{"prompt": "set a 481 second timer", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"481\"}}"}
+{"prompt": "set an alarm for 06:15", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"06:15\"}}"}
+{"prompt": "show me the wifi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "get me up at 06:15", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"06:15\"}}"}
+{"prompt": "get me up at 12:45", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"12:45\"}}"}
+{"prompt": "timer for 311 seconds", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"311\"}}"}
+{"prompt": "take me to wi-fi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "open wifi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "wake me at 08:00", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"08:00\"}}"}
+{"prompt": "count down 589 seconds", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"589\"}}"}
+{"prompt": "set an alarm for 06:15", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"06:15\"}}"}
+{"prompt": "take me to wi-fi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "set a 600 second timer", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"600\"}}"}
+{"prompt": "count down 442 seconds", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"442\"}}"}
+{"prompt": "take me to wi-fi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "set a 66 second timer", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"66\"}}"}
+{"prompt": "set an alarm for 08:00", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"08:00\"}}"}
+{"prompt": "get me up at 18:20", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"18:20\"}}"}
+{"prompt": "set an alarm for 06:15", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"06:15\"}}"}
+{"prompt": "count down 215 seconds", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"215\"}}"}
+{"prompt": "get me up at 08:00", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"08:00\"}}"}
+{"prompt": "timer for 190 seconds", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"190\"}}"}
+{"prompt": "show me the wifi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "open wifi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "open wifi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "set a 69 second timer", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"69\"}}"}
+{"prompt": "wake me at 12:45", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"12:45\"}}"}
+{"prompt": "show me the wifi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "take me to wi-fi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "show me the wifi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "wake me at 07:30", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"07:30\"}}"}
+{"prompt": "set a 578 second timer", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"578\"}}"}
+{"prompt": "wake me at 06:15", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"06:15\"}}"}
+{"prompt": "show me the wifi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "count down 469 seconds", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"469\"}}"}
+{"prompt": "open wifi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "set a 565 second timer", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"565\"}}"}
+{"prompt": "take me to wi-fi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "timer for 659 seconds", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"659\"}}"}
+{"prompt": "show me the wifi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "take me to wi-fi settings", "completion": "{\"actionName\": \"open_wifi_settings\", \"parameters\": {}}"}
+{"prompt": "set an alarm for 18:20", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"18:20\"}}"}
+{"prompt": "wake me at 06:15", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"06:15\"}}"}
+{"prompt": "set a 701 second timer", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"701\"}}"}
+{"prompt": "timer for 818 seconds", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"818\"}}"}
+{"prompt": "wake me at 06:15", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"06:15\"}}"}
+{"prompt": "timer for 386 seconds", "completion": "{\"actionName\": \"set_timer\", \"parameters\": {\"seconds\": \"386\"}}"}
+{"prompt": "wake me at 07:30", "completion": "{\"actionName\": \"set_alarm\", \"parameters\": {\"time\": \"07:30\"}}"}

@@ -1,0 +1,98 @@
+# Device / model-zoo pipeline. NEVER runs on a PR — it needs a
+# physical Android device (or device-farm runner) and is long/intensive. Manual
+# (`workflow_dispatch`) only — the nightly `schedule` is commented out below, so do not read the
+# original design as something that currently runs. The end-to-end device leg: train 1 step -> merge -> generate 1 token ->
+# ingest/query 1 RAG doc; then build a small starter zoo and record time/memory as artifacts in the
+# docs/mobile_evaluation.md style.
+#
+# `runs-on` targets a self-hosted, device-attached runner (label `android-device`). Until such a
+# runner is registered this workflow simply never picks up a runner — it does not fail hosted CI.
+
+name: device
+
+# DISABLED (2026-08-08): automatic triggers removed — these workflows are not in use yet, and the
+# native-dependency provisioning question they depend on is unresolved, so every run either self-skips
+# or fails for reasons unrelated to the change under test. A red badge nobody acts on is worse than no
+# badge: it trains everyone to ignore CI.
+#
+# They remain fully intact and MANUALLY runnable (Actions -> select workflow -> "Run workflow").
+# To re-enable, restore the original `on:` block recorded directly below.
+#
+# ORIGINAL:
+#   on:
+#     workflow_dispatch: {}
+#     schedule:
+#       - cron: '17 3 * * *'   # nightly 03:17 UTC
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  device-e2e:
+    name: device train->merge->generate->RAG (manual)
+    runs-on: [self-hosted, android-device]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Confirm an attached device
+        run: |
+          adb devices -l | tee adb-devices.txt
+          test "$(adb devices | grep -c 'device$')" -ge 1
+          # Only arm64-v8a ships a complete jniLibs set (see docs/ARCHITECTURE.md "ABI support").
+          abi="$(adb shell getprop ro.product.cpu.abi | tr -d '\r')"
+          echo "device ABI: $abi" | tee -a adb-devices.txt
+          test "$abi" = "arm64-v8a"
+
+      # Export + reshape + push a real package, then run the instrumented suites over it. Every suite
+      # `assumeTrue`-skips without a pushed package, so provisioning must succeed for this job to mean
+      # anything — which is why the skip count is asserted below rather than left to be read by eye.
+      - name: Provision a device package
+        run: make device-package MODEL=${{ inputs.model || 'HuggingFaceTB/SmolLM2-135M-Instruct' }} TRAIN=${{ inputs.train || '1' }}
+
+      - name: Instrumented suites (copy weight-load path)
+        run: |
+          adb shell setprop debug.mtf.mmap_weights 0
+          make device-test
+
+      # Gate 0.2 needs the same four points under the zero-copy path; the toggle is a system property
+      # precisely because an instrumented test cannot set an env var in the process it measures.
+      - name: RSS table (mmap weight-load path)
+        run: |
+          adb shell setprop debug.mtf.mmap_weights 1
+          make device-test || true
+          adb shell setprop debug.mtf.mmap_weights 0
+
+      # A run where everything skipped is not a passing device run. Fail loudly instead of reporting
+      # green on an un-provisioned device — the failure mode this whole workflow exists to prevent.
+      - name: Assert the suites actually ran
+        run: |
+          results="android/MobileTransformers/MobileTransformers/build/outputs/androidTest-results/connected/debug"
+          test -d "$results" || { echo "::error::no instrumented results at $results"; exit 1; }
+          skipped=$(grep -ho '<skipped' "$results"/*.xml | wc -l)
+          total=$(grep -ho '<testcase' "$results"/*.xml | wc -l)
+          echo "instrumented: $total total, $skipped skipped"
+          test "$total" -gt 0
+          test "$skipped" -lt "$total"
+
+      - name: Collect the RSS table
+        if: always()
+        run: |
+          adb pull "/sdcard/Android/data/com.martinkorelic.mobiletransformers.test/files/mt_rss" rss || true
+
+      - name: Upload metrics artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-metrics
+          path: |
+            adb-devices.txt
+            rss/
+            android/MobileTransformers/MobileTransformers/build/outputs/androidTest-results/connected/debug/
+          if-no-files-found: warn

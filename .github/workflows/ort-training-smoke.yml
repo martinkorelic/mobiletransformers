@@ -1,0 +1,51 @@
+# ORT-training toolchain smoke (Gate 0.3): import the source-built wheel and run
+# `generate_artifacts` on the tiny fixture. Proves the train toolchain is alive.
+#
+# NOTE ON WHEEL PROVISIONING: the source-built `onnxruntime-training==1.23.0+cpu` wheel is
+# cp312-only and git-ignored (third_party/wheels/, referenced via [tool.uv.sources]). It is NOT on
+# public PyPI, so a hosted runner has nothing to fetch. Wiring this into the always-on staged
+# pipeline — and deciding HOW the wheel reaches CI (rebuild-in-CI vs. a private index / cached
+# artifact) — is an open decision. Until then this job is `workflow_dispatch`
+# (manual) and self-skips when the wheel is absent, so it never spuriously fails a normal run.
+
+name: ort-training-smoke
+
+# NOT scheduled by design (unchanged 2026-08-08): manual-only, because it needs the source-built
+# ORT-training wheel, which hosted runners do not have. Left as-is while ci.yml/device.yml had
+# their automatic triggers removed — this one never had any.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Check for the source-built training wheel
+        id: wheel
+        run: |
+          if ls third_party/wheels/onnxruntime_training-*.whl >/dev/null 2>&1; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::ORT-training wheel absent; skipping smoke. See third_party/onnxruntime/BUILD.md."
+          fi
+
+      - name: Verify wheel checksum matches manifest
+        if: steps.wheel.outputs.present == 'true'
+        run: |
+          expected=$(python -c "import json;print(json.load(open('third_party/onnxruntime/manifest.json'))['wheel']['sha256'])")
+          actual=$(sha256sum third_party/wheels/onnxruntime_training-*.whl | cut -d' ' -f1)
+          test "$expected" = "$actual" || { echo "wheel sha256 mismatch"; exit 1; }
+
+      - name: Sync ort-training-local profile (Python 3.12)
+        if: steps.wheel.outputs.present == 'true'
+        run: uv sync --frozen --python 3.12 --group ort-training-local
+
+      - name: Run the generate_artifacts smoke
+        if: steps.wheel.outputs.present == 'true'
+        run: uv run --python 3.12 --frozen --group ort-training-local pytest tests/integration/test_ort_training_smoke.py -q

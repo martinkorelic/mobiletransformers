@@ -1,0 +1,175 @@
+package com.martinkorelic.mobiletransformers.agent
+
+/**
+ * Renders an app's [ActionSpec] allowlist into the tool declaration a model expects to be shown.
+ *
+ * ### Why this had to exist
+ *
+ * `generateToolCall` sent the user's instruction **and nothing else** — no list of available
+ * functions, no output format, no schema. A model was asked to emit a call to one of a set of actions
+ * it had never been told about. That works only for a model fine-tuned on exactly this app's
+ * allowlist, which is why the Tool calls screen's documented answer was "expect Rejected until you
+ * train"; for every off-the-shelf tool-calling model the omission alone guaranteed failure.
+ *
+ * The allowlist is already the single source of truth for what is permitted. Declaring it to the model
+ * from the same object keeps the boundary and the prompt from drifting apart — the same argument that
+ * generates the training corpus from it.
+ */
+object ToolPromptBuilder {
+
+    private const val ESCAPE = "<escape>"
+
+    /** The instruction preamble Google documents for FunctionGemma. */
+    private const val PREAMBLE = "You are a model that can do function calling with the following functions"
+
+    /**
+     * A declaration block in the dialect [parser] reads back.
+     *
+     * Prompt and parser are chosen together on purpose: declaring functions in FunctionGemma's grammar
+     * and then parsing the reply as JSON is the mismatch this whole seam exists to prevent.
+     */
+    @JvmStatic
+    fun declarations(allowlist: List<ActionSpec>, parser: ToolCallParser): String =
+        if (parser === ToolCallParser.FunctionGemma) {
+            functionGemmaDeclarations(allowlist)
+        } else {
+            jsonDeclarations(allowlist)
+        }
+
+    /**
+     * The complete prompt for one tool-calling turn: declarations, the user's message, and the
+     * marker that hands the floor to the model.
+     *
+     * ### Why the turn structure is here
+     *
+     * `generateToolCall` used to send `declarations + "\n" + instruction`, bare. FunctionGemma is
+     * trained on `<start_of_turn>developer … <end_of_turn><start_of_turn>user …
+     * <end_of_turn><start_of_turn>model`, and normally the tokenizer's chat template supplies that
+     * framing — but the exporter writes the template to a sibling `chat_template.jinja` that
+ * `ORTTokenizerNative` did not read, so on device `chatTemplate` was null and **nothing wrapped the
+     * prompt at all**. The model was being handed a naked instruction in a format it has never seen
+     * and asked to produce a grammar it only emits inside a model turn.
+ *
+ * The tokenizer reads that file now — but this builder is still the framing that runs for tool
+ * calls, and deliberately so: FunctionGemma's own template is 13 KB of `namespace`, `dictsort`
+ * and macros that Pebble cannot evaluate, so it fails the load-time probe and leaves
+ * `chatTemplate` null for precisely the family that needs this most.
+     *
+     * Framing it here is the fix that does not depend on a Jinja engine rendering a 400-line
+     * template on a phone. It is dialect-specific for the same reason the parser is: the two are
+     * chosen together, and a declaration in one grammar with a reply parsed in the other is the
+     * mismatch this whole seam exists to prevent.
+     *
+ * **The caller's session must not apply a chat template on top of this.** When
+ * `ORTTokenizerNative.chatTemplate` is non-null the generator wraps each prompt itself, and that
+ * would nest one framing inside another. This used to be merely a documented assumption, safe
+ * because no package carried a template the device read; the tokenizer now reads
+ * `chat_template.jinja`, so it is enforced instead — `generateToolCall` passes
+ * `applyChatTemplate = false` for exactly this reason, pinned by
+ * `ToolCallFramingTest.toolCallPromptsAreNotWrappedTwice`.
+ */
+    /**
+ * Whether [prompt] emits its own turn structure for [parser] — and therefore whether the caller
+ * must suppress the tokenizer's chat template to avoid nesting one framing inside the other.
+ *
+ * Only the FunctionGemma branch frames turns. The JSON branch returns `declarations + instruction`
+ * with no turn markers at all, so a package whose chat template the device can render *should*
+ * still wrap it: suppressing there would strip the framing rather than de-duplicate it.
+ *
+ * Exposed so `generateToolCall` and [prompt] cannot drift apart on the question. They did not
+ * share this predicate at first, and the blanket version silently unwrapped every JSON-dialect
+ * tool call on any package with a working template.
+     */
+    @JvmStatic
+    fun framesOwnTurns(parser: ToolCallParser): Boolean = parser === ToolCallParser.FunctionGemma
+
+    @JvmStatic
+    fun prompt(allowlist: List<ActionSpec>, parser: ToolCallParser, instruction: String): String =
+    if (framesOwnTurns(parser)) {
+            buildString {
+                append("<start_of_turn>developer\n")
+                append(functionGemmaDeclarations(allowlist).trim())
+                append("<end_of_turn>\n")
+                append("<start_of_turn>user\n").append(instruction.trim()).append("<end_of_turn>\n")
+                append("<start_of_turn>model\n")
+            }
+        } else {
+            jsonDeclarations(allowlist) + "\n" + instruction
+        }
+
+    /**
+     * `<start_function_declaration>declaration:name{…}<end_function_declaration>`, one per action.
+     *
+     * String values are wrapped in `<escape>` because the grammar requires it — the delimiter is what
+     * lets a description contain the `,` and `}` that would otherwise end the field.
+     */
+    private fun functionGemmaDeclarations(allowlist: List<ActionSpec>): String = buildString {
+        append(PREAMBLE).append('\n')
+        for (spec in allowlist) {
+            append("<start_function_declaration>declaration:").append(spec.actionName).append('{')
+            append("description:").append(ESCAPE).append(describe(spec)).append(ESCAPE)
+            if (spec.parameters.isNotEmpty()) {
+                append(",parameters:{properties:{")
+                append(
+                    spec.parameters.entries.joinToString(",") { (name, type) ->
+                        val hint = spec.validationRules[name]?.let { " (format: $it)" }.orEmpty()
+                        "$name:{description:$ESCAPE$name$hint$ESCAPE," +
+                            "type:$ESCAPE${type.uppercase()}$ESCAPE}"
+                    },
+                )
+                append("},required:[")
+                append(spec.required.joinToString(",") { "$ESCAPE$it$ESCAPE" })
+                append("],type:${ESCAPE}OBJECT$ESCAPE}")
+            }
+            append("}<end_function_declaration>\n")
+        }
+    }
+
+    /**
+     * A plain-language schema for models with no tool-call grammar of their own, naming the exact
+     * output shape [ToolCallParser.Json] reads.
+     */
+    private fun jsonDeclarations(allowlist: List<ActionSpec>): String = buildString {
+        append(PREAMBLE).append(". Reply with one JSON object and nothing else, shaped ")
+        append("{\"actionName\": <name>, \"parameters\": {<name>: <value>}}.\n")
+        for (spec in allowlist) {
+            append("- ").append(spec.actionName)
+            if (spec.parameters.isEmpty()) {
+                append(" (no parameters)")
+            } else {
+                append(": ")
+                append(
+                    spec.parameters.keys.joinToString(", ") { name ->
+                        val rule = spec.validationRules[name]
+                        val required = if (name in spec.required) "" else ", optional"
+                        if (rule != null) "$name (format $rule$required)" else "$name (string$required)"
+                    },
+                )
+            }
+            append('\n')
+        }
+    }
+
+    /**
+     * What an action does, in words.
+     *
+     * Derived from the intent it is permitted to fire, because that is the only description an
+     * [ActionSpec] carries — the type deliberately holds a *permission*, not documentation. A caller
+     * wanting better wording writes it into the action name, which is what the model selects on.
+     */
+    private fun describe(spec: ActionSpec): String =
+        "Performs '${spec.actionName}' on the device (${spec.allowedIntent})."
+
+    /**
+     * A tool result to feed back for a second turn, in FunctionGemma's response grammar.
+     *
+     * The half of the loop that makes a tool call useful: the model calls, the app answers, the model
+     * says something about the answer. Without it a call is a dead end.
+     */
+    @JvmStatic
+    fun functionResponse(actionName: String, values: Map<String, String>): String = buildString {
+        append("<start_function_response>response:").append(actionName).append('{')
+        append(values.entries.joinToString(",") { (k, v) -> "$k:$ESCAPE$v$ESCAPE" })
+        append("}<end_function_response>")
+    }
+}

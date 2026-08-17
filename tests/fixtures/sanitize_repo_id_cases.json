@@ -1,0 +1,15 @@
+{
+  "_comment": "Cross-language parity oracle for sanitize_repo_id (#14). Python and Kotlin must agree byte-for-byte. Rules: '/'->'__'; other non [A-Za-z0-9._-] -> single '_'; no trim/case-fold/length-cap.",
+  "cases": [
+    { "input": "mobiletransformers/Qwen2-0.5B", "expected": "mobiletransformers__Qwen2-0.5B" },
+    { "input": "org/sub/model", "expected": "org__sub__model" },
+    { "input": "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "expected": "TinyLlama__TinyLlama-1.1B-Chat-v1.0" },
+    { "input": "with space", "expected": "with_space" },
+    { "input": "model@v1", "expected": "model_v1" },
+    { "input": "with:colon", "expected": "with_colon" },
+    { "input": "..leadingdots", "expected": "..leadingdots" },
+    { "input": "UPPER/Lower", "expected": "UPPER__Lower" },
+    { "input": "café/model", "expected": "caf___model" },
+    { "input": "a/b\\c", "expected": "a__b_c" }
+  ]
+}

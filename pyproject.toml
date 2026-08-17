@@ -1,0 +1,269 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mobiletransformers"
+version = "0.2.0"
+description = "Export and Android runtime tooling for on-device transformer training and inference."
+readme = "README.md"
+# optimum-onnx 0.1.0 supports py 3.9–3.13; cap below 3.14.
+requires-python = ">=3.10,<3.14"
+dependencies = [
+  "huggingface-hub>=0.34",
+  "numpy>=1.26",
+  "onnx>=1.16",
+  "pydantic>=2",
+  "pyyaml>=6.0",
+  "python-dotenv>=1.0",
+  "tokenizers>=0.20",
+]
+# license intentionally omitted until the licensing decision (target: Apache-2.0).
+
+[project.scripts]
+mobiletransformers = "mobiletransformers.cli.main:main"
+
+[project.optional-dependencies]
+# Public install surfaces. `export` uses optimum-onnx WITH the [onnxruntime] extra
+# (public onnxruntime). Never co-install with `ort-training-local` (see [tool.uv] conflicts).
+# transformers FLOOR is 4.50, not 4.45: Gemma-3 (`Gemma3ForCausalLM`/`Gemma3Config`, and the `gemma3`
+# row in CONFIG_MAPPING_NAMES) does not exist before it, so the architecture gate cannot even LOAD
+# the model on an older line — the failure is upstream of the graph entirely.
+#
+# This floor is also what FORCES the fork. `ort-training-local` pins `transformers==4.46.2` as part of
+# the source-built ORT wheel's paired stack; `[tool.uv] conflicts` already declares that group and this
+# extra mutually exclusive, but uv still prefers ONE version when a single version satisfies both — and
+# 4.46.2 satisfied `>=4.45,<4.58`.
+#
+# ⚠️ **RESOLVED 2026-08-15 — the two profiles are no longer forked on transformers, and this paragraph
+# describes history.** The fork existed to let the export profile reach Gemma-3 while the training
+# profile stayed at 4.46.2. `ort-training-local` now declares this same range, so a single version
+# satisfies both and the lock carries one transformers. That is fine and intended: `[tool.uv] conflicts`
+# keeps the two profiles apart on the thing that actually collides — the `onnxruntime` import — which
+# is a group/extra conflict, not a version one. `numpy` and `onnx` remain genuinely forked for the 3.12
+# split, because those pins ARE ABI constraints on the source-built wheel.
+#
+# Why moving the training pin was safe, in one line: transformers is the only paired_stack entry with
+# no ABI relationship to that wheel, and three controls (llama decoder, BERT encoder, gemma3) came back
+# identical or better. The full evidence is recorded on the pin itself, in `ort-training-local` below.
+#
+# `<4.58` is upstream's own ceiling (optimum-onnx 0.1.0 declares `transformers<4.58`), not our choice.
+export = ["optimum-onnx[onnxruntime]>=0.1.0", "transformers>=4.50,<4.58", "onnx", "onnxscript>=0.3"]
+train  = ["transformers>=4.45,<4.58", "onnxscript>=0.3", "peft>=0.13", "onnx"]
+rag    = ["langchain-community>=0.3.27", "langchain-huggingface>=0.3", "langchain-objectbox==0.1.0", "sentence-transformers>=5"]
+eval   = ["deepeval>=3.4.7", "matplotlib>=3.10"]
+hub    = ["huggingface-hub>=0.34"]
+# Federated Flower simulation: the record codec + FedAvg math are pure numpy (core-testable),
+# so no extra is needed for CI. Flower itself (flwr[simulation], which pulls ray/pyarrow) is deliberately
+# kept OUT of the universal lock — like the ORT-training wheel — because locking it downgrades protobuf/
+# rich/typer repo-wide. The manual simulation leg installs it out-of-band: `pip install "flwr[simulation]"`.
+
+[dependency-groups]
+# Local-only workflows. Never part of the published install surface.
+dev   = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+docs  = ["mkdocs>=1.6", "mkdocs-material>=9.5"]
+smoke = ["pytest>=8"]
+android-build = ["pyyaml>=6.0"]
+# onnxruntime-genai>=0.14 pulls onnxruntime>=1.26 which needs Python>=3.11; marker keeps the
+# 3.10 split resolvable (genai smoke requires 3.11+ regardless).
+genai-smoke   = ["onnxruntime-genai>=0.14; python_version >= '3.11'"]
+# Source-built training wheel PROVIDES `onnxruntime`; optimum-onnx here is BARE (no [onnxruntime]
+# extra) so it does not pull a second, colliding onnxruntime over the training wheel's import.
+# The wheel is cp312-only, so this group must be synced under Python 3.12. torch ABI is the
+# resolved 2.7.1 pairing recorded in third_party/onnxruntime/manifest.json (NOT the doc's 2.5.1 guess).
+ort-training-local = [
+  # cp312-only local wheel: marker keeps it out of the 3.10/3.11/3.13 resolution splits so the
+  # universal `uv lock` succeeds. This group is only ever synced under Python 3.12 (see manifest).
+  "onnxruntime-training; python_version == '3.12'",
+  "optimum-onnx>=0.1.0",
+  # Pinned to the manifest's paired_stack (peft 0.13.2), like torch/transformers below. Floating this
+  # at >=0.13 resolved to peft 0.19, which (a) renamed `PEFT_TYPE_TO_MODEL_MAPPING` and (b) requires
+  # `torch.distributed.tensor` (torch>=2.8) while this group pins torch==2.7.1 — so `get_peft_model`
+  # died with `AttributeError: module 'torch.distributed' has no attribute 'tensor'`. The whole point
+  # of manifest.json's paired_stack is that this profile reproduces the stack the ORT wheel was built
+  # against; three of its five entries were pinned and this one was not.
+  "peft==0.13.2",
+  "onnxscript>=0.3",
+  "torch==2.7.1",
+  # transformers is the ONE entry of the paired stack that is NOT ABI-coupled to the wheel.
+  #
+  # It was `==4.46.2` (the manifest's paired_stack value) until 2026-08-15, on the assumption that
+  # every paired_stack pin was load-bearing. It is not: `numpy<2` and `onnx<1.19` are genuine C-ABI /
+  # IR-version constraints on the source-built ORT extension and are called out as such in
+  # manifest.json's notes; transformers is pure Python and appears there as a RECORD of the build
+  # environment, not a requirement of it.
+  #
+  # Raised to the export extra's range after three controls under 4.57.6, all green:
+  #   * SmolLM2-135M-Instruct (llama decoder)      parity delta 0.0111 nats — the IDENTICAL figure its
+  #                                                2026-08-10 export recorded under 4.46.2
+  #   * all-MiniLM-L6-v2 (BERT encoder, text-cls)  73,728 trainable params — identical to before
+  #   * functiongemma-270m-it / gemma-3-270m       now exports at all, which 4.46.2 could never do
+  #     (no `Gemma3ForCausalLM`, no `Gemma3Config`, no `gemma3` row in CONFIG_MAPPING_NAMES)
+  #
+  # `get_peft_model` did NOT break — that specific failure is what the pin was held against, and it
+  # did not reproduce. The Gemma-3 blocker turned out to be an input-set mismatch in our own trainer
+  # wrapper, not a dependency at all (see export/training_export.py).
+  #
+  # The pins that ARE load-bearing stay exact: torch, peft, numpy, onnx. Do not float those.
+  "transformers>=4.50,<4.58",
+  # The source-built ORT-training wheel's C extension is compiled against the numpy 1.26 ABI
+  # (manifest paired_stack: numpy 1.26.4). numpy 2.x breaks it ("import numpy failed" at
+  # onnxruntime_pybind11_state load). Scope to 3.12 (numpy 1.26.x has no cp313 wheel, and this
+  # group is cp312-only regardless); forked resolution keeps numpy 2.x for the export profile.
+  "numpy<2; python_version == '3.12'",
+  # ORT 1.23 runtime supports max ONNX IR version 11; onnx>=1.19 emits IR 13, which fails to load
+  # in the generated optimizer/training graphs. Pin to the build-paired line (manifest: onnx 1.18.0).
+  "onnx<1.19; python_version == '3.12'",
+]
+# ROCm/CUDA export experiment surface (from the retired root `requirements-or.txt`, deleted
+# 2026-08-14 once its content was superseded by these groups). Deferred: the ROCm wheels
+# (onnxruntime-rocm==1.18.0, torch*+rocm) require a dedicated AMD/ROCm package index, not PyPI,
+# so wiring them into a resolvable group is out of scope for this foundation pass. Kept as a
+# declared-but-empty group so `uv lock` stays clean; populated when the ROCm index is configured.
+export-rocm = []
+
+[tool.uv.sources]
+# A source-built wheel that is not on PyPI: git-ignored, 662 MB, cp312/linux_x86_64 only.
+# Get it with `TRAINING=1 scripts/fetch_native_deps.sh`; sha256 in third_party/onnxruntime/manifest.json.
+onnxruntime-training = { path = "third_party/wheels/onnxruntime_training-1.23.0+cpu-cp312-cp312-linux_x86_64.whl" }
+
+[tool.uv]
+# The onnxruntime-import-colliding providers must never resolve into one environment.
+conflicts = [
+  [{ group = "ort-training-local" }, { extra = "export" }],
+  [{ group = "ort-training-local" }, { group = "genai-smoke" }],
+  [{ extra = "export" }, { group = "genai-smoke" }],
+]
+# langchain-objectbox 0.1.0 declares a stale `langchain-core<0.2.0` bound that pip's resolver
+# ignored; the real working env pairs it with langchain-core 0.3.74. Override to that proven line
+# so uv's strict resolver matches production (rag extra).
+override-dependencies = ["langchain-core>=0.3.74,<0.4"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mobiletransformers"]
+
+[tool.hatch.metadata]
+allow-direct-references = true  # required for the local path wheel source
+
+[tool.ruff]
+line-length = 110
+# Lint/format only the new package + tests. Legacy root packages and research/ are being migrated
+# subsystem-by-subsystem and are out of the gate until they move into src/ (see DECOMPOSE notes).
+src = ["src", "tests"]
+# ANCHORED to the repository root. A bare directory name here matches ANY path component, so
+# "inference"/"evaluation" also excluded src/mobiletransformers/{inference,evaluation}/ — code landing
+# there during the migration would have been silently ungated by both ruff and mypy.
+# S9: the seven legacy roots are DELETED. The root `config.py` shim followed 2026-08-14, so
+# `research/` is the ONLY thing outside the gate. Every line of migrated code is linted+type-checked.
+extend-exclude = ["/research/", "tests/fixtures/tiny_trainable.onnx"]
+
+[tool.ruff.lint.per-file-ignores]
+# MIGRATION RATCHET — lint debt carried in by the Migration Map. Entries may only SHRINK; delete a
+# file's entry once it is clean (tests/unit/test_gate_ratchet.py fails on a stale or non-firing entry).
+# The bulk of each moved file's findings was auto-fixed at move time; what remains needs a judgement
+# call about behaviour, which does not belong in a move.
+"src/mobiletransformers/training/data.py" = ["E721", "W291", "W293"]        # S1
+"src/mobiletransformers/inference/generator.py" = ["B006", "B905"]          # S1
+"src/mobiletransformers/export/inference_package.py" = ["E501"]             # S2
+"src/mobiletransformers/peft/ablation/config.py" = ["E501"]                 # S3
+"src/mobiletransformers/peft/ablation/layer.py" = ["F841"]                  # S3
+"src/mobiletransformers/peft/ablation/model.py" = ["B007", "B028", "E501", "F841"]   # S3
+"src/mobiletransformers/peft/lora_xs/latent_utils.py" = ["E501"]            # S3
+"src/mobiletransformers/peft/mars/config.py" = ["E501"]                     # S3
+"src/mobiletransformers/peft/mars/layer.py" = ["B006", "B904", "B905", "F401", "F841"]  # S3
+"src/mobiletransformers/peft/mars/matrices.py" = ["B007"]                   # S3
+"src/mobiletransformers/peft/mars/model.py" = ["B007", "B023", "B028", "E501"]  # S3
+"src/mobiletransformers/peft/mapping.py" = ["B006", "B007", "E501"]         # S4
+"src/mobiletransformers/training/preprocessing.py" = ["E501", "F841"]       # S4
+"src/mobiletransformers/export/embedding_export.py" = ["B904"]              # S4
+"src/mobiletransformers/export/training_export.py" = ["B006", "B007", "E402", "E501", "F841"]  # S4
+# S7 — database/ -> rag/. F403/F405 are `from objectbox.model import *`, which the ObjectBox entity
+# DSL requires (Entity/Id/String/Float32Vector/HnswIndex all arrive through it); enumerating them is a
+# behaviour change, not a move. The rest is pre-existing style debt carried across unchanged.
+"src/mobiletransformers/rag/builder.py" = ["B904", "B905", "E402", "E501", "F401", "F403", "F405", "F841"]
+"src/mobiletransformers/rag/query.py" = ["E402", "E501", "E722", "F403", "F405", "W293"]
+"src/mobiletransformers/rag/vector_entity.py" = ["E501", "F403", "F405"]
+"src/mobiletransformers/rag/json2entity.py" = ["E501"]
+# S8 — evaluation/ -> evaluation/ (reusable evaluators only; the hardcoded-path experiment scripts
+# went to research/evaluation/). Pre-existing style debt carried across unchanged.
+"src/mobiletransformers/evaluation/eval_adapter_models.py" = ["B007", "B905", "E402", "E722"]
+"src/mobiletransformers/evaluation/mobile_evaluator.py" = ["E501"]
+"src/mobiletransformers/evaluation/mobile/base_mobile_eval.py" = ["E501"]
+"src/mobiletransformers/evaluation/mobile/recommendation_eval.py" = ["B905", "E501", "W293"]
+"src/mobiletransformers/evaluation/openehr/openehr_eval.py" = ["E501"]
+"src/mobiletransformers/evaluation/openehr/openehr_eval_plots.py" = ["E501", "F841"]
+# S6b — inference/validator.py -> artifacts/validation.py
+"src/mobiletransformers/artifacts/validation.py" = ["B006", "E402", "E501"]
+"src/mobiletransformers/training/validators.py" = ["B904", "E501", "E711"]
+"src/mobiletransformers/training/merge_validators.py" = ["B904", "E501"]
+# S6 — inference/builder.py, the 3,441-line graph builder. Style debt carried across unchanged.
+# F821 is GONE: the latent NameError in `make_mlp_unpacked_lora` (it wrapped `q_proj`/`k_proj`, unbound
+# in that scope, instead of the `gate_proj`/`up_proj` it builds and otherwise never uses) is fixed.
+"src/mobiletransformers/inference/builder.py" = ["B904", "B905", "E402", "E501", "E721", "E722"]
+"src/mobiletransformers/artifacts/builder.py" = ["B006", "E402", "E501", "F841"]  # S5
+
+[tool.ruff.lint]
+# pyflakes + pycodestyle + import-sort (I) + pyupgrade (UP) + bugbear (B).
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+# An existing untyped codebase can't go strict overnight: start lenient globally, CI-green day one.
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]  # teaches mypy about pydantic model defaults/aliases/factories
+files = ["src/mobiletransformers"]
+# Anchored with ^ for the same reason as ruff's extend-exclude above: an unanchored alternation also
+# matched src/mobiletransformers/{inference,evaluation}/.
+exclude = "^research/"  # S9: the other six roots no longer exist
+
+[[tool.mypy.overrides]]
+# New package modules are held to strict typing (new code pays the typing tax; legacy is ratcheted).
+module = "mobiletransformers.*"
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# MIGRATION RATCHET (S1): modules just moved in from the legacy roots — untyped by origin. Remove a
+# module from this list once it is annotated. Ordered AFTER the strict block above so it wins for
+# these paths only (mypy applies the most specific matching override).
+module = [
+  "mobiletransformers.training.data",
+  "mobiletransformers.training.callbacks",
+  "mobiletransformers.inference.generator",
+  "mobiletransformers.export.tokenizer_export",
+  "mobiletransformers.utils.paths",
+  "mobiletransformers.utils.templating",
+  # S3
+  "mobiletransformers.peft.*",
+  # S4
+  "mobiletransformers.training.preprocessing",
+  "mobiletransformers.export.embedding_export",
+  "mobiletransformers.export.training_export",
+  # S5
+  "mobiletransformers.artifacts.builder",
+  # S7 — database/ -> rag/. Untyped by origin (ObjectBox entity DSL + argparse scripts); annotating it
+  # is a separate change from moving it.
+  "mobiletransformers.rag.builder",
+  "mobiletransformers.rag.query",
+  "mobiletransformers.rag.vector_entity",
+  "mobiletransformers.rag.json2entity",
+  # S8 / S6b — untyped by origin (evaluation harnesses + the validator CLI).
+  "mobiletransformers.evaluation.*",
+  "mobiletransformers.artifacts.validation",
+  "mobiletransformers.training.validators",
+  "mobiletransformers.training.merge_validators",
+  # S6
+  "mobiletransformers.inference.builder",
+]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# S9: only `research/` is left outside the gate. `src/` no longer imports it at all (the two helpers it
+# used were moved into the package), so this is belt-and-braces for anything research-adjacent.
+module = ["research.*"]
+follow_imports = "skip"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The ORT-training integration smoke self-skips (importorskip) unless the ort-training-local
+# profile is active, so a bare `pytest` run in the core env stays green.

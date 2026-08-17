@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      Permissions the ACTIONS this app allows a model to request need — see `ActionAllowlist`, which
+      declares each one beside the intent that needs it.
+
+      This was missing, and it is why tool calling appeared broken on device. `SET_ALARM` and
+      `SET_TIMER` both require `com.android.alarm.permission.SET_ALARM`. The model produced a correct
+      call, the validator accepted it, the card offered Run — and `startActivity` threw
+      SecurityException, which reads as "the feature does not work" rather than as "a line is missing
+      here". Nothing could have caught it off-device: the validator and the binder are both correct,
+      and a permission is only enforced when an intent is actually started.
+
+      This is an install-time (`normal`) permission, so declaring it IS granting it — there is no
+      runtime dialog for it, and a UI that offers to ask for it would be describing something that
+      cannot happen.
+
+      Declared in the APP rather than the library on purpose: which actions to permit is the
+      application's decision, and an SDK that silently added alarm permissions to every consumer would
+      be claiming a capability on their behalf.
+    -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:largeHeap="true"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MobileTransformersApp"
+        tools:targetApi="31">
+        <!--
+          `.TrainingScreen` and `.InferenceScreen` were declared here long after the classes behind
+          them were deleted in the facade rewrite. A manifest naming activities that do not exist is
+          a crash waiting for whoever first tries to start one, and it misdescribes the app: this is
+          a single-activity Compose app, and its screens are composables, not activities.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

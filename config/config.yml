@@ -1,0 +1,391 @@
+###################### TRAINING BUILDER CONFIGURATION ######################
+TRAIN_BUILDER:
+
+  ############ BASIC MODEL EXPORT CONFIGURATION ############
+
+  # Some SLM to choose from:
+
+  # Causal model:
+  # TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  # cjvt/GaMS-2B-Instruct
+  # TinyLlama/TinyLlama_v1.1
+  # microsoft/Phi-3-mini-4k-instruct
+  # Qwen/Qwen2-0.5B
+  # HuggingFaceTB/SmolLM2-135M
+  # HuggingFaceTB/SmolLM2-360M
+  # deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
+
+  # Embedding model:
+  # sentence-transformers/all-MiniLM-L6-v2
+  # Qwen/Qwen3-Embedding-0.6B
+  # intfloat/multilingual-e5-small
+  
+  model_id: TinyLlama/TinyLlama_v1.1
+  output: "./build/train_models"
+
+  # If building generation model -> text-generation
+  # If building the embedding model -> feature-extraction
+  task_type: text-generation
+
+  # Whether to add loss to the model
+  # Set to true if you need a training model, otherwise false
+  training_mode: true
+
+  ############ TRAINING CONFIGURATION ############
+
+  # Currently supported PEFT methods:
+  # lora, lora-xs, mars, all (all linear layers trainable)
+  train_method: lora
+
+  # LoRA target modules
+  lora_target:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - down_proj
+    - up_proj
+
+  # Rank to choose for your PEFT method
+  lora_rank: 2
+  lora_alpha: 64
+  quantize: true
+  # Weight types for quantizing (dynamic quantization can only use UInt8, so this field does not change anything for dynamic quantization)
+  weight_type: "QInt8"
+  extra_options:
+
+    # ONNX opset version 21 is not supported. by 'torch.onnx.export()'.
+    # The highest opset version supported is 20. To use a newer opset version, consider 'torch.onnx.export(..., dynamo=True)'.
+    opset: 20
+
+    # Whether to add pooling operations for sentence-transformers / embedding models to the onnx model
+    # Uncheck this if creating text generation model
+    add_pooling: false
+
+    # Any extra layers to exclude from quantization
+    exclude_extra_layers:
+
+      # Important layers and trainable layers
+      - embed_tokens
+      - lm_head
+      - mixture
+      - latent
+      - lora
+      - mars
+      - shared
+
+      # Excluded base layers here
+      - gate
+      - o_proj
+      - q_proj
+    # Quantize only specific node with keywords in exclude_specific_layers
+    exclude_specific: false
+    exclude_specific_layers:
+      - 
+  
+  # Training specific configurations
+  peft_config:
+    lora_dropout: 0
+  
+  # Different configurations for different training methods (match name to train_method)
+  lora:
+    config: config
+  lora-xs:
+    config: config
+  mars:
+    # Optimization level to enable with other configurations:
+    # 0 - fully trainable all layers and no quantization
+    # 1 - partial trainable layers (frozen and fused down projection layers) with no quantization
+    # 2 - fully trainable layers with partial quantization (specified in `modules_to_quantize`)
+    # 3 - fully trainable layers with full quantization
+    # 4 - partial trainable layers (frozen and fused down projection layers) with full quantization
+    optimization_level: 4
+    modules_to_preserve_errors:
+      - 
+    modules_to_quantize:
+      - up
+      - down
+      - gate
+  all:
+
+###################### INFERENCE BUILDER CONFIGURATION ######################
+INFERENCE_BUILDER:
+
+  output: "./build/inference_models"
+  
+  # Specify the minimum accuracy level for activation of MatMul in int4 quantization.
+  #  4 is int8, which means input A of int4 quantized MatMul is quantized to int8 and input B is upcasted to int8 for computation.
+  #  3 is bf16.
+  #  2 is fp16.
+  #  1 is fp32.
+  int4_accuracy_level: 4
+
+  int4_block_size: 128
+
+  # Specify whether to use LoRA and apply non-quantization to TRAIN_BUILDER.lora_target nodes.
+  use_lora: false
+  force_unpacked_matmul: true
+
+  # Combinations of quantized model weights (inputs)
+  # - DequantizeLinear of uint8 (dynamic_quantize=true + force_transpose_inputs=true + use_qdq=true)
+  # - DequantizeLinear of int4 (dynamic_quantize=false + force_transpose_inputs=false + use_qdq=true)
+  # - MatMulNBits operator of int8 (all false)
+  dynamic_quantize: true
+  force_transpose_inputs: true
+  use_qdq: true
+
+  # Other exporting options (not so much relevant)
+  prompt_templates: false
+  export_tokenizer: false
+  export_genai_config: false
+
+  non_quant_nodes_keywords:
+    - 
+
+###################### ARTIFACT BUILDER CONFIGURATION ######################
+ARTIFACT_BUILDER:
+  build_path: "./build"
+
+  # This will join path with the TRAIN_BUILDER.output/train_models
+  training_model: "quant_model.onnx"
+
+  # This will join path with the INFERENCE_BUILDER.output/inference_models
+  inference_model: "quant_model.onnx"
+
+  # Full path to embedding model
+  embedding_model: ./build/embedding_models/embedding_model.onnx
+
+  # NOTE: Use trainer.builder to build the training model first
+  gen_train_artifacts: false
+
+  # NOTE: Use inference.builder to build inference model first
+  gen_inference_artifacts: false
+
+  # NOTE: Use trainer.builder to build just the embedding model first
+  gen_rag_artifacts: false
+
+  ### EXPORTING OPTIONS ###
+
+  export_inference_config: false # Exports the inference generation config file
+  export_tokenizer: true # Exports the tokenizer files
+  export_merger: false # Exports the weight merger models
+
+  # Exports the dataset inside the train directory
+  export_dataset: false
+
+  # Validating the generated artifacts
+  test_training: false
+  test_eval: false
+
+  inference_export_config:
+    # Weight-handoff mode. Only "external_initializer" is supported in v1 (dual-engine, no graph
+    # rewrite); "model_input" (the legacy weight_input path) and "adapter" are fail-closed stubs.
+    handoff_mode: external_initializer
+    # Whether to include trainable weights as model input (legacy toggle for handoff_mode: model_input)
+    weight_input : false
+    # Whether to include the model metadata
+    include_metadata: true
+    # Keep this to match training model
+    opset: 20
+    output_inference_model: "quant_model"
+    check_model : false
+
+    # Define whether the merged weights will be quantized or full precision
+    quantized_merged_output: false
+
+    # Force external initializers (needed if transferring weights from training to inference model)
+    force_external_initializers: true
+  
+  ### INFERENCE CONFIGURATIONS ###
+  inference_config:
+    # Only native works for the application
+    # Name of local model repository (custom)
+    repoName: benchmark
+    onnxName: model
+    type: "native" # "native"
+    maxSequenceLength: 128 # Maximum sequence length to produce after each prompt
+    trackMetrics: true # Track and measure timing metrics during generation
+    timeStepUpdate: 5 # Time step interval for tracking metrics
+    systemPrompt: null # System prompt for chat models
+    loadMergedWeights: false # Whether to find and load existing merged weights into the model
+    sampling:
+      method: greedy # top_k, top_p
+      temperature: 1 # Temperature for sampling
+      topK: 10 # Top K for sampling
+      topP: 0.9 # Top P for sampling
+    deviceOptions:
+      enableProfiling: false # Enable profiling
+      # Core config id - sets inter / intra op threads
+      # "opt3" - 6 / 4
+      # "opt2" - 4 / 2
+      # "opt1" - 1 / 1
+      coreConfigId: opt2
+      # Memory config id
+      # "low_mem" - disables ONNX Runtime memory arena and pattern 
+      # "high_perf" - enables ONNX Runtime memory arena and pattern
+      
+      # IMPORTANT: Using "low_mem" currently crashes the inference session on device
+      memoryConfigId: high_perf
+      # Execution Provider
+      executionProvider: cpu # xnnpack, nnapi, cpu 
+  
+  ### TRAINING CONFIGURATIONS ###
+  train_config:
+    # Name of local model repository (custom)
+    repoName: benchmark
+    onnxName: quant_model
+    
+    # The name of the task (the preprocessing function for the dataset needs to match this)
+    taskName: mini_personalqa
+
+    batchSize: 4 # Training batch size
+    numTrainEpochs: 1 # Number of training epochs
+    maxSteps: 10 # Maximum training steps
+    saveSteps: 20 # Steps interval to save checkpoint
+    gradAccumSteps: 1 # Gradient accumulation steps
+    
+    # Merges and exports weights at end of training
+    mergeWeightsAtEnd: false
+    # Saves the checkpoint at the end of training
+    saveModelAtEnd: false
+    # Load from training state if available
+    loadFromState: false
+    # Track, profile and save training step metrics
+    profileMetrics: false
+
+    # Dataset options
+    datasetOptions:
+      trainFile: MiniPersonalQA_train # Name of the training dataset file
+      datasetBatchSize: null # Dataset batch size (how much data to load in memory at once)
+      maxSequenceLength: null # Maximum sequence length for the dataset samples
+      maxDatasetLength: null # Maximum length of the dataset (number of samples)
+      removeLongSamples: false # Whether to remove samples longer than maxSequenceLength
+      datasetSplit: false # Whether to split the dataset into train and eval sets
+      datasetShuffle: false # Whether to shuffle the dataset
+      testRatio: 0.0 # Ratio of the dataset to use for testing if datasetSplit is true
+
+    schedulerType: cosine # "linear", "cosine"
+    schedulerOptions:
+      # Cosine options
+      minLearningRate: 0
+      cosineLearningRate: 0.0001
+      warmupSteps: 10
+      # Linear options
+      linearLearningRate: 0.0001
+      startFactor: 1
+      endFactor: 0.333
+    deviceOptions:
+      enableProfiling: false
+      # Core config id - sets inter / intra op threads
+      # "opt3" - 6 / 4
+      # "opt2" - 4 / 2
+      # "opt1" - 1 / 1
+      coreConfigId: opt3
+      # Memory config id
+      # "low_mem" - disables ONNX Runtime memory arena and pattern 
+      # "high_perf" - enables ONNX Runtime memory arena and pattern 
+      memoryConfigId: low_mem
+      # Execution Provider
+      executionProvider: cpu # xnnpack, nnapi, cpu
+
+  rag_config:
+  # Name of local model repository (custom)
+    repoName: tinyllama
+    onnxName: embedding_model
+    embeddingDimension: 256 # Dimension of the embedding model output
+    topK: 10 # Number of top similar documents to retrieve
+    searchType: semantic # semantic, text
+
+    maxTextLength: 1024 # Maximum length of text chunks to process
+    chunkSize: 512 # Size of text chunks for retrieval
+    chunkOverlap: 64 # Overlap size between text chunks
+    deviceOptions:
+      enableProfiling: false
+      # Core config id - sets inter / intra op threads
+      # "opt3" - 6 / 4
+      # "opt2" - 4 / 2
+      # "opt1" - 1 / 1
+      coreConfigId: opt2
+      # Memory config id
+      # "low_mem" - disables ONNX Runtime memory arena and pattern 
+      # "high_perf" - enables ONNX Runtime memory arena and pattern 
+      memoryConfigId: high_perf
+      # Execution Provider
+      executionProvider: cpu # xnnpack, nnapi, cpu
+
+  # Delete the generated models from the "*_models" directories
+  delete_models: false
+
+###################### ARTIFACT VALIDATOR CONFIGURATION ######################
+ARTIFACT_VALIDATOR:
+
+  # Make sure to set model id as well
+  # TODO: add to metadata or config
+
+  # Input path for inference model will be generated as:
+  # ARTIFACT_BUILDER.build_path/inference/ARTIFACT_BUILDER.inference_config.output_inference_model
+  
+  # Define your inference model and tokenizer paths
+  inference_artifact_dir: build/inference-TinyLlama-1.1B-Chat-v1.0-DQ-int4
+  inference_artifact_name: quant_model.onnx
+  tokenizer_dir: build/tokenizer-TinyLlama-1.1B-Chat-v1.0
+
+  # Inference validation
+  test_generation: true
+
+  # Use of the generation config file included in the same directory as inference model
+  use_gen_config_file: false
+
+  ### Generation configuration for testing ###
+  test_generation_config:
+    type: native
+    prompt: "Prompt for test generation" # Prompt for test generation
+    decode_between: true # Whether to decode the text while it's generating
+    max_length : 64 # Max length of test sequence to generate
+    sampling:
+      method: greedy # greedy, top_k, top_p
+      temperature: 1 # Temperature for sampling
+      topK: 50 # Top K for sampling
+      topP: 0.9 # Top P for sampling
+    hf_tokenizer: False # Whether to use the HF tokenizer or local tokenizer files
+
+  # Test loading the merged adapters into model
+  load_merged_weights: false
+
+  # Input path for training model will be generated as:
+  # ARTIFACT_BUILDER.build_path/train
+
+  # Train validation
+  test_training: true
+
+  ### Training configuration for testing ###
+  test_training_config:
+    repoName: tinyllama
+    taskName: logiqa
+    batchSize: 1
+    numTrainEpochs: 1
+    maxSteps: 2
+    saveSteps: 50
+    gradAccumSteps: 2
+
+    datasetOptions:
+      trainFile: logiqa_train
+      datasetBatchSize: 64
+      maxSequenceLength: 512
+      maxDatasetLength: 256
+      removeLongSample: true
+      datasetSplit: false
+      datasetShuffle: false
+      testRatio: 0.1
+
+    schedulerType: cosine # "linear", "cosine"
+    schedulerOptions:
+      # Cosine options
+      minLearningRate: 0
+      cosineLearningRate: 0.0001
+      warmupSteps: 10
+      # Linear options
+      linearLearningRate: 0.0001
+      startFactor: 1
+      endFactor: 0.333

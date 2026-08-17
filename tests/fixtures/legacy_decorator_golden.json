@@ -1,0 +1,48 @@
+{
+  "database.vector_entity": {
+    "VectorEntity1024": [
+      "Entity"
+    ],
+    "VectorEntity128": [
+      "Entity"
+    ],
+    "VectorEntity1536": [
+      "Entity"
+    ],
+    "VectorEntity256": [
+      "Entity"
+    ],
+    "VectorEntity384": [
+      "Entity"
+    ],
+    "VectorEntity512": [
+      "Entity"
+    ],
+    "VectorEntity64": [
+      "Entity"
+    ],
+    "VectorEntity768": [
+      "Entity"
+    ]
+  },
+  "inference.export_inference_package": {
+    "ExportedPackage": [
+      "dataclass"
+    ]
+  },
+  "peft_models.ablation.config": {
+    "AblationConfig": [
+      "dataclass"
+    ]
+  },
+  "peft_models.mars.config": {
+    "MarsConfig": [
+      "dataclass"
+    ]
+  },
+  "trainer.utils": {
+    "DataCollatorForSupervisedDataset": [
+      "dataclass"
+    ]
+  }
+}

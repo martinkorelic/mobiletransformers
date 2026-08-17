@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      #34 scheduled training. Declared in the LIBRARY, not left to the consuming app to discover:
+      a foreground WorkManager worker cannot start without these, and a consumer that only calls
+      TrainingScheduler.schedule() has no way to know that.
+
+      * FOREGROUND_SERVICE          — required for any foreground service.
+      * FOREGROUND_SERVICE_DATA_SYNC — API 34+ requires the permission matching the service TYPE the
+                                       worker declares (ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC).
+      * POST_NOTIFICATIONS          — API 33+; the persistent progress notification is mandatory for a
+                                       foreground worker, and this feature is deliberately visible.
+      * WAKE_LOCK                   — held by WorkManager for the duration of a chunk.
+
+      The dataSync service type is also declared on WorkManager's own SystemForegroundService so the
+      merged manifest carries the type for the worker that calls setForeground().
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!--
+      #21/#22 Hub I/O. Declared in the LIBRARY for the same reason as the block above: `HubDownloader`
+      -> `PackageDownloader` -> OkHttp is reached from `MobileTransformers.fromPretrained` whenever the
+      requested package is not installed, so an app that only ever calls the documented entry point
+      would otherwise crash on a permission it was never told it needed.
+
+      This was MISSING for the entire life of the feature. The whole #21 download stack — resolver,
+      planner, streaming downloader with Range-resume and sha256 verification, WorkManager worker,
+      installer — is complete and JVM-tested against MockWebServer, and had never once been able to run
+      on a device: the first real GET throws SecurityException. That is why #21's on-device leg stayed
+      open. `tests/unit/test_guards.py::test_the_library_manifest_declares_internet` now pins it.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application>
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge"
+            xmlns:tools="http://schemas.android.com/tools" />
+    </application>
+
+</manifest>

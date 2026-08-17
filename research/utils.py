@@ -2,7 +2,7 @@ import os
 import numpy as np
 from collections import defaultdict
 
-from peft_models.ablation.layer import Linear
+from mobiletransformers.peft.ablation.layer import Linear
 from safetensors.torch import load_file
 from safetensors import safe_open
 
@@ -28,17 +28,9 @@ def inspect_adapter_model(filepath="adapter_model.safetensors"):
     except Exception as e:
         print(f"Error loading {filepath}: {e}")
 
-def load_mars_adapters(model, adapter_path):
-    if not os.path.exists(adapter_path):
-        raise FileNotFoundError(f"Adapter file not found: {adapter_path}")
-    
-    # Load adapter weights
-    adapter_state_dict = load_file(adapter_path)
-
-    # Load adapters into model (allow missing keys to avoid errors)
-    model.base_model.model.load_state_dict(adapter_state_dict, strict=False)
-
-    return model
+# Moved to mobiletransformers.peft.adapters (S8): a PACKAGED evaluator is its only
+# caller, and a packaged module cannot import research/ from an installed wheel.
+from mobiletransformers.peft.adapters import load_mars_adapters  # noqa: F401,E402
 
 def get_ablation_linear_layers(model):
     ablation_linear_layers = []

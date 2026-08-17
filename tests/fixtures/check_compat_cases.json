@@ -1,0 +1,15 @@
+{
+  "description": "Shared table-driven cases for check_compat(). Mirrored by Python/Kotlin/C++ readers so schema-version gating is byte-identical across languages. Owned by 00_code_plans/07 (#8).",
+  "cases": [
+    {"doc": "1.0", "minReader": "1.0", "reader": "1.0", "expect": "accept", "why": "exact match"},
+    {"doc": "1.1", "minReader": "1.0", "reader": "1.0", "expect": "accept", "why": "higher doc minor is additive, ignored"},
+    {"doc": "1.0", "minReader": "1.0", "reader": "1.5", "expect": "accept", "why": "newer reader minor reads older doc"},
+    {"doc": "0.9", "minReader": "0.9", "reader": "1.0", "expect": "accept", "why": "older doc major accepted"},
+    {"doc": "1.5", "minReader": "1.5", "reader": "1.5", "expect": "accept", "why": "reader meets minReader exactly"},
+    {"doc": "2.0", "minReader": "1.0", "reader": "1.0", "expect": "fail", "why": "doc major beyond reader"},
+    {"doc": "1.0", "minReader": "2.0", "reader": "1.0", "expect": "fail", "why": "reader below minReader major"},
+    {"doc": "1.0", "minReader": "1.5", "reader": "1.2", "expect": "fail", "why": "reader below minReader minor"},
+    {"doc": "1", "minReader": "1.0", "reader": "1.0", "expect": "fail", "why": "malformed doc version"},
+    {"doc": "1.x", "minReader": "1.0", "reader": "1.0", "expect": "fail", "why": "non-integer doc version"}
+  ]
+}

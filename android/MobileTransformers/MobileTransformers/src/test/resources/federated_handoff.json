@@ -1,0 +1,102 @@
+{
+  "engines": [
+    "native",
+    "genai"
+  ],
+  "entries": [
+    {
+      "adapterDtypes": {
+        "adapter_A": "float32",
+        "adapter_B": "float32"
+      },
+      "adapterShapes": {
+        "adapter_A": [
+          2,
+          3
+        ],
+        "adapter_B": [
+          4,
+          2
+        ]
+      },
+      "checkpointNames": {
+        "adapter_A": "l0.lora_A.lora",
+        "adapter_B": "l0.lora_B.lora",
+        "weight": "l0.weight"
+      },
+      "dtype": "float32",
+      "externalDataLocation": {
+        "weight": "model.layers.0.attn.q_proj.MatMul.weight.bin"
+      },
+      "genaiInputNames": {},
+      "inferenceInitializerNames": {
+        "weight": "model.layers.0.attn.q_proj.MatMul.weight"
+      },
+      "mergedTensorNames": {
+        "weight": "model.layers.0.attn.q_proj.MatMul.weight"
+      },
+      "mergerOutputNames": {
+        "weight": "merged_weight"
+      },
+      "sha256": {},
+      "shape": [
+        4,
+        3
+      ],
+      "tensorDtypes": {},
+      "tensorShapes": {},
+      "trainingBaseLayerName": "backbone.model.layers.0.self_attn.q_proj.base_layer",
+      "transposePolicy": "no_transpose"
+    },
+    {
+      "adapterDtypes": {
+        "adapter_A": "float32",
+        "adapter_B": "float32"
+      },
+      "adapterShapes": {
+        "adapter_A": [
+          2,
+          5
+        ],
+        "adapter_B": [
+          6,
+          2
+        ]
+      },
+      "checkpointNames": {
+        "adapter_A": "l1.lora_A.lora",
+        "adapter_B": "l1.lora_B.lora",
+        "weight": "l1.weight"
+      },
+      "dtype": "float32",
+      "externalDataLocation": {
+        "weight": "model.layers.1.attn.v_proj.MatMul.weight.bin"
+      },
+      "genaiInputNames": {},
+      "inferenceInitializerNames": {
+        "weight": "model.layers.1.attn.v_proj.MatMul.weight"
+      },
+      "mergedTensorNames": {
+        "weight": "model.layers.1.attn.v_proj.MatMul.weight"
+      },
+      "mergerOutputNames": {
+        "weight": "merged_weight"
+      },
+      "sha256": {},
+      "shape": [
+        6,
+        5
+      ],
+      "tensorDtypes": {},
+      "tensorShapes": {},
+      "trainingBaseLayerName": "backbone.model.layers.1.self_attn.v_proj.base_layer",
+      "transposePolicy": "no_transpose"
+    }
+  ],
+  "externalDataLayout": "one_file_per_tensor",
+  "frozenBaseBlob": "frozen_base.onnx.data",
+  "handoffMode": "external_initializer",
+  "mergerModels": {},
+  "minReaderVersion": "1.0",
+  "schemaVersion": "1.1"
+}

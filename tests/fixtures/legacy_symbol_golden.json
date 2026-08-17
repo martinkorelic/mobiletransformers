@@ -1,0 +1,383 @@
+{
+  "artifact": [],
+  "artifact.merger": [
+    "emit_merger_models"
+  ],
+  "artifact.onnx_builder": [
+    "CausalLMCE",
+    "convert_pipeline",
+    "force_dequantize_external_and_save",
+    "gen_artifacts",
+    "gen_genai",
+    "get_all_metadata_from_onnx",
+    "get_layers_with_grad",
+    "load_config_from_file",
+    "onnx_checktrain",
+    "onnx_export_dummy_model",
+    "onnx_infer",
+    "onnx_segment_weights",
+    "onnx_transfer_trained_weights",
+    "parse_arguments",
+    "parse_extra_options"
+  ],
+  "artifact.tflite_builder": [
+    "convert_gemma_hf",
+    "convert_llm_tflite",
+    "convert_tflite",
+    "gemma_decode",
+    "get_signatures_tflite",
+    "hf_token",
+    "kaggle_key",
+    "kaggle_username",
+    "pad_array",
+    "run_inference_keras_tflite",
+    "run_training_keras_lora",
+    "run_training_keras_tflite"
+  ],
+  "database.builder": [
+    "MobileTransformersObjectBoxProcessor",
+    "logger",
+    "main",
+    "process_documents_with_custom_entities",
+    "validate_and_prepare_schema"
+  ],
+  "database.json2entity": [
+    "create_filtered_json_model",
+    "extract_uids_for_kotlin",
+    "extract_uids_from_objectbox_json"
+  ],
+  "database.query": [
+    "ObjectBoxQueryEngine",
+    "VectorSearchResult",
+    "format_results",
+    "logger",
+    "main",
+    "save_results_json"
+  ],
+  "database.vector_entity": [
+    "VectorEntity1024",
+    "VectorEntity128",
+    "VectorEntity1536",
+    "VectorEntity256",
+    "VectorEntity384",
+    "VectorEntity512",
+    "VectorEntity64",
+    "VectorEntity768"
+  ],
+  "evaluation.benchmark.arc_eval": [
+    "MODEL_PATH",
+    "benchmark",
+    "custom_llm",
+    "results"
+  ],
+  "evaluation.benchmark.boolq_eval": [
+    "MODEL_PATH",
+    "benchmark",
+    "custom_llm",
+    "results"
+  ],
+  "evaluation.benchmark.hellaswag_eval": [
+    "MODEL_PATH",
+    "benchmark",
+    "custom_llm",
+    "results"
+  ],
+  "evaluation.benchmark.logiqa_eval": [
+    "MODEL_PATH",
+    "benchmark",
+    "custom_llm",
+    "results"
+  ],
+  "evaluation.benchmark.winogrande_eval": [
+    "MODEL_PATH",
+    "benchmark",
+    "custom_llm",
+    "results"
+  ],
+  "evaluation.eval_adapter_models": [
+    "CustomPeftModel",
+    "add_peft_type"
+  ],
+  "evaluation.eval_adapter_onnx_model": [
+    "CustomPeftONNXModel"
+  ],
+  "evaluation.mobile.base_mobile_eval": [
+    "MINI_PERSONAL_QA_EXAMPLES",
+    "MINI_RECOMMENDATION_EXAMPLES",
+    "evaluate_base_mini_personalqa",
+    "evaluate_base_mini_recommendation"
+  ],
+  "evaluation.mobile.mobile_eval": [
+    "evaluate_finetuned",
+    "evaluate_onnx_mini_personalqa",
+    "evaluate_onnx_mini_recommendation"
+  ],
+  "evaluation.mobile.recommendation_eval": [
+    "AzureOpenAIModel",
+    "RecommendationEvaluator",
+    "main"
+  ],
+  "evaluation.mobile_evaluator": [
+    "MobileEvaluator"
+  ],
+  "evaluation.openehr.openehr_eval": [
+    "CHUNK_DATABASE_DIR",
+    "DOCUMENT_DATABASE_DIR",
+    "EMBEDDING_MODEL_ID",
+    "GEMINI_API_KEY",
+    "MAX_RESPONSE_LENGTH",
+    "MEDICAL_ASSISTANT_TEMPLATE",
+    "SLM_TO_TEST",
+    "TEST_DATA_TYPE",
+    "all_responses",
+    "all_test_cases",
+    "chunk_db",
+    "clinical_quality_metric",
+    "doc_chunk_llm",
+    "doc_chunk_slm",
+    "document_db",
+    "evaluation_results",
+    "export_data",
+    "faithfulness_metric",
+    "format_medical_prompt",
+    "llm_evaluator",
+    "llm_generator",
+    "llm_test_data",
+    "output_filename",
+    "slm_generator",
+    "slm_llm_chunk",
+    "slm_llm_doc"
+  ],
+  "evaluation.openehr.openehr_eval_plots": [
+    "create_scatter_plot",
+    "load_evaluation_data",
+    "main",
+    "model_json_pairs",
+    "plot_evaluation_results"
+  ],
+  "evaluation.test.test_eval_onnx": [
+    "MERGED_WEIGHTS_DIR",
+    "SLM_MODEL_DIR",
+    "SLM_MODEL_ID",
+    "SLM_MODEL_NAME",
+    "benchmark",
+    "results",
+    "slm_generator"
+  ],
+  "evaluation.test.test_gen": [
+    "MERGED_WEIGHTS_DIR",
+    "SLM_MODEL_DIR",
+    "SLM_MODEL_ID",
+    "SLM_MODEL_NAME",
+    "g",
+    "q",
+    "slm_generator",
+    "test_arc"
+  ],
+  "evaluation.test.test_gen_viz": [
+    "ADAPTER_NAME",
+    "ADAPTER_PATH",
+    "BASE_MODEL",
+    "generator",
+    "q",
+    "results",
+    "test_arc"
+  ],
+  "inference": [],
+  "inference.builder": [
+    "ChatGLMModel",
+    "Gemma2Model",
+    "GemmaModel",
+    "INFERENCE_CONFIG",
+    "LlamaModel",
+    "MistralModel",
+    "Model",
+    "NemotronModel",
+    "Phi3Mini128KModel",
+    "Phi3Mini4KModel",
+    "Phi3MoE128KModel",
+    "Phi3Small128KModel",
+    "Phi3Small8KModel",
+    "Phi3VModel",
+    "PhiModel",
+    "QwenModel",
+    "TRAIN_CONFIG",
+    "check_extra_options",
+    "create_model",
+    "get_args",
+    "load_config_from_file",
+    "parse_extra_options",
+    "parse_hf_token"
+  ],
+  "inference.export_inference_package": [
+    "EXTERNAL_INITIALIZERS_FOLDER_KEY",
+    "ExportedPackage",
+    "FROZEN_BASE_BLOB",
+    "GENAI_CONFIG_FILENAME",
+    "HANDOFF_MAP_FILENAME",
+    "MODEL_FILENAME",
+    "export_inference_package",
+    "logger"
+  ],
+  "inference.generator": [
+    "generate_tokens_onnx"
+  ],
+  "inference.generator_genai": [
+    "test_genai_model",
+    "test_genai_model_with_inputs"
+  ],
+  "inference.validator": [
+    "MobileTransformerGenerator",
+    "load_config_from_file",
+    "parse_arguments",
+    "parse_extra_options",
+    "validate_generation"
+  ],
+  "peft_models": [],
+  "peft_models.ablation.config": [
+    "AblationConfig",
+    "AblationVariant"
+  ],
+  "peft_models.ablation.layer": [
+    "AblationLayer",
+    "Linear",
+    "ManualQuantizedLinear"
+  ],
+  "peft_models.ablation.model": [
+    "AblationModel"
+  ],
+  "peft_models.ablation.utils": [
+    "TRANSFORMERS_MODELS_TO_ABLATION_TARGET_MODULES_MAPPING"
+  ],
+  "peft_models.lora_xs": [],
+  "peft_models.lora_xs.initialization_utils": [
+    "find_and_initialize",
+    "get_replacement_module",
+    "init_module_weights",
+    "kaiming_uniform_init",
+    "kaiming_uniform_init_lower_half",
+    "replace_module_weights",
+    "update_decoder_weights"
+  ],
+  "peft_models.lora_xs.latent_utils": [
+    "forward_latent",
+    "get_delta_weight",
+    "transpose"
+  ],
+  "peft_models.lora_xs.merger": [
+    "load_and_merge_lora_model",
+    "main"
+  ],
+  "peft_models.lora_xs.svd_utils": [
+    "get_linear_rec_svd",
+    "run_svd"
+  ],
+  "peft_models.mars.config": [
+    "MarsConfig"
+  ],
+  "peft_models.mars.layer": [
+    "Linear",
+    "MarsLayer",
+    "QuantizedBaseLayer",
+    "SharedAttentionAdapter",
+    "SharedMLPAdapter"
+  ],
+  "peft_models.mars.model": [
+    "MarsModel"
+  ],
+  "peft_models.mars.study": [
+    "factorize",
+    "find_best_shape",
+    "reshape_to_higher_order",
+    "sequential_svd",
+    "tensor_train_contract",
+    "tensor_train_decomposition",
+    "tt_tensor_elements"
+  ],
+  "peft_models.mars.utils": [
+    "TRANSFORMERS_MODELS_TO_MARS_TARGET_MODULES_MAPPING"
+  ],
+  "tools": [],
+  "tools.parser_config": [],
+  "tools.tokenizer_export": [
+    "export_tokenizer_config",
+    "export_tokenizer_config_advanced"
+  ],
+  "tools.utils": [
+    "MemoryLoggerCallback",
+    "create_chat_input",
+    "delete_directory",
+    "load_and_save_dataset",
+    "move_files_excluding",
+    "move_onnx_model",
+    "preload_dataset",
+    "render_template",
+    "save_as_jsonl",
+    "trim_dataset"
+  ],
+  "trainer": [],
+  "trainer.builder": [
+    "OnnxInferenceWrapper",
+    "OnnxTrainerWrapper",
+    "add_peft_type",
+    "apply_metadata",
+    "check_extra_options",
+    "compare_weights",
+    "count_trainable_parameters",
+    "ensure_training_mode_input",
+    "get_layers_with_grad",
+    "inspect_weights",
+    "load_config_from_file",
+    "onnx_dynamic_quantization",
+    "optimum_hf_export",
+    "parse_argument_list",
+    "parse_arguments",
+    "parse_extra_options",
+    "preprocess_model",
+    "trim_initializers"
+  ],
+  "trainer.embedding_builder": [
+    "add_cls_pooling",
+    "add_concatenation",
+    "add_max_pooling",
+    "add_mean_pooling",
+    "add_mean_sqrt_len_pooling",
+    "add_pooling_operations",
+    "add_pooling_to_onnx_model",
+    "load_pooling_config_from_hub",
+    "print_pooling_summary"
+  ],
+  "trainer.merge_validator": [
+    "PEFTMergeValidator",
+    "create_peft_merge_validator",
+    "load_config_from_file",
+    "parse_arguments",
+    "parse_extra_options"
+  ],
+  "trainer.utils": [
+    "DataCollatorForSupervisedDataset",
+    "create_lora_mapping",
+    "create_mars_adapter_mapping",
+    "process_sample_alpaca",
+    "process_sample_arc_deepeval",
+    "process_sample_boolq_deepeval",
+    "process_sample_dolly",
+    "process_sample_hellaswag",
+    "process_sample_hellaswag_deepeval",
+    "process_sample_logiqa_deepeval",
+    "process_sample_minipersonalqa",
+    "process_sample_minirecommendation",
+    "process_sample_winogrande_deepeval",
+    "taskname_to_deepeval_preprocess_function"
+  ],
+  "trainer.validator": [
+    "CosineLRScheduler",
+    "ORTDataCurator",
+    "ORTTrainer",
+    "ORTTrainingArguments",
+    "check_duplicate_initializers",
+    "load_config_from_file",
+    "parse_arguments",
+    "parse_extra_options"
+  ]
+}

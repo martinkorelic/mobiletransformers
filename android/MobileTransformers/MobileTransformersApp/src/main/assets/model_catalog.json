@@ -1,0 +1,100 @@
+{
+  "_comment": [
+    "The model catalog the Models screen offers. Adding a model is editing this file — no code.",
+    "",
+    "Entries must name a repo that holds an EXPORTED MobileTransformers package (one carrying a",
+    "mobiletransformers_manifest.json at its root), not a plain Hugging Face model. `fromPretrained`",
+    "reads the manifest first to plan the download, so a base HF repo id fails at the first request.",
+    "Produce one with: mobiletransformers export --model <hf-id> --output <dir> [--train] [--rag]",
+    "then push it to the Hub — or run `make publish-catalog`, which exports, gate-checks and pushes",
+    "this whole shelf and is the producer these entries are kept in sync with.",
+    "",
+    "Set published=false for a package that is not on the Hub yet: the entry stays visible with a",
+    "badge and a disabled Install, which is more useful than an entry that 404s on tap.",
+    "",
+    "approxSizeMb is the INFERENCE GROUP alone, and every figure below is measured off the pushed",
+    "package's manifest (sum of fileSizes under inference/ plus the tokenizer), not estimated.",
+    "Requesting train or rag adds to it — the rag group is ~91 MB for every decoder here, because it",
+    "is the same all-MiniLM-L6-v2 embedder in each."
+  ],
+  "models": [
+    {
+      "repoId": "mobiletransformers/SmolLM2-135M-Instruct",
+      "displayName": "SmolLM2 135M Instruct",
+      "description": "The smallest useful chat model here, and the one every parity check is measured against. Fastest to pull and fastest to train, so it is the right first model on a new device.",
+      "baseModel": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "task": "text-generation",
+      "approxSizeMb": 663,
+      "features": ["inference", "train", "rag"],
+      "peft": "lora",
+      "requiresToken": true,
+      "published": true,
+      "recommendedFor": "First run, Chat, and the fastest training loop"
+    },
+    {
+      "repoId": "mobiletransformers/functiongemma-270m-it",
+      "displayName": "FunctionGemma 270M",
+      "description": "Gemma-3 270M tuned for function calling: it turns an instruction into a structured call that the app's allowlist then validates before anything runs. Small enough to fine-tune on a phone in minutes.",
+      "baseModel": "google/functiongemma-270m-it",
+      "task": "text-generation",
+      "approxSizeMb": 3557,
+      "features": ["inference", "train"],
+      "peft": "lora",
+      "requiresToken": false,
+      "published": true,
+      "recommendedFor": "Tool calls, and the on-device fine-tuning demo"
+    },
+    {
+      "repoId": "mobiletransformers/gemma-3-270m-it",
+      "displayName": "Gemma 3 270M Instruct",
+      "description": "The MARS entry. Multi-Adapter Rank Sharing is this project's own fine-tuning method: instead of one adapter per layer, layers share a down-projection, so the trainable parameter count grows with rank rather than with depth — 279,936 parameters here against a 268M backbone. Pick this one to see what the research is actually about.",
+      "baseModel": "google/gemma-3-270m-it",
+      "task": "text-generation",
+      "approxSizeMb": 1814,
+      "features": ["inference", "train"],
+      "peft": "mars",
+      "requiresToken": true,
+      "published": true,
+      "recommendedFor": "MARS, and comparing a shared-adapter fine-tune against LoRA"
+    },
+    {
+      "repoId": "mobiletransformers/Qwen2.5-0.5B-Instruct",
+      "displayName": "Qwen2.5 0.5B Instruct",
+      "description": "A noticeably more fluent decoder at roughly four times SmolLM2's size. Generation on a mid-range phone is a few tokens per second — worth seeing, because it is the honest cost of the extra quality.",
+      "baseModel": "Qwen/Qwen2.5-0.5B-Instruct",
+      "task": "text-generation",
+      "approxSizeMb": 2554,
+      "features": ["inference", "train", "rag"],
+      "peft": "lora",
+      "requiresToken": true,
+      "published": true,
+      "recommendedFor": "Chat quality, and the memory ceiling on smaller devices"
+    },
+    {
+      "repoId": "mobiletransformers/all-MiniLM-L6-v2",
+      "displayName": "all-MiniLM-L6-v2",
+      "description": "The sentence encoder behind retrieval, and the only entry that is useful on its own without a decoder: install it alone and the app shows Models, Retrieval, Train and Federated, hiding Chat because an embedding model has no generative head. Exported as text-classification rather than feature-extraction — that is what makes an encoder trainable at all — so it also carries a classification head. That head is randomly initialised with LABEL_0/LABEL_1 labels, which is why Classify stays hidden: the head is the part fine-tuning is meant to learn, not something the checkpoint ships.",
+      "baseModel": "sentence-transformers/all-MiniLM-L6-v2",
+      "task": "text-classification",
+      "approxSizeMb": 94,
+      "features": ["inference", "train", "rag"],
+      "peft": "lora",
+      "requiresToken": true,
+      "published": true,
+      "recommendedFor": "Retrieval on its own, and the smallest possible training run"
+    },
+    {
+      "repoId": "mobiletransformers/distilbert-sst2-english",
+      "displayName": "DistilBERT SST-2",
+      "description": "A sentiment classifier with real trained labels (NEGATIVE / POSITIVE), so the Classify screen has something to say from the first tap — unlike the MiniLM encoder, whose head is randomly initialised. An encoder, so Chat and Retrieval are hidden for it; fine-tuning it on your own labels is the point.",
+      "baseModel": "distilbert-base-uncased-finetuned-sst-2-english",
+      "task": "text-classification",
+      "approxSizeMb": 270,
+      "features": ["inference", "train"],
+      "peft": "lora",
+      "requiresToken": true,
+      "published": true,
+      "recommendedFor": "Classify, and fine-tuning a classifier on device"
+    }
+  ]
+}
