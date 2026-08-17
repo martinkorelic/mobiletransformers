@@ -7,7 +7,7 @@
 #   android-*     -> Gradle assembleDebug for both modules                     (every PR, self-skips*)
 #
 # The Kotlin JVM suite needs only the Kotlin compiler + Android SDK stubs — NOT the vendored native
-# libraries — so it runs on every PR. It was previously running only on the author's laptop.
+# libraries — so it runs on every PR.
 #
 # * The Android ASSEMBLE job needs the git-ignored vendored native deps. On a bare hosted runner those
 #   are absent, so the job SELF-SKIPS with a warning rather than failing spuriously (mirrors
@@ -31,7 +31,7 @@ name: ci
 # ORIGINAL:
 #   on:
 #     push:
-#       branches: [main, restructure]
+#       branches: [main]
 #       tags: ['v*']
 #     pull_request: {}
 

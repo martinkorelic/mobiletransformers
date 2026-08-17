@@ -26,11 +26,11 @@ name: checks
 
 on:
   push:
-    # `restructure` is the active work branch and is listed so the badge means something before it
-    # merges. Drop it once it does — a public config naming a private-feeling branch is confusing,
-    # and a badge pinned to a branch that no longer exists silently reports nothing.
-    branches: [main, restructure]
+    branches: [main]
     tags: ['v*']
+  # Unqualified on purpose: a pull request from ANY branch runs these checks, which is what makes
+  # dropping work branches from the `push` list above safe — the badge tracks `main`, and everything
+  # merging into it is still gated.
   pull_request: {}
   workflow_dispatch: {}
 

@@ -32,9 +32,10 @@
 - [x] **A fresh clone can be provisioned** — `make doctor` names every missing prerequisite with the
       command that fixes it, and `make fetch-native-deps` installs the gitignored Android natives
       against the sha256s in `third_party/android/manifest.json`.
-      *`baseUrl` in that manifest is still `null` — the bundles are built but not hosted, so the
-      fetch path is proven only against a `file://` mirror. Hosting them is an owner action; a GitHub
-      Release keeps the URL stable.*
+      *Done 2026-08-17: hosted in the public dataset repo
+      [`mobiletransformers/build-artifacts`](https://huggingface.co/datasets/mobiletransformers/build-artifacts)
+      and `baseUrl` set. Verified anonymously (`env -u HF_TOKEN -u HF_TOKEN_ORG`) from a
+      tracked-files-only tree, for the natives, the training wheel and the debug symbols.*
 - [x] `CHANGELOG.md` updated for the release; non-goals listed, and a `Known issues` section carries
       what a reader must not discover the hard way.
 - [ ] **License finalized** with SPDX headers on first-party source. **BLOCKER — see below.**

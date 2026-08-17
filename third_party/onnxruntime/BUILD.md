@@ -18,8 +18,9 @@ below); rebuild only when the ORT SHA or torch ABI must change.
   import — keep this pin in lockstep with the `ort-training-local` group in `pyproject.toml`.
 - **ORT source:** commit `9b25b6a838d83850300afeff37bcd18723f865e3`
   (`git describe` → `v1.19.0-1714-g9b25b6a838`), built 2025-07-08.
-- Built in the sibling research repo `on_device_llm_finetune`; copied into
-  `third_party/wheels/` (git-ignored) and referenced via `[tool.uv.sources]`.
+- The published wheel was built from the commit above and lives in
+  `third_party/wheels/` (git-ignored), referenced via `[tool.uv.sources]`. Fetch it with
+  `TRAINING=1 scripts/fetch_native_deps.sh` rather than rebuilding.
 
 ## Verify the existing wheel is alive (Python 3.12)
 

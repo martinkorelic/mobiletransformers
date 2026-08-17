@@ -123,8 +123,8 @@ ort-training-local = [
 export-rocm = []
 
 [tool.uv.sources]
-# Copied by hand from ../on_device_llm_finetune/dist/ into third_party/wheels/ (git-ignored,
-# 662 MB, cp312). SHA256 recorded in third_party/onnxruntime/manifest.json.
+# A source-built wheel that is not on PyPI: git-ignored, 662 MB, cp312/linux_x86_64 only.
+# Get it with `TRAINING=1 scripts/fetch_native_deps.sh`; sha256 in third_party/onnxruntime/manifest.json.
 onnxruntime-training = { path = "third_party/wheels/onnxruntime_training-1.23.0+cpu-cp312-cp312-linux_x86_64.whl" }
 
 [tool.uv]

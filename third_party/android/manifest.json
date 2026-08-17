@@ -147,5 +147,5 @@
   ],
 
   "bundledOn": "2026-08-16",
-  "bundledFrom": "the sibling ORTTransformer checkout, on the maintainer's Linux workstation"
+  "bundledFrom": "built from the sources and commits recorded per-artifact in `provenance` above; see third_party/onnxruntime/BUILD.md for the ONNX Runtime build"
 }
