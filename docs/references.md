@@ -8,24 +8,12 @@
   was published under, and the one the [citation](citation.md) names
 - [Model packages on Hugging Face](https://huggingface.co/mobiletransformers) — six exported
   packages, each shipping both an inference and a training stage
-- [*Parameter-Efficient Tuning of Large Language Models on Mobile Devices*](https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=175561)
-  — the master's thesis this framework accompanies
-
-## Work built on this framework
-
-- Korelič, M. and Pejović, V. — [**AI health agents on mobile**](https://link.springer.com/article/10.1186/s12919-026-00367-3#Sec27),
-  *BMC Proceedings* 2026, 20(12):A7. Presented at EHRCON25, the openEHR International Conference.
-
-    The first on-device Retrieval-Augmented Generation prototype for openEHR-based personal health
-    data, running entirely on a smartphone: a small language model, an embedding model and a vector
-    database of vital signs, medications, allergies and laboratory results, with no network
-    dependency and no records leaving the device. The Android application is built on this
-    framework.
-
-    Two INT4-quantized models were measured on a Pixel 6 CPU — TinyLlama (1.1B) at 0.94 GB and
-    9.04 tokens/second, and Phi-3-mini-4k (3.5B) at 2.7 GB and 3.6 tokens/second — with answer
-    quality judged against cloud LLM responses using G-Eval. It is a useful independent read on what
-    this framework's [measured performance](mobile_evaluation.md) looks like in an applied setting.
+- [*Parameter-Efficient Tuning of Large Language Models on Mobile Devices*](https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=175561) — the master's thesis this framework accompanies
+- [**AI health agents on mobile**](https://link.springer.com/article/10.1186/s12919-026-00367-3#Sec27),
+  *BMC Proceedings* 2026, 20(12):A7 (EHRCON25 — openEHR International Conference).
+  On-device RAG prototype over openEHR personal health records: a small language model, an
+  embedding model and a vector database of vital signs, medications, allergies and lab results, all
+  running on the phone. Built on this framework.
 
 ## What it is built on
 

@@ -14,7 +14,13 @@ site_description: On-Device LLM PEFT Fine-Tuning and Inference Framework
 site_author: Martin Korelič
 site_url: https://martinkorelic.github.io/mobiletransformers/
 
-repo_name: martinkorelic/mobiletransformers
+# The header's source link. `repo_name` is the label; everything under it — latest release, stars,
+# forks — is fetched by the theme from `https://api.github.com/repos/martinkorelic/mobiletransformers`
+# at page load. That call is anonymous, so it returns those facts only while the repository is
+# PUBLIC, and the version line specifically comes from `releases/latest`, which needs a published
+# GitHub *Release* rather than a bare tag. With either missing the theme quietly renders the label
+# alone, which is not a theme misconfiguration and cannot be fixed here.
+repo_name: MobileTransformers
 repo_url: https://github.com/martinkorelic/mobiletransformers
 edit_uri: edit/main/docs/
 
