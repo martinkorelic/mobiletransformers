@@ -37,7 +37,7 @@ data class SamplingConfig(
     val seed: Int = 42,
 )
 
-/** Training configuration. The authoritative field-by-field mapping table is in `02_code_plans/01` (#19). */
+/** Training configuration. The authoritative field-by-field mapping is `TrainConfig` -> `ORTTrainConfig`. */
 data class TrainConfig(
     val epochs: Int = 1,
     val batchSize: Int = 4,

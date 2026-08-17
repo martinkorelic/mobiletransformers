@@ -18,6 +18,29 @@ _PIPELINE_TAG_BY_TASK: dict[str, str] = {
 }
 
 
+#: The framework a reader needs in order to do anything with one of these packages.
+#:
+#: A MobileTransformers package is NOT loadable by `transformers`, `optimum` or plain `onnxruntime`:
+#: it is a manifest plus per-variant stages with a weight-handoff map, and the thing that reads it is
+#: the Android SDK. Without this link the card describes an artifact with no stated way to run it.
+FRAMEWORK_REPOSITORY = "https://github.com/martinkorelic/mobiletransformers"
+
+#: The banner filename as referenced from a published card. It is uploaded ALONGSIDE the README into
+#: the model repo rather than hot-linked from GitHub, so the image renders from the moment the repo
+#: is published and keeps rendering regardless of the framework repository's visibility, default
+#: branch or later reorganisation. A card whose header image 404s looks abandoned.
+BANNER_FILENAME = "mobiletransformers_banner.png"
+
+#: Cite the framework, not just the base model. Kept here rather than in a doc so every published
+#: card carries it without anyone remembering to paste it.
+_CITATION = r"""@misc{mobiletransformers2025,
+  author       = {Koreli\v{c}, Martin and Pejovi{\'c}, Veljko},
+  title        = {MobileTransformers: An On-Device LLM PEFT Framework for Fine-Tuning and Inference},
+  year         = {2025},
+  howpublished = {\url{https://gitlab.fri.uni-lj.si/lrk/mobiletransformers}}
+}"""
+
+
 def _frontmatter(manifest: dict[str, Any], base: str, lic: dict[str, Any]) -> list[str]:
     """The YAML block the Hub parses for a model page's metadata.
 
@@ -116,17 +139,35 @@ def _cell(variant: dict[str, Any], key: str) -> str:
     return str(value) if value not in (None, "") else "—"
 
 
-def render_model_card(manifest: dict[str, Any], package_dir: str | None = None) -> str:
+def render_model_card(
+    manifest: dict[str, Any],
+    package_dir: str | None = None,
+    *,
+    banner: str | None = BANNER_FILENAME,
+    repo_id: str | None = None,
+) -> str:
     """Render a Hub README from a ``mobiletransformers_manifest.json`` dict.
 
     Includes the base model, both licenses, version pins, Android runtime requirements, and a variant
     table (id / EP / quant / engines / features / min API / recommended RAM). Pure string building.
+
+    ``banner`` is the filename to reference for the header image, or ``None`` to omit it. A parameter
+    rather than a constant read from disk because this function does no IO — the caller (``push``)
+    owns deciding whether the file will actually be uploaded, and passing a name for an image that is
+    not there would render a broken image on a public page.
+
+    ``repo_id`` makes the usage snippets copy-pasteable. It is not in the manifest — a package does
+    not know where it will be published — so the publisher supplies it; without it the snippets fall
+    back to a placeholder.
     """
     base = manifest.get("baseModelId", "unknown")
     lic = manifest.get("license", {}) or {}
     android = manifest.get("androidRuntime", {}) or {}
     lines: list[str] = []
     lines.extend(_frontmatter(manifest, base, lic))
+    if banner:
+        lines.append(f"![MobileTransformers]({banner})")
+        lines.append("")
     lines.append(f"# {base} — MobileTransformers package")
     lines.append("")
     lines.append(f"On-device (Android) package exported from **{base}** with MobileTransformers.")
@@ -223,6 +264,37 @@ def render_model_card(manifest: dict[str, Any], package_dir: str | None = None) 
     lines.append("")
     default = manifest.get("defaultVariant")
     lines.append(f"Default variant: `{default}`.")
+    lines.append("")
+    lines.append("## Running this model")
+    lines.append("")
+    lines.append(
+        "This is a **MobileTransformers package**, not a plain Hugging Face model: it is a manifest "
+        "plus per-variant ONNX stages and a weight-handoff map. `transformers`, `optimum` and plain "
+        "`onnxruntime` cannot load it. Use the framework:"
+    )
+    lines.append("")
+    lines.append(f"**{FRAMEWORK_REPOSITORY}**")
+    lines.append("")
+    lines.append("```kotlin")
+    lines.append("// Android — pulls, verifies and installs on first use.")
+    lines.append("val model = MobileTransformers.fromPretrained(")
+    lines.append("    context = context,")
+    lines.append(f'    repoId  = "{repo_id or "<org>/<this-repo>"}",')
+    lines.append(")")
+    lines.append("```")
+    lines.append("")
+    lines.append("```bash")
+    lines.append("# Host — download and inspect the package without a device.")
+    lines.append(f"mobiletransformers pull --repo-id {repo_id or '<org>/<this-repo>'}")
+    lines.append("```")
+    lines.append("")
+    lines.append("## Citation")
+    lines.append("")
+    lines.append("If you are using this framework for your own work, please cite:")
+    lines.append("")
+    lines.append("```bibtex")
+    lines.append(_CITATION)
+    lines.append("```")
     lines.append("")
     return "\n".join(lines)
 

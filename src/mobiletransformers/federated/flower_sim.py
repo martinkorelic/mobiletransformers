@@ -100,7 +100,7 @@ def aggregate_round(
         # VOCABULARIES, and the next person needs to know which. The codec describes the inference
         # initializers (one merged weight per adapted layer); an ORT training checkpoint holds the
         # rank-r factors (lora_A + lora_B per adapted layer), i.e. exactly twice as many, of a
-        # different shape. See the `merged_base_plus_adapter` note in `04_code_plans/03`.
+        # different shape. See the `merged_base_plus_adapter` note in docs/FEDERATED.md.
         raise HandoffError(
             f"codec declares {len(tensor_specs)} tensors but the round aggregated {len(aggregated)}. "
             "The codec's vocabulary is MERGED inference initializers (one per adapted layer, full "

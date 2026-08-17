@@ -1,7 +1,7 @@
 """MobileTransformers Python exception hierarchy.
 
 Deliberately parallel to the Kotlin facade's ``MobileTransformersException`` hierarchy
-(``02_code_plans/01``, stubbed by ``00_code_plans/05``) so errors read the same on both sides.
+so errors read the same on both sides.
 Library code raises a typed subclass — never a bare ``Exception``.
 """
 

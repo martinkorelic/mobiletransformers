@@ -2,7 +2,7 @@
 
 A closed set of choices is **data** (an enum member + a registry row), never an ``if/elif`` chain in
 business logic. Adding a PEFT method, architecture, or merger variant is a registry entry, not a new
-branch. Owned by ``00_code_plans/09``; extended with more registries (task, execution-provider,
+branch. Extended with more registries (task, execution-provider,
 document-loader, export-frontend) as their consumers land.
 """
 

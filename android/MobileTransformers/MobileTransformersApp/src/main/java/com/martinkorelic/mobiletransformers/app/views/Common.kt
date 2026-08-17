@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -305,6 +306,41 @@ fun Guide(title: String, steps: List<String>, initiallyExpanded: Boolean = true)
             }
         }
     }
+}
+
+/**
+ * A collapsed disclosure for the *justification* behind a control.
+ *
+ * The screens accumulated multi-sentence paragraphs explaining why a setting exists, why a default is
+ * what it is, and what happens if you choose wrong. Every one of those was written because someone
+ * would otherwise read the behaviour as a bug — so none of it is deletable — but stacked above the
+ * controls it buried them, and a user looking for a switch had to read an essay to find it.
+ *
+ * The rule this encodes: **lead with the control, put the argument behind [Details].** Distinct from
+ * [Guide], which is a whole-screen walkthrough shown once, and from [ScreenIntro], which is the one
+ * always-visible line saying what you are looking at.
+ *
+ * Collapsed by default, unlike [Guide] — this is reference material for the moment something looks
+ * wrong, not an introduction.
+ */
+@Composable
+fun Details(label: String = "Why?", content: @Composable () -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Column {
+        TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
+            Text(
+                if (expanded) "$label  ▾" else "$label  ▸",
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        if (expanded) content()
+    }
+}
+
+/** [Details] over a single paragraph — the common case, so callers do not repeat the `Text` styling. */
+@Composable
+fun Details(text: String, label: String = "Why?") {
+    Details(label) { Text(text, style = MaterialTheme.typography.bodySmall) }
 }
 
 /**

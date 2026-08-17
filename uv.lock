@@ -1678,7 +1678,7 @@ wheels = [
 
 [[package]]
 name = "mobiletransformers"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
@@ -2177,8 +2177,8 @@ name = "numpy"
 version = "2.5.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.13'",
     "python_full_version == '3.12.*'",
+    "python_full_version >= '3.13'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/fd/89965aa4ac08c74998539fcbf24fa3540f3e15237fbeb6bcf9c908f4aade/numpy-2.5.1.tar.gz", hash = "sha256:a48a113e6afea91f5608793bafa7ef2ad481fefbda87ec5069f483de61cb9fa3", size = 20755553, upload-time = "2026-07-04T17:08:00.933Z" }
 wheels = [
@@ -2433,10 +2433,10 @@ name = "onnx"
 version = "1.22.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
+    "python_full_version == '3.12.*'",
     "python_full_version >= '3.13'",
     "python_full_version == '3.11.*'",
     "python_full_version < '3.11'",
-    "python_full_version == '3.12.*'",
 ]
 dependencies = [
     { name = "ml-dtypes", marker = "python_full_version != '3.12.*' or extra == 'extra-18-mobiletransformers-export' or extra == 'group-18-mobiletransformers-genai-smoke' or extra != 'group-18-mobiletransformers-ort-training-local'" },
@@ -2527,8 +2527,8 @@ name = "onnxruntime"
 version = "1.27.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.13'",
     "python_full_version == '3.12.*'",
+    "python_full_version >= '3.13'",
     "python_full_version == '3.11.*'",
 ]
 dependencies = [
@@ -2701,14 +2701,14 @@ name = "optimum"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "huggingface-hub", marker = "extra == 'extra-18-mobiletransformers-export' or extra == 'group-18-mobiletransformers-ort-training-local'" },
+    { name = "huggingface-hub" },
     { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.12.*' and extra == 'group-18-mobiletransformers-ort-training-local') or (extra == 'group-18-mobiletransformers-genai-smoke' and extra == 'group-18-mobiletransformers-ort-training-local') or (extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-genai-smoke') or (extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-ort-training-local')" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'extra-18-mobiletransformers-export') or (python_full_version < '3.11' and extra == 'group-18-mobiletransformers-ort-training-local') or (extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-genai-smoke') or (extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-ort-training-local') or (extra == 'group-18-mobiletransformers-genai-smoke' and extra == 'group-18-mobiletransformers-ort-training-local')" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11.*' and extra == 'extra-18-mobiletransformers-export') or (python_full_version == '3.11.*' and extra == 'group-18-mobiletransformers-ort-training-local') or (extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-genai-smoke') or (extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-ort-training-local') or (extra == 'group-18-mobiletransformers-genai-smoke' and extra == 'group-18-mobiletransformers-ort-training-local')" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.12.*' and extra == 'extra-18-mobiletransformers-export') or (python_full_version >= '3.13' and extra == 'extra-18-mobiletransformers-export') or (python_full_version >= '3.13' and extra == 'group-18-mobiletransformers-ort-training-local') or (python_full_version < '3.12' and extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-genai-smoke') or (python_full_version < '3.12' and extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-ort-training-local') or (python_full_version < '3.12' and extra == 'group-18-mobiletransformers-genai-smoke' and extra == 'group-18-mobiletransformers-ort-training-local') or (python_full_version == '3.12.*' and extra == 'group-18-mobiletransformers-genai-smoke' and extra == 'group-18-mobiletransformers-ort-training-local')" },
-    { name = "packaging", marker = "extra == 'extra-18-mobiletransformers-export' or extra == 'group-18-mobiletransformers-ort-training-local'" },
-    { name = "torch", marker = "extra == 'extra-18-mobiletransformers-export' or extra == 'group-18-mobiletransformers-ort-training-local'" },
-    { name = "transformers", marker = "extra == 'extra-18-mobiletransformers-export' or extra == 'group-18-mobiletransformers-ort-training-local'" },
+    { name = "packaging" },
+    { name = "torch" },
+    { name = "transformers" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f0/69/e1e9fe4d54f6b1b90cc278d6da74dd90eb4d9fd9228882886d7c275712e2/optimum-2.1.0.tar.gz", hash = "sha256:0a2a13f91500e41d34863ffdb08fcb886b3ce68a84a386e59653e3064a45dd4b", size = 125896, upload-time = "2025-12-19T10:47:18.571Z" }
 wheels = [
@@ -2722,8 +2722,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "onnx", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.12.*' and extra == 'group-18-mobiletransformers-ort-training-local') or (extra == 'group-18-mobiletransformers-genai-smoke' and extra == 'group-18-mobiletransformers-ort-training-local') or (extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-genai-smoke') or (extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-ort-training-local')" },
     { name = "onnx", version = "1.22.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version != '3.12.*' and extra == 'group-18-mobiletransformers-ort-training-local') or extra == 'extra-18-mobiletransformers-export' or (extra == 'group-18-mobiletransformers-genai-smoke' and extra == 'group-18-mobiletransformers-ort-training-local')" },
-    { name = "optimum", marker = "extra == 'extra-18-mobiletransformers-export' or extra == 'group-18-mobiletransformers-ort-training-local'" },
-    { name = "transformers", marker = "extra == 'extra-18-mobiletransformers-export' or extra == 'group-18-mobiletransformers-ort-training-local'" },
+    { name = "optimum" },
+    { name = "transformers" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/08/da/3a0073af8f436d72c1e4d9c655c00628b857bd1d9ccc101d35301d5bb2df/optimum_onnx-0.1.0.tar.gz", hash = "sha256:182c54b25eddaded1618af7b58516da34749393a987ec7111f74677f249676f9", size = 165531, upload-time = "2025-12-23T14:20:18.97Z" }
 wheels = [
@@ -2855,8 +2855,8 @@ name = "peft"
 version = "0.19.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.13'",
     "python_full_version == '3.12.*'",
+    "python_full_version >= '3.13'",
     "python_full_version == '3.11.*'",
     "python_full_version < '3.11'",
 ]
@@ -3822,8 +3822,8 @@ name = "scipy"
 version = "1.18.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.13'",
     "python_full_version == '3.12.*'",
+    "python_full_version >= '3.13'",
 ]
 dependencies = [
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13' or (python_full_version == '3.12.*' and extra == 'extra-18-mobiletransformers-export') or (python_full_version == '3.12.*' and extra == 'group-18-mobiletransformers-genai-smoke') or (python_full_version == '3.12.*' and extra != 'group-18-mobiletransformers-ort-training-local') or (python_full_version < '3.12' and extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-genai-smoke') or (python_full_version < '3.12' and extra == 'extra-18-mobiletransformers-export' and extra == 'group-18-mobiletransformers-ort-training-local') or (python_full_version < '3.12' and extra == 'group-18-mobiletransformers-genai-smoke' and extra == 'group-18-mobiletransformers-ort-training-local')" },

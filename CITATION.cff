@@ -6,6 +6,6 @@ authors:
   - family-names: "Pejović"
     given-names: "Veljko"
 title: "MobileTransformers: An On-Device LLM PEFT Framework for Fine-Tuning and Inference"
-version: 0.1.0
-date-released: 2026-08-07
+version: 0.2.0
+date-released: 2026-08-17
 url: "https://gitlab.fri.uni-lj.si/lrk/mobiletransformers"

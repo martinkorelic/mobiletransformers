@@ -1,8 +1,7 @@
 # Export
 
 One command turns a Hugging Face model into a device-ready MobileTransformers package. This page is
-sourced from the export CLI (`02_code_plans/05`, #15) and the dependency profiles
-(`00_code_plans/03`, #2).
+sourced from the export CLI and the dependency profiles declared in `pyproject.toml`.
 
 ## One-command export
 
@@ -79,7 +78,7 @@ or in YAML as `peft_target: q_proj,v_proj`.
 
 ### `--validate`
 
-Re-reads the package just written and runs the #13 manifest validation over it (every declared file
+Re-reads the package just written and runs the full manifest validation over it (every declared file
 resolves, the variant subtrees exist, the weight-handoff reference is present). A package that does not
 validate fails the command, rather than being discovered later on a device. The same check is available
 standalone:
@@ -95,8 +94,7 @@ before committing to a full export.
 ## What the package contains
 
 The output is a single Hub-shaped package (one tree, variants declare their engines), verified against
-the manifest/cache contract (`00_code_plans/06`, #13) and the Hub package format (`02_code_plans/03`,
-#14):
+the manifest/cache contract and the Hub package format:
 
 - `mobiletransformers_manifest.json` — schema-versioned manifest (`sha256` + `fileSizes` +
   `downloadPlan`, per-variant `checksums.json`).
@@ -104,7 +102,7 @@ the manifest/cache contract (`00_code_plans/06`, #13) and the Hub package format
   per-tensor `<name>.bin` (+ `.sha256`) trainable external initializers, beside
   `generation_config.json` / `genai_config.json` / `weight_handoff_map.json`.
 - `weight_handoff_map.json` — the single source of tensor identity for on-device merge
-  (`00_code_plans/07`, #8).
+  (`src/mobiletransformers/artifacts/handoff_map.py`).
 
 ## Profiles (dependency isolation)
 
@@ -126,6 +124,27 @@ each `make setup*` target syncs its own environment:
   **environment-gated**: `mobiletransformers export` (without `--dry-run`) raises a clear message until
   run under those profiles.
 
+## Per-task flag rules
+
+Two flags are decided by the task, not by preference, and getting either wrong fails late — or, worse,
+silently produces a package that is missing half of what you wanted.
+
+**`--task text-classification` is what makes an encoder trainable at all.** `TaskSpec.default_stages`
+emits a training stage exactly when the task is `trainable`, and `FEATURE_EXTRACTION` is declared
+`trainable=False`. So exporting an encoder the "natural" way yields an **inference-only** package, with
+no error — it did exactly what you asked. Task auto-selection never picks `text-classification`; it has
+to be named.
+
+The consequence for a sentence encoder is that its classification head is randomly initialised, with
+`LABEL_0`/`LABEL_1` labels, because no such head exists in the checkpoint. That is correct: the head is
+the part fine-tuning learns, and the pretrained *backbone* is what must survive — which is what the
+export-time parameter budget checks.
+
+**`--genai` is decoder-only.** A classification or feature-extraction graph has no KV cache, and the
+export refuses to write a `genai_config.json` describing a cache the graph does not have. This is a
+fail-closed refusal rather than a silent omission, because a `genai_config.json` advertising
+`past_key_values.N` inputs the graph lacks produces a device-side failure far from the export.
+
 ## Publish
 
 ```bash
@@ -135,3 +154,33 @@ mobiletransformers push --package build/package --repo <org/name>
 The push wraps `huggingface_hub.upload_folder`, validates the package + renders a model card before
 uploading (`--dry-run` validates + renders the card without uploading). See also
 `mobiletransformers pull --repo-id <org/name>` and `install-package` for the consumer side.
+
+### Publishing the whole shelf
+
+```bash
+make publish-catalog                              # export + gate-check + push every entry
+ONLY=smollm2 PUSH=0 scripts/publish_catalog.sh    # one entry, no upload
+KEEP=1 scripts/publish_catalog.sh                 # skip re-export where a package already exists
+```
+
+`scripts/publish_catalog.sh` holds the per-model task and engine flags above as data, so they cannot be
+mistyped per run. It also does two things worth knowing about:
+
+**It gate-checks that every entry ships a `train` group** and refuses otherwise. A shelf entry that
+cannot be fine-tuned demonstrates half the framework, so this is asserted rather than assumed.
+
+**It performs the two-profile dance.** The inference export needs the `export` extra; the training
+stage needs the source-built `ort-training-local` wheel; the two collide on the `onnxruntime` import
+and must never co-install. `uv run --group ort-training-local` alone does **not** displace the stock
+onnxruntime the export profile just installed — the training wheel provides a distribution of the same
+name, so the resolver considers the requirement satisfied and the training import then dies with
+`ImportError: cannot import name 'PropagateCastOpsStrategy'`. An explicit `uv sync
+--reinstall-package` followed by `uv run --no-sync` is what actually works.
+
+It needs `HF_TOKEN_ORG` in `.env` — a token with `repo.write` on the target org. A fine-grained
+personal token scoped to one repo returns `RepositoryNotFoundError` for every other repo, and the Hub
+returns that identically for "does not exist" and "you cannot see it", so a permissions problem reads
+as a typo. See [`.env.example`](../.env.example) and [CATALOG.md](CATALOG.md).
+
+> The script leaves the tree on the training profile. Reset with
+> `uv sync --frozen --group dev --python 3.10` before running `make check`.

@@ -1,6 +1,6 @@
 # Release Checklist
 
-> Skeleton created by #31. **Finalized by #32** (`05_code_plans/05`, versioning/license/release gate).
+> The versioning, licence and release gate for a tagged release.
 >
 > Status as of 2026-08-09: every technical item below is satisfied except CI (a policy decision, see
 > below) and the licence. **The licence is the single blocker on the release gate**, and it is a
@@ -12,14 +12,29 @@
 - [x] Lint + typecheck clean (`make lint`, `make typecheck`).
 - [x] Host test gates green: Python `make check`, C++ (`make test-cpp`), Kotlin JVM
       (`:MobileTransformers:testDebugUnitTest`).
-- [x] AAR builds + publishes to mavenLocal and an external consumer app builds against it (#30).
+- [x] AAR builds + publishes to mavenLocal and an external consumer app builds against it.
       *Proven 2026-08-08: `make publish-local && make consumer-app` → a 105 MB APK carrying all 7
       native libraries, resolved from mavenLocal alone (`FAIL_ON_PROJECT_REPOS`).*
 - [x] Docs set complete for locked contracts; `COMPATIBILITY_MATRIX.md` regenerated (not stale).
-- [x] All version sites agree (pyproject == `__version__` == Gradle `version` == `CITATION.cff` == tag).
-      *Guarded by `tests/unit/test_version_sites.py`, so this cannot silently drift. Note the Gradle
+- [x] All version sites agree (pyproject == `__version__` == Gradle `version` == `CITATION.cff` ==
+      the `tiny_package` fixture's `mobiletransformersVersion` == tag).
+      *Guarded by `tests/unit/test_version_sites.py`, so this cannot silently drift. The Gradle
       version lives in `android/MobileTransformers/gradle.properties` and is overridable with
-      `-Pversion=`; the sample app's own `versionName` is unrelated and deliberately not tracked.*
+      `-Pversion=`. The sample app's `versionName` now derives from that root property rather than
+      being a literal — it read `"1.0"`, which matched no other site in the repo and was the one
+      version number a user actually sees.*
+- [x] **Model shelf published** — `make publish-catalog` run, and every entry in the app's
+      `assets/model_catalog.json` names a repo that actually holds a package.
+      *Needs `HF_TOKEN_ORG` in `.env`. Verify against the Hub API, not the script's own log: a push
+      that half-succeeded and a push that worked print the same final line. See
+      [CATALOG.md](CATALOG.md).*
+      *Done 2026-08-17: five repos, each carrying a `mobiletransformers_manifest.json`.*
+- [x] **A fresh clone can be provisioned** — `make doctor` names every missing prerequisite with the
+      command that fixes it, and `make fetch-native-deps` installs the gitignored Android natives
+      against the sha256s in `third_party/android/manifest.json`.
+      *`baseUrl` in that manifest is still `null` — the bundles are built but not hosted, so the
+      fetch path is proven only against a `file://` mirror. Hosting them is an owner action; a GitHub
+      Release keeps the URL stable.*
 - [x] `CHANGELOG.md` updated for the release; non-goals listed, and a `Known issues` section carries
       what a reader must not discover the hard way.
 - [ ] **License finalized** with SPDX headers on first-party source. **BLOCKER — see below.**

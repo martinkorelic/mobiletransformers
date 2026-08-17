@@ -23,7 +23,12 @@ ABIS="${ABIS:-arm64-v8a}"
 if [ ! -d "${JNI_LIBS}" ]; then
   echo "error: ${JNI_LIBS} is absent." >&2
   echo "       The native build needs the vendored ONNX Runtime / tokenizers libraries per ABI." >&2
-  echo "       See docs/ARCHITECTURE.md and agent_docs/ for the provisioning story." >&2
+  echo "       These are gitignored, so a fresh clone never has them." >&2
+  echo >&2
+  echo "       fix:  scripts/fetch_native_deps.sh" >&2
+  echo "       what: third_party/android/manifest.json  (every file, its sha256 and its provenance)" >&2
+  echo "       why:  docs/ARCHITECTURE.md -> Native dependencies" >&2
+  echo "       all prerequisites at once:  make doctor" >&2
   exit 1
 fi
 
@@ -46,10 +51,7 @@ if [ "${incomplete}" -ne 0 ]; then
   exit 1
 fi
 
-: "${JAVA_HOME:=}"
-if [ -z "${JAVA_HOME}" ] && [ -d /opt/android-studio/jbr ]; then
-  export JAVA_HOME=/opt/android-studio/jbr
-fi
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/java_home.sh"
 
 echo "==> assembling the release AAR"
 (cd "${GRADLE_ROOT}" && ./gradlew :MobileTransformers:assembleRelease "$@")

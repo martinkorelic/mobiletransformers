@@ -101,7 +101,7 @@ def test_assemble_package_produces_valid_13_package(tmp_path):
         discover=lambda m: "text-generation-with-past",
     )
     report = {
-        "mobiletransformersVersion": "0.1.0",
+        "mobiletransformersVersion": "0.2.0",
         "architectures": ["LlamaForCausalLM"],
         "supportedTasks": ["text-generation-with-past"],
         "selectedTask": "text-generation-with-past",

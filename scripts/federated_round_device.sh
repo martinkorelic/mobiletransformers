@@ -25,7 +25,7 @@ OUT="${OUT:-build/federated_round}"
 SCALE="${SCALE:-3.0}"
 TEST_PKG="${TEST_PKG:-com.martinkorelic.mobiletransformers.test}"
 DEVICE_FED="${DEVICE_FED:-/sdcard/Android/data/$TEST_PKG/files/mt_pkg/federated}"
-JAVA_HOME="${JAVA_HOME:-/opt/android-studio/jbr}"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/java_home.sh"
 TEST_CLASS="com.martinkorelic.mobiletransformers.FederatedRoundDeviceTest"
 
 gradle_test() {

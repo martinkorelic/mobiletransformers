@@ -36,6 +36,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.martinkorelic.mobiletransformers.app.DownloadUi
+import com.martinkorelic.mobiletransformers.app.viewmodels.peftDisplayName
 import com.martinkorelic.mobiletransformers.app.ModelActivity
 import com.martinkorelic.mobiletransformers.app.ModelState
 import com.martinkorelic.mobiletransformers.app.ui.theme.statusColors
@@ -131,7 +132,7 @@ fun ModelBar(
                     if (c.supportsClassification) Badge("classify")
                     // Which fine-tuning technique this package carries. MARS is the project's own
                     // method, and until now nothing in the app said which one you were running.
-                    c.primaryPeftMethod?.let { Badge(it) }
+                    c.primaryPeftMethod?.let { Badge(peftDisplayName(it)) }
                 }
             }
 
@@ -139,7 +140,7 @@ fun ModelBar(
                 // The download that used to be visible only on the screen that started it.
                 if (download != null) {
                     Text(
-                        "${downloadPhaseLabel(download.phase)} · ${download.summary}",
+                        "${downloadPhaseLabel(download.phase, download.waitingForConstraints)} · ${download.summary}",
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -277,7 +278,8 @@ private fun ModelDetail(
                 DetailRow("training", if (c.supportsTraining) "yes" else "no train/ stage installed")
                 DetailRow(
                     "fine-tuning method",
-                    c.peftMethods.joinToString().ifEmpty { "not declared by this package" },
+                    c.peftMethods.joinToString { peftDisplayName(it) }
+                        .ifEmpty { "not declared by this package" },
                 )
                 DetailRow(
                     "graph precision",
@@ -354,9 +356,12 @@ private fun DetailRow(label: String, value: String) {
 }
 
 /** Mirrors `DownloadProgress.Phase` without importing it into the composable layer. */
-internal fun downloadPhaseLabel(phase: String): String = when (phase) {
-    "Resolving" -> "Resolving"
-    "Verifying" -> "Verifying"
-    "Installing" -> "Installing"
+internal fun downloadPhaseLabel(phase: String, waitingForConstraints: Boolean = false): String = when {
+    // Checked FIRST: an enqueued job still reports whatever phase it last reached, so matching on
+    // the phase alone renders an indefinite wait as an active download.
+    waitingForConstraints -> "Waiting for Wi-Fi"
+    phase == "Resolving" -> "Resolving"
+    phase == "Verifying" -> "Verifying"
+    phase == "Installing" -> "Installing"
     else -> "Downloading"
 }

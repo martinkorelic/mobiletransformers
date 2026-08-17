@@ -6,9 +6,14 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -50,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.martinkorelic.mobiletransformers.app.ui.theme.AppTheme
@@ -77,7 +83,7 @@ import kotlinx.coroutines.launch
  *
  * That rule is the point of the app's existence. The previous version drove
  * `LLMRepository`/`TrainingRepository`/`RagRepository`/`InferenceRepository` directly, which meant the
- * public API #17/#19 shipped had never been exercised by anything — its ergonomics had never met a real
+ * public API the SDK shipped had never been exercised by anything — its ergonomics had never met a real
  * screen, and there was no worked example of the interface every consumer is told to adopt.
  *
  * ### The shell
@@ -174,7 +180,20 @@ private fun ShowcaseApp() {
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text(destination.label) },
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // The mark, not an `Icon`: `Icon` tints its payload with the current
+                            // content colour, which would flatten a full-colour logo to a solid
+                            // silhouette. `Image` draws it as authored, in both themes.
+                            Image(
+                                painter = painterResource(R.drawable.ic_logo),
+                                contentDescription = null, // decorative; the label beside it names the screen
+                                modifier = Modifier.size(28.dp),
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Text(destination.label)
+                        }
+                    },
                     navigationIcon = {
                         androidx.compose.material3.IconButton(
                             onClick = { scope.launch { drawerState.open() } },

@@ -1,4 +1,4 @@
-# Staged CI (owned by 05_code_plans/02, #29). Cheapest-first so failures surface fast:
+# Staged CI. Cheapest-first so failures surface fast:
 #
 #   fast          -> lint + typecheck + parity + guards (F2) + core unit tests (every PR, minutes)
 #   kotlin-test   -> :MobileTransformers JVM unit tests                        (every PR, no NDK)
@@ -12,7 +12,7 @@
 # * The Android ASSEMBLE job needs the git-ignored vendored native deps. On a bare hosted runner those
 #   are absent, so the job SELF-SKIPS with a warning rather than failing spuriously (mirrors
 #   .github/workflows/ort-training-smoke.yml). How the native deps reach CI — rebuild vs. cached
-#   artifact vs. private storage — is decided alongside #30 (AAR) / this plan.
+#   artifact vs. private storage — is still an open decision. See docs/RELEASE_CHECKLIST.md.
 #
 # No PR job downloads a large model (assert via logs): fast/export-smoke use only tiny fixtures; the
 # generate_artifacts + 1-token desktop leg + device train->merge->generate->RAG run in device.yml
@@ -55,9 +55,9 @@ jobs:
         run: make typecheck
       - name: Parity gate (F2 — enums/schemas vs. Kotlin/C++ mirrors)
         run: make parity
-      - name: Guards (#4 secrets, #6 registry dispatch)
+      - name: Guards (secret reads, registry dispatch, plan identifiers, machine paths)
         run: make guard
-      - name: Docs gate (#31 — markdown links, CLI table, Kotlin facade symbols)
+      - name: Docs gate (markdown links, CLI table, Kotlin facade symbols)
         run: uv run pytest tests/unit/test_docs.py -q
       - name: Unit tests
         run: make test
@@ -141,13 +141,13 @@ jobs:
         run: |
           # jniLibs/ is the only vendored input the native build still needs. aarLibs/ was dropped as a
           # Gradle dependency (build.gradle.kts documents the .so-from-jniLibs decision) and the
-          # protobuf headers under cpp/includes/ went with weight_serializer.cpp in #23 — the flat
+          # protobuf headers under cpp/includes/ went with weight_serializer.cpp — the flat
           # per-tensor .bin files are raw external data, so nothing on device parses ONNX protobuf.
           if [ -d MobileTransformers/src/main/jniLibs ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Vendored native libs (src/main/jniLibs) absent; skipping Android assemble (see #29/#30 for CI provisioning)."
+            echo "::warning::Vendored native libs (src/main/jniLibs) absent; skipping Android assemble. Run scripts/fetch_native_deps.sh, or see docs/ARCHITECTURE.md."
           fi
       - name: Assemble SDK + sample app (debug)
         if: steps.nativedeps.outputs.present == 'true'

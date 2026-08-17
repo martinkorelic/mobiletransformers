@@ -8,7 +8,7 @@ the merger session from data, not string literals.
 Scope note: ``resolve_merger`` / ``MergerSpec`` (the registry contract) are owned and implemented here.
 The single ``build_merger_model`` ONNX-graph builder that collapses the four legacy factories — and the
 C++ ``get_merger_type``/``run_merger_model`` rewrite — are *wired* by #9
-(``01_code_plans/01``), which owns the on-disk merge filename contract and the golden-equivalence test.
+which owns the on-disk merge filename contract and the golden-equivalence test.
 Until then ``build_merger_model`` fails closed rather than silently emitting a wrong graph.
 """
 

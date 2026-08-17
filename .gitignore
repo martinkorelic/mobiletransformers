@@ -29,3 +29,8 @@ third_party/onnxruntime/build/
 .gradle/
 *.fork.bak
 *.stub.bak
+# Implementation plans, audits and per-cycle handoff notes. Working material for whoever is building
+# this, not user documentation — `docs/` is the shipped set. Untracked 2026-08-17 at the owner's
+# request; the directory stays on disk. `tests/unit/test_docs.py` enumerates via `git ls-files`, so
+# its link check drops these automatically rather than by an exclude list.
+agent_docs/

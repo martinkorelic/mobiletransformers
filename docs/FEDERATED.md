@@ -65,8 +65,8 @@ Only `fedavg` is supported in v1 — another strategy is rejected rather than si
 - The **role vocabulary** is **decided (2026-08-08): the codec's `{weight, weight_quantized, scale,
   zero_point}` is normative**, and the tier doc was amended to match the code rather than the reverse.
   The `{adapter, trainable_weight, head}` set was never implemented by anything. Consequence:
-  `federated_record.golden.bin` is **unchanged**, and #36 mirrors one vocabulary instead of translating
-  between two. #36 is therefore **no longer gated** on this.
+  `federated_record.golden.bin` is **unchanged**, and the device round mirrors one vocabulary instead
+  of translating between two. It is therefore **no longer gated** on this.
 - Still open, and a design constraint rather than a nit: v1 exchanges **merged-weight-shaped** tensors
   (`aggregation_role="merged_base_plus_adapter"`), so per-round traffic is the size of the adapted
   weights, not of the rank-r adapters — and that reads against the tier doc's "do not aggregate merged

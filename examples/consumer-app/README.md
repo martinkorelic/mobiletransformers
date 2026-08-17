@@ -1,7 +1,7 @@
 # Consumer app example
 
 A minimal external project that resolves the MobileTransformers SDK **as a published Maven artifact**,
-not as a source module. It exists to prove the #30 publication contract: if this builds, an outside
+not as a source module. It exists to prove the publication contract: if this builds, an outside
 consumer can depend on the AAR.
 
 ## Use

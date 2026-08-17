@@ -8,7 +8,7 @@ Two copies deliberately did not merge:
 
 * ``export/training_export.py`` pre-indexed into ``config[TRAIN_CONFIG]``, so it returned the *train
   section* rather than the whole document. Silently repointing it here would have changed what every
-  call site receives, which is what ``00_code_plans/02``'s deferral note warned about. It is renamed
+  call site receives, which is what the config-layering deferral note warned about. It is renamed
   ``load_train_config_from_file`` and is now a thin wrapper over this loader.
 * ``inference/builder.py`` keeps its own copy: it is the vendored GenAI graph builder, treated as
   upstream (and allow-listed as such in ``tests/unit/test_guards.py``).

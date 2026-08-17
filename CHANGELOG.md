@@ -6,8 +6,133 @@ v1.0.0 onward.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-17
+
+The showcase release: a published model shelf, a provisionable clone, and the encoder training path
+finished.
+
+### Added
+- **A published model catalog.** Five packages under
+  [`mobiletransformers`](https://huggingface.co/mobiletransformers), each shipping **both** an
+  inference and a training stage — asserted by `scripts/publish_catalog.sh`, because a shelf entry
+  that cannot be fine-tuned demonstrates half the framework. The app's
+  `assets/model_catalog.json` now carries **measured** sizes taken from each pushed manifest, the
+  `peft` method per entry, and real repo ids (it still named `Qwen2-0.5B`, which does not exist).
+  See [docs/CATALOG.md](docs/CATALOG.md).
+- **A MARS package on the shelf.** `mobiletransformers/gemma-3-270m-it`, exported with Multi-Adapter
+  Rank Sharing — this project's own method, and previously demonstrated by nothing that was published.
+  Verified structurally, not by its label: `shared_A` and the intermediate are shared across q_proj
+  and v_proj (`adapter_index` 0/1), where LoRA has zero tensor reuse. `scripts/publish_catalog.sh`
+  gained a PEFT column and now **asserts the exported method matches the one requested**, so a
+  silently-ignored `--peft` cannot publish a LoRA package under a MARS label.
+- **Model cards carry the banner, the framework repository and the citation.** A published package is
+  not loadable by `transformers`, `optimum` or plain `onnxruntime`, and the card previously stated no
+  way to run it at all. The header image is uploaded into each model repo rather than hot-linked, so
+  it does not depend on the framework repository's visibility or default branch.
+- **`make doctor`** — one preflight report naming every missing prerequisite and the command that
+  fixes it: uv, Python 3.10/3.12, the current venv profile, the ORT-training wheel, JAVA_HOME, the
+  Android SDK, adb, the vendored natives, and the `.env` tokens.
+- **`make fetch-native-deps`** and `third_party/android/manifest.json` — the ~180 MB of gitignored
+  Android native binaries described as data (destination, size, **sha256**, provenance) and fetched
+  by a script that verifies the archive hash, unpacks, then verifies every file individually. It
+  refuses rather than half-populating: a partly-filled `jniLibs/` fails the link naming a missing
+  *symbol*, not a missing file.
+- **`.env.example`**, committed, documenting which operations need which token.
+- **`docs/SHOWCASE.md`** — a tour of the sample app, one section per capability, naming the package
+  each needs and what you should see.
+- **`docs/CATALOG.md`** — the published packages, and why the encoders are exported as
+  `text-classification`.
+- **The app has its own identity.** The launcher icon was still Android Studio's stock green robot.
+  It is now an adaptive icon built from `docs/assets/mobiletransformers_logo.png` — foreground scaled
+  into the 66dp safe zone, a dark `#171E22` background taken from the logo's own outline (the mark has
+  a white sticker outline that vanishes on light), a line-art `monochrome` layer for Android 13+
+  themed icons, and legacy pre-API-26 icons at five densities. The same mark sits in the top app bar.
+  `docs/assets/README.md` records the four rules the artwork was cut with — the alpha noise floor, the
+  safe zone, the background colour and the line-art monochrome — so it can be redone if the logo
+  changes.
+- **`docs/ARCHITECTURE.md` ▸ Native dependencies** — the section it never had: what a clone does not
+  bring, why two ONNX Runtimes ship side by side, and why arm64-v8a only.
+
+### Fixed
+- **DistilBERT could not produce a training graph, and neither could four other architectures.**
+  `OnnxSequenceClassificationTrainerWrapper` declares `token_type_ids`; `DistilBertOnnxConfig` does
+  not — DistilBERT dropped BERT's next-sentence objective and with it the segment embedding — and
+  Optimum binds the dummy inputs **positionally**, so `labels` would land in the `token_type_ids`
+  slot. This is the Gemma-3 `position_ids` defect in encoder form, and the fail-closed
+  signature/inputs cross-check written for that one caught it before `torch.jit`.
+  Fixed with a `token_type_ids`-free wrapper, plus a **registry-wide** test that runs the production
+  cross-check against every trainable row rather than the one architecture someone happened to
+  export. That test immediately found four more: `GemmaForCausalLM`, `Gemma2ForCausalLM` and
+  `NemotronForCausalLM` also omit `position_ids` (this is not a Gemma-3 peculiarity), and
+  `RobertaForSequenceClassification` also omits `token_type_ids` — only `BertForSequenceClassification`
+  keeps the task's default wrapper. All five rows corrected.
+- **A strip of Android Studio's template purple sat above the app bar.** The window theme still had
+  `android:statusBarColor` -> `colorPrimaryVariant` -> `purple_700` (#3700B3), in both day and night.
+  Same defect the Compose scheme already documents for `surfaceContainer`, one layer further out: a
+  role nobody set, filled from a baseline palette. The status bar is now driven from the live Compose
+  `colorScheme.surfaceContainer` — what `TopAppBar` paints itself with, so the two read as one surface
+  — because there are four schemes here and one XML value cannot be right for all of them. The five
+  unused `purple_*`/`teal_*` template colours were removed with it.
+- **A download waiting for Wi-Fi was displayed as an active download, forever.** Pulls default to
+  Wi-Fi only; with no Wi-Fi, WorkManager parks the worker and it waits, which is deliberate.
+  `ModelHolder` mapped that state to the sentence `"waiting for Wi-Fi"` and `downloadPhaseLabel` threw
+  it away — it matched `Resolving`/`Verifying`/`Installing` and sent everything else to
+  `"Downloading"`. Two individually-correct halves with an untested seam; found on a real phone, not
+  by any suite. The state is now a boolean on `DownloadUi` rather than a magic string, the card
+  explains that the pull is queued rather than failed, and it offers **Download on mobile data** —
+  because the switch governing this lives inside the Advanced disclosure that someone installing from
+  a catalog card has never opened. `DownloadPhaseLabelTest` pins it, verified to fail against the old
+  logic.
+- **MARS packages declared the wrong weight orientation.** `derive_transpose_policy` read only
+  `adapter_A`; MARS names its down-projection `shared_A` because it shares one across a block, so
+  every MARS layer took the "nothing to observe" branch and declared `no_transpose` for shapes that
+  decide the question unambiguously ([640,1024] on disk against a [1024,640] delta). This is the
+  transpose defect that once corrupted every merged weight, re-introduced through a naming difference
+  rather than an unassigned field — and it was caught by
+  `test_the_derivation_agrees_with_a_real_exported_package`, which reads a real artifact for exactly
+  this reason, on the first MARS package ever exported. The derivation now understands both names and
+  **raises** on a third rather than defaulting. The published package was re-exported.
+- **The plan-identifier guard was structurally blind to config files.** Its suffix filter listed no
+  `.toml`, `.yml`, `.yaml`, `.json` or `.properties`, so `pyproject.toml` and all three CI workflows
+  were never scanned — the guard read as if it covered the repo and did not, which is worse than no
+  guard. Found by eye on a tree the test had just passed. Filter widened, scope extended to the repo
+  root, `.github/`, `config/` and `examples/`, and 31 further sites cleaned.
+- **`publish_catalog.sh` sourced `.env` only when pushing.** The export needs the token too — a gated
+  base model 401s on its first config read — so `PUSH=0`, the mode used to test an export, was
+  precisely the case with no credentials.
+- **A failed task lookup named neither the model nor the reason.** `discover_tasks` is fail-open: it
+  captures the real cause in `blocker` and returns no tasks, and the caller discarded it to report
+  `no supported task in preference order (...) for []`, which reads as "unsupported architecture"
+  when the cause was a missing token. It now surfaces the blocker.
+- **The publish script leaked its Hub token into `ps`.** It passed `--token` on the command line,
+  which is world-readable in `/proc/<pid>/cmdline` for the life of the process. It now goes through
+  the environment, resolved by the same `config.settings` path.
+- **`JAVA_HOME` was hardcoded to a Linux Android Studio path** in the Makefile and four scripts, as
+  the *only* fallback. On macOS, on a CI runner, or under any standalone JDK it resolved to a
+  directory that is not there, and Gradle then reported a Java-version error naming neither
+  `JAVA_HOME` nor the file that set it. All five now share `scripts/lib/java_home.sh`, which honours
+  an explicit `JAVA_HOME`, then probes PATH for a JDK 17+, then falls back — and a new guard stops
+  the literal spreading back out.
+- The sample app's `versionName` was the literal `"1.0"`, matching no other version site in the repo.
+  It now derives from the root `version` property.
+
+### Changed
+- `agent_docs/` is no longer tracked. It is implementation plans and per-cycle handoff notes —
+  working material, not user documentation. The directory stays on disk.
+- `README.md` rewritten around what the project actually does end to end, with the measured catalog
+  table and links to the new pages. It still described a six-tab app the drawer replaced.
+
+### Known issues
+- **The native-dependency bundles are built but not hosted.** `third_party/android/manifest.json`
+  carries `baseUrl: null`, so `make fetch-native-deps` works only against a local `file://` mirror
+  until they are published. Owner action.
+- **Nothing in this release has been exercised on a device.** The host gates are green; that has
+  repeatedly proven nothing about the phone. See `agent_docs/MANUAL_DEVICE_CHECKS.md`.
+- The licence remains CC-BY-NC-4.0, which contradicts the consumable-AAR goal. Unchanged and still
+  the only real v1.0 blocker; it is a rights-holders decision.
+
 ### Fixed — release blockers found 2026-08-15
-- **`android.permission.INTERNET` was declared nowhere.** The entire #21 Hub-download stack —
+- **`android.permission.INTERNET` was declared nowhere.** The entire Hub-download stack —
   resolver, planner, streaming downloader with Range-resume and sha256 verify-and-retry, WorkManager
   worker, installer — was complete and JVM-tested, and **could not run on any device**: the first real
   GET throws `SecurityException`. MockWebServer runs on the JVM against localhost, where no Android
@@ -67,7 +192,7 @@ v1.0.0 onward.
 - Task registry (`config/registry/task.py`): the auto-model class, KV-cache kwargs, PEFT `task_type`,
   label shape, quantization exclusions and training-wrapper class are data per `TaskType`, removing
   the last task-shaped `if/elif` chain from the export path. Adding a training objective is a row.
-- **Encoder fine-tuning (#33), host legs complete.** `TaskType.SEQUENCE_CLASSIFICATION` plus registry
+- **Encoder fine-tuning, host legs complete.** `TaskType.SEQUENCE_CLASSIFICATION` plus registry
   rows for BERT/RoBERTa/DistilBERT classification: export → training artifacts → train step → metric
   works on a real encoder (loss −21.8%, accuracy 0.25 → 1.00). The Android smoke remains device-gated.
 - PEFT target modules now come from the architecture registry per model, with `--peft-target` (CLI)
@@ -155,7 +280,7 @@ v1.0.0 onward.
   device-side numeric equivalence of the two halves is asserted only at export, not after a merge.
   *(This replaces an earlier "training starts from weights that are not the pretrained ones" entry,
   which was wrong: it counted uint8 checkpoint tensors as fp32 and concluded two thirds of the model
-  was missing. The training graph carries all 135,436,915 parameters — see `agent_docs/HANDOFF.md`.)*
+  was missing. The training graph carries all 135,436,915 parameters.)*
 - **Memory-mapped weight loading covers only the trainable split** (~8% of weight bytes); the frozen
   base still loads through ORT's own external-data path, so whole-process peak RSS improves by ~6%.
   Within its own scope the zero-copy path realises 92.9% of the attainable saving. It is default-off

@@ -102,6 +102,64 @@ makes the linker dedupe them.
 The invariant throughout: **a wrong model is worse than no model.** Every gate on this path fails
 closed, because a silently-unmerged model still generates fluent text and looks healthy.
 
+## Native dependencies
+
+**A `git clone` cannot build the Android SDK.** Roughly 180 MB of prebuilt binaries and vendored
+headers are gitignored — they are the only thing the clone does not bring, and everything else
+(`build/`, `.venv*`, `.gradle`, `.cxx`) is recreatable.
+
+| what | where | size |
+| --- | --- | --- |
+| ONNX Runtime, GenAI, tokenizers, protobuf | `MobileTransformers/src/main/jniLibs/arm64-v8a/` (8 files) | 116 MB |
+| the GenAI Android AAR | `MobileTransformers/src/main/aarLibs/onnxruntime-genai.aar` | 40 MB |
+| protobuf headers/sources | `MobileTransformers/src/main/cpp/includes/{google,protobuf}` | 24 MB |
+| the source-built ORT-training wheel | `third_party/wheels/onnxruntime_training-…-cp312-linux_x86_64.whl` | 632 MB |
+
+```bash
+make doctor                                  # what is missing, and the command that fixes each
+make fetch-native-deps                       # the Android natives
+TRAINING=1 scripts/fetch_native_deps.sh      # those plus the ORT-training wheel (632 MB)
+SYMBOLS=1  scripts/fetch_native_deps.sh      # plus the unstripped debug symbols (260 MB)
+```
+
+[`third_party/android/manifest.json`](../third_party/android/manifest.json) is the source of truth:
+one entry per artifact with its destination, size, **sha256** and provenance.
+`scripts/fetch_native_deps.sh` reads it, verifies the archive hash, unpacks, then verifies every file
+individually. It refuses rather than half-populating — a partly-filled `jniLibs/` fails the link
+naming a missing *symbol*, not a missing file.
+
+The training wheel is fetched separately (`TRAINING=1`) because only the export host needs it. It is
+`cp312` + `linux_x86_64`, so **macOS and Windows cannot run the training side** without rebuilding it
+(`third_party/onnxruntime/BUILD.md`). Everything else — every host gate, every Android build,
+inference export, PEFT materialization, federated — works anywhere, and `make check` does **not**
+need the wheel: the Makefile runs `uv run --frozen` precisely so a missing local wheel cannot break
+an unrelated target.
+
+### Why two ONNX Runtimes ship side by side
+
+GenAI 0.14 needs stock ORT ≥ 1.26; the Native/training path needs the source-built ORT-training 1.23.
+Both would otherwise carry the soname `libonnxruntime.so`, the linker dedups them, and GenAI silently
+gets the training build — observed as a SIGABRT.
+
+The resolution is a distinct name, not a version bump: stock ORT 1.27 ships as `libort_gen.so` with a
+**raw-patched SONAME** (not `patchelf`, which corrupts `verneed`), and the genai `.so`'s `dlopen`
+target is raw-patched to match. Training ORT keeps `libonnxruntime.so`. This is safe because each ORT
+exports only a handful of symbols under hidden visibility and GenAI resolves through `dlsym` on its
+own handle, so there is no interposition. Reproducible via
+`spikes/genai_external_swap/setup_ort_separation.sh`.
+
+### arm64-v8a only
+
+`jniLibs/x86_64/` never had `libonnxruntime.so` or the tokenizer archives — absent here *and*
+upstream — so `libmobiletransformers.so` has never existed for that ABI. It was dropped from
+`abiFilters` rather than advertising an ABI that dies at `System.loadLibrary`. Restoring it means
+building ORT-training and tokenizers-cpp for x86_64 first. **There is no x86_64 emulator path.**
+
+The shipped binaries are stripped. AGP strips native libraries at packaging anyway, and to the same
+bytes as `llvm-strip --strip-all`, so unstripped prebuilts cost clone size and never APK size. The
+unstripped originals exist only in the debug-symbols bundle and cannot be regenerated without a full
+ORT source build.
+
 ## Concurrency
 
 One native session at a time. `LLMRepository` holds a `Mutex` across session create/teardown for the

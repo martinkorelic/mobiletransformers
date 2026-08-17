@@ -24,6 +24,7 @@ import com.martinkorelic.mobiletransformers.app.PermissionGate
 import com.martinkorelic.mobiletransformers.app.viewmodels.ConfigurationViewModel
 import com.martinkorelic.mobiletransformers.app.viewmodels.label
 import com.martinkorelic.mobiletransformers.app.viewmodels.peftDescription
+import com.martinkorelic.mobiletransformers.app.viewmodels.peftDisplayName
 import com.martinkorelic.mobiletransformers.app.viewmodels.peftOf
 import com.martinkorelic.mobiletransformers.app.viewmodels.peftOptions
 import com.martinkorelic.mobiletransformers.constants.CoreConfigId
@@ -37,7 +38,7 @@ import com.martinkorelic.mobiletransformers.constants.SearchType
 /**
  * The knobs, expressed through the public config types.
  *
- * If a setting here needed an `ORT*` type to express, that would be a facade gap for #17/#19. None
+ * If a setting here needed an `ORT*` type to express, that would be a facade gap. None
  * did — which is the result this screen reports.
  *
  * ### Why it is tabbed, and why so much of it is now pickers
@@ -196,7 +197,10 @@ private fun TrainingTab(vm: ConfigurationViewModel) {
                 label = "method",
                 options = peftOptions,
                 selected = peft.label,
-                optionLabel = { it },
+                // The list stays wire values — `onSelect` feeds `peftOf`, which matches on them —
+                // and only the rendering is prettied. Mapping the options themselves would make the
+                // lookup depend on display text.
+                optionLabel = { peftDisplayName(it) },
                 describe = { peftDescription(it) },
                 onSelect = { vm.setPeft(peftOf(it, peft.rank, peft.alpha)) },
             )
@@ -339,8 +343,7 @@ private fun DeviceTab(vm: ConfigurationViewModel) {
     Section("Execution") {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                "These apply to generation, training and retrieval together. They were on every " +
-                    "public config and editable from nowhere until this tab existed.",
+                "These apply to generation, training and retrieval together.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Dropdown(
@@ -378,21 +381,26 @@ private fun DeviceTab(vm: ConfigurationViewModel) {
                 onSelect = vm::setMemoryConfig,
             )
             LabeledSwitch("enableProfiling", device.enableProfiling, vm::setProfiling)
-            Text(
+            Details(
                 "Profiling writes an ONNX Runtime trace beside the model. Useful once, expensive " +
                     "every time — it slows the session it measures.",
-                style = MaterialTheme.typography.bodySmall,
             )
         }
     }
 
     Section("When these take effect") {
-        Text(
-            "A session reads its device options when it is created, so changing them applies to the " +
-                "next load, the next training run or the next ingest — not to the session already " +
-                "open. Reload from Models to apply them to generation now.",
-            style = MaterialTheme.typography.bodySmall,
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            // Kept visible, not collapsed: this one is a *consequence* a user hits immediately —
+            // changing a dropdown and seeing nothing happen reads as a broken control.
+            Text(
+                "On the next load, training run or ingest — not the session already open.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Details(
+                "A session reads its device options when it is created. Reload from Models to apply " +
+                    "them to generation now.",
+            )
+        }
     }
 }
 

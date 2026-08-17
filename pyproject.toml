@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mobiletransformers"
-version = "0.1.0"
+version = "0.2.0"
 description = "Export and Android runtime tooling for on-device transformer training and inference."
 readme = "README.md"
 # optimum-onnx 0.1.0 supports py 3.9–3.13; cap below 3.14.
@@ -27,7 +27,7 @@ mobiletransformers = "mobiletransformers.cli.main:main"
 # Public install surfaces. `export` uses optimum-onnx WITH the [onnxruntime] extra
 # (public onnxruntime). Never co-install with `ort-training-local` (see [tool.uv] conflicts).
 # transformers FLOOR is 4.50, not 4.45: Gemma-3 (`Gemma3ForCausalLM`/`Gemma3Config`, and the `gemma3`
-# row in CONFIG_MAPPING_NAMES) does not exist before it, so #37's architecture gate cannot even LOAD
+# row in CONFIG_MAPPING_NAMES) does not exist before it, so the architecture gate cannot even LOAD
 # the model on an older line — the failure is upstream of the graph entirely.
 #
 # This floor is also what FORCES the fork. `ort-training-local` pins `transformers==4.46.2` as part of
@@ -53,7 +53,7 @@ train  = ["transformers>=4.45,<4.58", "onnxscript>=0.3", "peft>=0.13", "onnx"]
 rag    = ["langchain-community>=0.3.27", "langchain-huggingface>=0.3", "langchain-objectbox==0.1.0", "sentence-transformers>=5"]
 eval   = ["deepeval>=3.4.7", "matplotlib>=3.10"]
 hub    = ["huggingface-hub>=0.34"]
-# Tier-3 federated Flower simulation (#35): the record codec + FedAvg math are pure numpy (core-testable),
+# Federated Flower simulation: the record codec + FedAvg math are pure numpy (core-testable),
 # so no extra is needed for CI. Flower itself (flwr[simulation], which pulls ray/pyarrow) is deliberately
 # kept OUT of the universal lock — like the ORT-training wheel — because locking it downgrades protobuf/
 # rich/typer repo-wide. The manual simulation leg installs it out-of-band: `pip install "flwr[simulation]"`.

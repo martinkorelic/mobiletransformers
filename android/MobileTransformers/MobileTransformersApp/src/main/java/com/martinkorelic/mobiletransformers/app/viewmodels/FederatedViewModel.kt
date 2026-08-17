@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * #35/#36 — one federated round: import → train locally → export, with the consent gate visible.
+ * One federated round: import → train locally → export, with the consent gate visible.
  *
  * ### The disabled state is the honest default
  *
@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
  *
  * The round returns bytes. Handing them to a gateway is deliberately the caller's problem, which is
  * what lets the whole loop run against a local `federated serve` (or over `adb`) with no server in the
- * app. This screen stops at "here is the payload and its size" — `payloadBytes` being the #36 DoD
+ * app. This screen stops at "here is the payload and its size" — `payloadBytes` being the agreed
  * measurement.
  */
 class FederatedViewModel(app: Application) : AndroidViewModel(app) {

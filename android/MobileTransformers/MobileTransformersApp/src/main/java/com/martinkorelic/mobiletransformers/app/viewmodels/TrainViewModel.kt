@@ -22,11 +22,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * #18/#19/#34 — training driven through `trainingJob()`, plus #34's charging-cycle scheduler.
+ * Training driven through `trainingJob()`, plus the charging-cycle scheduler.
  *
  * Uses the **lifecycle** handle rather than the one-shot `train()`, because status/events/cancel/resume
  * are the half an app actually needs. That was only reachable by importing `ORTTrainingConfig` until
- * `TrainingJob.start(DatasetConfig, TrainConfig)` was added — recorded against #17/#19.
+ * `TrainingJob.start(DatasetConfig, TrainConfig)` was added — recorded as a facade gap.
  */
 class TrainViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -40,7 +40,7 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * The scheduled queue for the loaded model.
      *
-     * `TrainingScheduler.observe` has existed since #34 and had **no caller**, so the only feedback a
+     * `TrainingScheduler.observe` existed and had **no caller**, so the only feedback a
      * user got from scheduling was a UUID in a text field. "Queued and waiting for the charger",
      * "running chunk 3" and "finished an hour ago" were indistinguishable — for a feature whose whole
      * point is that it runs when you are not watching.
@@ -191,7 +191,7 @@ class TrainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** #34: hand the same public configs to WorkManager instead of running now. */
+    /** Hand the same public configs to WorkManager instead of running now. */
     fun schedule() {
         val loaded = ModelHolder.state.value as? ModelState.Loaded ?: return
         if (!loaded.model.capabilities.supportsScheduledTraining) {

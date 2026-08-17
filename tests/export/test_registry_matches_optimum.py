@@ -86,6 +86,75 @@ def test_registry_binding_matches_optimum_task_manager(architecture: str) -> Non
     )
 
 
+def _default_config_for(architecture: str):
+    """A default `PretrainedConfig` for this architecture's model type, built offline.
+
+    `AutoConfig.for_model` constructs from the class defaults — no checkpoint, no network. The
+    dimensions are irrelevant here: an `OnnxConfig`'s `inputs` are decided by the model *type*, not
+    by its sizes.
+    """
+    from transformers import AutoConfig
+
+    for model_type in sorted(_model_types_for_architecture(architecture)):
+        try:
+            return AutoConfig.for_model(model_type)
+        except (ValueError, KeyError):
+            continue
+    return None
+
+
+@pytest.mark.parametrize("architecture", sorted(ARCHITECTURE_REGISTRY))
+def test_trainer_wrapper_signature_matches_the_configs_input_set(architecture: str) -> None:
+    """A trainable row's wrapper must declare exactly its OnnxConfig's inputs, in order.
+
+    Optimum hands the dummy inputs to the traced module **positionally**, so the wrapper's parameter
+    list and `OnnxConfig.inputs` are one contract with two authors. When they disagree every argument
+    shifts by one and `labels` lands in some other tensor's slot.
+
+    Two architectures have already hit this, from opposite directions — `Gemma3ForCausalLM` (no
+    `position_ids`, decoder) and `DistilBertForSequenceClassification` (no `token_type_ids`, encoder)
+    — and both were found only when someone ran that specific export. The production cross-check
+    `_check_wrapper_matches_config_inputs` fails closed at export time; this runs it against **every**
+    row on the host, so the next architecture whose config omits an input is a red test rather than a
+    failed export.
+
+    It calls the production function rather than reimplementing the comparison: a test that derives
+    the same answer a second way would pass while the shipping check drifted.
+
+    Needs `peft` on top of the export profile's optimum, because `training_export` imports it at
+    module scope — so this runs under `ort-training-local` (`make test-train`) and skips elsewhere.
+    Probed by importing rather than by `find_spec`, for the reason recorded as gotcha 14.
+    """
+    pytest.importorskip("peft", reason="training_export imports peft at module scope")
+
+    from mobiletransformers.config.registry.architecture import import_from_path
+    from mobiletransformers.config.registry.task import get_task_spec
+    from mobiletransformers.export.onnx_config_with_loss import OnnxConfigWithLoss
+    from mobiletransformers.export.training_export import _check_wrapper_matches_config_inputs
+
+    spec = ARCHITECTURE_REGISTRY[architecture]
+    if spec.onnx_config_class is None:
+        pytest.skip(f"{architecture} is inference-only (no Optimum config by design)")
+
+    task_spec = get_task_spec(spec.task)
+    if not task_spec.trainable:
+        pytest.skip(f"{spec.task.value} is not trainable, so no wrapper is ever chosen")
+
+    config = _default_config_for(architecture)
+    if config is None:
+        pytest.skip(f"{architecture} is not in this transformers line's auto-mappings")
+
+    onnx_config = spec.load_onnx_config_class()(
+        config,
+        task=spec.task.value,
+        **task_spec.onnx_config_kwargs(training_mode=True),
+    )
+    wrapper = import_from_path(spec.trainer_wrapper_class or task_spec.trainer_wrapper_class)
+
+    # Raises UnsupportedModelError naming both lists when they disagree.
+    _check_wrapper_matches_config_inputs(wrapper, OnnxConfigWithLoss(onnx_config))
+
+
 def test_gemma3_binds_the_text_config_not_the_multimodal_one() -> None:
     """The specific defect this file was written for, pinned by name.
 

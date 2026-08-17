@@ -140,7 +140,7 @@ dependencies {
 // Coordinates: com.martinkorelic.mobiletransformers:mobiletransformers-android:<version>
 // `group`/`version` come from gradle.properties and are overridable with -Pversion=<x>.
 //
-// Note `00_code_plans/04` names the group `com.martinkorelic` while `05_code_plans/03` names
+// Note: an earlier plan named the group `com.martinkorelic` while the publication plan names
 // `com.martinkorelic.mobiletransformers`. The latter wins (it is the publication plan's own contract);
 // the older doc is corrected rather than followed.
 publishing {

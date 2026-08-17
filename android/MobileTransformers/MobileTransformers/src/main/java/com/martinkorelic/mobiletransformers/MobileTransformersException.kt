@@ -23,7 +23,8 @@ open class MobileTransformersException(message: String, cause: Throwable? = null
 /** The requested model/package is not installed in the cache (remote pull is #21). */
 class ModelNotInstalledException(message: String) : MobileTransformersException(message) {
     constructor(repoId: String, cacheDir: String) : this(
-        "Model '$repoId' is not installed at $cacheDir. Pull it first (fromPretrained downloads are #21).",
+        "Model '$repoId' is not installed at $cacheDir. Pull it first — fromPretrained downloads " +
+            "a package that is not already in the cache.",
     )
 }
 

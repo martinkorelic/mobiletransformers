@@ -1,5 +1,6 @@
 package com.martinkorelic.mobiletransformers.app.ui.theme
 
+import android.app.Activity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
@@ -8,9 +9,13 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 
 enum class AppTheme {
     FRI,
@@ -289,6 +294,31 @@ fun AppThemedContent(
         theme == AppTheme.FRI -> FriLightColors
         isDarkMode -> BetterDarkColors
         else -> BetterLightColors
+    }
+
+    // The status bar is painted by the WINDOW, not by Compose, so a fully-themed app still sat under
+    // a strip of `Theme.MaterialComponents`' `colorPrimaryVariant` — the untouched Android Studio
+    // template purple (#3700B3), in both day and night. It is the same defect the surface-container
+    // block above documents, one layer further out: a role nobody set, filled from a baseline palette.
+    //
+    // Driven from the live `colorScheme` rather than restated in `themes.xml` because there are FOUR
+    // schemes here (FRI/Better x light/dark) and a hardcoded XML colour can only be right for one of
+    // them. `surfaceContainer` specifically: that is what `TopAppBar` paints itself with, so the
+    // status bar and the app bar read as one surface instead of a seam.
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        val window = (view.context as Activity).window
+        SideEffect {
+            window.statusBarColor = colorScheme.surfaceContainer.toArgb()
+            window.navigationBarColor = colorScheme.surfaceContainer.toArgb()
+            // Icon contrast is a separate decision from the fill: a light bar needs dark icons or the
+            // clock disappears. Keyed to the scheme, not to the system's dark-mode setting, because
+            // `isDarkMode` here is the app's own choice and may disagree with the system's.
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !isDarkMode
+                isAppearanceLightNavigationBars = !isDarkMode
+            }
+        }
     }
 
     CompositionLocalProvider(

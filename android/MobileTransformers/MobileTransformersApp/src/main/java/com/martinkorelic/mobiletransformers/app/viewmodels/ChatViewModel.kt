@@ -29,7 +29,7 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * #11/#24/#27/#37 — chat with streaming, retrieval attached to the answer it grounded, and tool calls
+ * Chat with streaming, retrieval attached to the answer it grounded, and tool calls
  * rendered in the conversation that produced them.
  *
  * The engine picker offers exactly `capabilities.availableEngines`, which the facade computes from the
@@ -68,7 +68,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * Whether an accepted tool call fires by itself or waits for a tap.
      *
      * Defaults to [ToolExecution.Approve]. The SDK never executes anything — `IntentBinder.dryRun`
-     * holds no `Context` and has no `startActivity` call site, which is the structural half of #37's
+     * holds no `Context` and has no `startActivity` call site, which is the structural half of the
      * "no model output is ever executed". Firing is therefore the **app's** deliberate act, taken
      * only on a `ValidatedCall` that cleared the allowlist, and the default keeps a human in the loop
      * for it.
@@ -283,7 +283,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * #27: retrieve → assemble → generate, with both halves attached to the answer.
+     * Retrieve → assemble → generate, with both halves attached to the answer.
      *
      * The grounded path does not stream, so without a phase indicator a 20-second answer is a frozen
      * screen. Naming the phase is the difference between "it is retrieving" and "it has hung".
@@ -321,7 +321,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * #37 in the conversation: one turn, with tools declared, rendered according to what came back.
+     * Tool calling in the conversation: one turn, with tools declared, rendered according to what
+     * came back.
      *
      * Three outcomes, three renderings, and the model picks which one — that is the whole point:
      *

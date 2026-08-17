@@ -1,7 +1,7 @@
 """Typed, env-driven runtime settings — the single owner of secrets and machine paths.
 
 Decision (final): stdlib ``dataclass`` loader; do NOT add ``pydantic-settings``. ``pydantic>=2``
-is a core dependency for the typed *tunable* config models (00_code_plans/09), but secrets stay
+is a core dependency for the typed *tunable* config models, but secrets stay
 dependency-light and env-only.
 
 ``get_settings()`` is the ONLY place the environment is read for secrets. Business logic calls

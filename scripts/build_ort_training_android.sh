@@ -2,10 +2,10 @@
 # Build the ONNX Runtime *training* Android AAR + native .so libraries, at the SAME ORT commit as the
 # Python training wheel (third_party/onnxruntime/manifest.json).
 #
-# PLACEHOLDER / REFERENCE: the Android training native build belongs to a later plan
-# (agent_docs/00_code_plans/04, Android Gradle rename/migration). It is NOT run in the foundation
-# pass and the manifest's Android fields (ndk_version, abis, android.*) are still null. This script
-# records the intended build shape so the provenance is reproducible when that plan lands.
+# PLACEHOLDER / REFERENCE: this is not run as part of any current workflow, and the manifest's
+# Android fields (ndk_version, abis, android.*) are still null. The shipped arm64-v8a binaries were
+# built out of band — see third_party/android/manifest.json for their hashes and provenance. This
+# script records the intended build shape so it stays reproducible.
 #
 # Usage:
 #   ORT_SRC=/path/to/onnxruntime ANDROID_NDK_HOME=/path/to/ndk scripts/build_ort_training_android.sh
@@ -18,7 +18,7 @@ ORT_SRC="${ORT_SRC:-$REPO_ROOT/../onnxruntime}"
 ORT_SHA="$(python3 -c "import json;print(json.load(open('$MANIFEST'))['ort_git_sha'])")"
 : "${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME to your NDK path}"
 
-# ABIs / API level to be finalized by 00_code_plans/04 and written back into manifest.json.
+# ABIs / API level to be finalized and written back into manifest.json when this is really run.
 ABIS="${ABIS:-arm64-v8a}"
 ANDROID_API="${ANDROID_API:-24}"
 

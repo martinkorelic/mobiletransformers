@@ -18,7 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * #21/#13 — the Models / Hub screen.
+ * The Models / Hub screen.
  *
  * **This screen exists because the old sample app could not be used by anyone.** It assumed a package
  * already `adb push`ed into place, which no real user can do, so on a clean install every other screen
@@ -88,6 +88,27 @@ class ModelsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onWifiOnlyChanged(value: Boolean) {
         _ui.value = _ui.value.copy(wifiOnly = value)
+    }
+
+    /**
+     * Drop the Wi-Fi requirement and restart the queued pull on whatever connection there is.
+     *
+     * Offered from the download card when the worker is parked on its network constraint. A queued
+     * download is the correct behaviour but an indefinite one, and the switch that governs it sits
+     * inside the Advanced disclosure — which someone who tapped Install on a catalog card has never
+     * opened. Without this the only exits are Cancel or finding Wi-Fi.
+     *
+     * The existing worker must be cancelled first: constraints are fixed at enqueue time, so
+     * re-enqueuing under the same unique name without cancelling leaves the original request in
+     * place, still waiting. The `.partial` files survive, so this resumes rather than restarts.
+     */
+    fun retryWithoutWifiRequirement() {
+        val repoId = _ui.value.repoId
+        ModelHolder.cancelBackgroundDownload(getApplication(), repoId)
+        pullJob?.cancel()
+        pullJob = null
+        _ui.value = _ui.value.copy(wifiOnly = false, message = null)
+        loadSelected(repoId)
     }
 
     /**

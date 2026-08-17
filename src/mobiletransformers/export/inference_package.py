@@ -1,4 +1,4 @@
-# DECOMPOSE(#5): this is the single inference-export orchestrator (#9, 01_code_plans/01). It replaces
+# This is the single inference-export orchestrator. It replaces
 # the overlapping gen_genai (artifact/onnx_builder.py) + Model.make_genai_config (inference/builder.py)
 # export paths with one entry that emits the flat external-data package + weight_handoff_map.json.
 # It lives under the legacy `inference/` root (out of the ruff/mypy gate) until inference/ moves into
@@ -62,8 +62,8 @@ EXTERNAL_INITIALIZERS_FOLDER_KEY = "session.model_external_initializers_file_fol
 #: `config_entries` silently reduced every training-stage package to Native-only.
 #:
 #: NOTE `config_entries` is deliberately absent and must stay absent. onnxruntime.ai's config reference
-#: documents it, and `agent_docs/01_tier0_foundation_decisions.md` records it as available on that
-#: authority, but 0.14.1 rejects it outright. Re-probe before trusting the docs on a version bump.
+#: documents it as available, but 0.14.1 rejects it outright. Re-probe before trusting the upstream
+#: docs on a version bump.
 GENAI_SESSION_OPTION_KEYS = frozenset(
     {
         "log_id",

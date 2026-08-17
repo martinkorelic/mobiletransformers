@@ -51,7 +51,10 @@ def test_clean_generated_is_not_destructive() -> None:
     """`clean-generated` must only remove BUILD output — never sources, tests or vendored deps."""
     text = MAKEFILE.read_text(encoding="utf-8")
     recipe = text.split("clean-generated:", 1)[1].split("\n\n", 1)[0]
-    forbidden = ("src/", "tests/", "android/", "docs/", "agent_docs/", "jniLibs", "third_party")
+    # `agent_docs/` was dropped from this tuple on 2026-08-17 when the directory was untracked: the
+    # test asserted `clean-generated` would not delete something git no longer knows about, which is
+    # a check that can never fail. Deleted rather than left scanning the void.
+    forbidden = ("src/", "tests/", "android/", "docs/", "jniLibs", "third_party")
     for token in forbidden:
         assert f"rm -rf {token}" not in recipe, f"clean-generated would delete {token}"
         assert f"rm -r {token}" not in recipe, f"clean-generated would delete {token}"

@@ -32,7 +32,7 @@ import kotlinx.coroutines.launch
  * `ORTRagConfig`, `SamplingOptions`, `DeviceOptions` and `SchedulerConfig` directly. Everything it
  * could express is reachable here through `GenerationConfig`/`TrainConfig`/`RagConfig`/`DatasetConfig`
  * — which is the check this screen exists to perform. A knob that turned out to be unreachable would
- * be a facade gap to record against #17/#19, not a licence to import an `ORT*` type.
+ * be a facade gap to record, not a licence to import an `ORT*` type.
  */
 class ConfigurationViewModel : ViewModel() {
 
@@ -207,6 +207,31 @@ fun peftOf(label: String, rank: Int, alpha: Int): PeftConfig = when (label) {
 fun PeftConfig.withRank(rank: Int): PeftConfig = peftOf(label, rank, alpha)
 
 fun PeftConfig.withAlpha(alpha: Int): PeftConfig = peftOf(label, rank, alpha)
+
+/**
+ * How a PEFT method is spelled for a reader: `LoRA`, `MARS`, `LoRA-XS`.
+ *
+ * **Display only.** The lowercase forms are wire values — they are the `PEFTMethod` enum mirrored
+ * from Python and pinned by `make parity`, they are what a manifest's `peftMethods` contains, and
+ * they are what [peftOf] looks up. Nothing here may change them; this is the one place that decides
+ * how they are *shown*, so the casing cannot drift between the catalog chip and the picker.
+ *
+ * They are acronyms — Low-Rank Adaptation, Multi-Adapter Rank Sharing — and rendering the project's
+ * own method as "mars" reads like a typo rather than a name. An unknown value passes through
+ * unchanged rather than being guessed at, so a method added to the SDK shows its wire value instead
+ * of silently displaying as something else.
+ */
+fun peftDisplayName(wire: String): String = when (wire.lowercase()) {
+    "lora" -> "LoRA"
+    "lora-xs" -> "LoRA-XS"
+    "mars" -> "MARS"
+    "mars-opt0" -> "MARS-opt0"
+    "mars-opt1" -> "MARS-opt1"
+    "mars-quantized" -> "MARS-quantized"
+    "all" -> "Full fine-tune"
+    "nolora" -> "No adapters"
+    else -> wire
+}
 
 /** What each method costs and requires, shown under the picker. */
 fun peftDescription(label: String): String = when (label) {

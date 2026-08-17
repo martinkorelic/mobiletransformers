@@ -3,7 +3,7 @@
 How a MobileTransformers package is laid out **on the Hugging Face Hub**, and how a client turns a repo
 id into an installed model. The manifest and weight-handoff *schemas* are specified in
 [MODEL_FORMAT.md](MODEL_FORMAT.md); this page covers the repository shape, the download plan and the
-verify/install flow. Owner: `src/mobiletransformers/hub/package_format.py` (#14).
+verify/install flow. Owner: `src/mobiletransformers/hub/package_format.py`.
 
 ## Repository layout
 

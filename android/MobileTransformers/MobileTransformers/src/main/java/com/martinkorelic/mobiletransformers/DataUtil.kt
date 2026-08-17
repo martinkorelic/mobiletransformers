@@ -146,7 +146,7 @@ object Tasks {
         Task("mini_personalqa", "personal question/answer pairs"),
         Task("mini_recommendation", "recommendation prompts and responses"),
         Task("cola", "grammatical-acceptability judgements, as generation"),
-        Task("cola_cls", "the same data as a sequence-classification objective (#33)"),
+        Task("cola_cls", "the same data as a sequence-classification objective"),
         Task("mobile_actions", "instruction -> tool call, matching the Tool calls allowlist"),
     )
 

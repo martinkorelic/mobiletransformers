@@ -76,7 +76,7 @@ class RecommendationEvaluator:
         Initialize the evaluator with Azure OpenAI configuration.
 
         Any argument left ``None`` is resolved at call time from ``Settings`` — the single owner of
-        secrets (``00_code_plans/02``). These used to default to module-level constants imported from
+        secrets. These used to default to module-level constants imported from
         the repo-root ``config.py`` shim, which is not part of the wheel: importing this module from
         an installed ``mobiletransformers`` raised ``ModuleNotFoundError: config``. Resolving lazily
         also keeps the env read out of import time.

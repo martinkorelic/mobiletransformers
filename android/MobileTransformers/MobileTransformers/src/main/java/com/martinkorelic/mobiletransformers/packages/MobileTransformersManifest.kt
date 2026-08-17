@@ -61,7 +61,7 @@ data class MobileTransformersManifest(
      * The engines the installed variant declares, for [ModelRuntimeFactory.create]'s selection.
      *
      * `ModelRuntimeFactory.create` used to be called with a hard-coded `setOf("native","genai")` and a
-     * comment saying the set "would come from the manifest variant (#13)" — so a native-only variant
+     * comment saying the set "would come from the manifest variant" — so a native-only variant
      * was still offered to GenAI, and the manifest field this class has always parsed was never read.
      *
      * A package that declares no engines at all (an older export) yields `null`, and the caller keeps

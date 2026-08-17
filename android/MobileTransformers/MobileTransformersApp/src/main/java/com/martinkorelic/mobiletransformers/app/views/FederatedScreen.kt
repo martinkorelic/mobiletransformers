@@ -18,7 +18,7 @@ import com.martinkorelic.mobiletransformers.BuildConfig
 import com.martinkorelic.mobiletransformers.app.viewmodels.FederatedViewModel
 
 /**
- * #35/#36 — one federated round, with the consent gate on screen rather than implied.
+ * One federated round, with the consent gate on screen rather than implied.
  *
  * The disabled state is shown honestly. `FEDERATION_ENABLED` is false by default, and rather than
  * hiding the feature the screen says so and still lets the button be pressed — the resulting
@@ -46,25 +46,27 @@ fun FederatedScreen(vm: FederatedViewModel) {
                     TextField("Gateway URL", ui.gatewayUrl, vm::onGatewayChanged)
                     TextField("Client auth token", ui.token, vm::onTokenChanged)
                     LabeledSwitch("Consent granted", ui.consentGranted, vm::onConsentChanged)
-                    Text(
+                    Details(
                         "Consent, TLS and auth are checked before any tensor is read. Only adapter " +
                             "factors and aggregate metrics ever leave the device — never examples.",
-                        style = MaterialTheme.typography.bodySmall,
+                        label = "What leaves the device",
                     )
                 }
             }
 
             Section("Round ${ui.round}") {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "import global adapter → train locally → export this device's update. " +
-                            "Round 0 imports nothing: a device must be able to join a cohort that has " +
-                            "not published an aggregate yet.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    // Control first: the three-stage description is what a round IS, which matters
+                    // once, and sat above the only button on the screen every time.
                     Button(onClick = vm::runRound, enabled = !ui.running) {
                         Text(if (ui.running) "Running…" else "Run one round")
                     }
+                    Details(
+                        "Import the global adapter → train locally → export this device's update. " +
+                            "Round 0 imports nothing: a device must be able to join a cohort that has " +
+                            "not published an aggregate yet.",
+                        label = "What a round does",
+                    )
                 }
             }
 
@@ -75,11 +77,11 @@ fun FederatedScreen(vm: FederatedViewModel) {
                         Text("imported tensors: ${r.importedTensors}")
                         Text("trained locally: ${r.trainedLocally}")
                         Text("upload payload: ${r.payloadBytes} B", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "Nothing was uploaded. The round returns bytes; handing them to a gateway " +
-                                "is the caller's choice, which is what lets the whole loop run against " +
-                                "a local `federated serve`.",
-                            style = MaterialTheme.typography.bodySmall,
+                        Text("Nothing was uploaded.", style = MaterialTheme.typography.bodySmall)
+                        Details(
+                            "The round returns bytes; handing them to a gateway is the caller's " +
+                                "choice, which is what lets the whole loop run against a local " +
+                                "`federated serve`.",
                         )
                     }
                 }

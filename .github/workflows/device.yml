@@ -1,4 +1,4 @@
-# Device / model-zoo pipeline (owned by 05_code_plans/02, #29). NEVER runs on a PR — it needs a
+# Device / model-zoo pipeline. NEVER runs on a PR — it needs a
 # physical Android device (or device-farm runner) and is long/intensive. Manual (`workflow_dispatch`)
 # plus a nightly `schedule`. The end-to-end device leg: train 1 step -> merge -> generate 1 token ->
 # ingest/query 1 RAG doc; then build a small starter zoo and record time/memory as artifacts in the

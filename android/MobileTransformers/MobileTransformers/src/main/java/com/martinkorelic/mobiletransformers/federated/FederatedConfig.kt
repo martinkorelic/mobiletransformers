@@ -27,7 +27,7 @@ data class FederatedConsent(
 /**
  * Preconditions for participating in a federated round.
  *
- * `04_code_plans/04` states these are a **precondition to any real-user run, not a follow-up**, so they
+ * These are a **precondition to any real-user run, not a follow-up**, so they
  * are enforced at the point a round starts rather than documented and hoped for. Before this the repo
  * had exactly one flag (`BuildConfig.ADAPTER_UPLOAD_ENABLED`) and no notion of consent at all — a grep
  * for "consent" returned nothing.

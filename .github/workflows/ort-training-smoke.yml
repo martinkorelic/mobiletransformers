@@ -5,7 +5,7 @@
 # cp312-only and git-ignored (third_party/wheels/, referenced via [tool.uv.sources]). It is NOT on
 # public PyPI, so a hosted runner has nothing to fetch. Wiring this into the always-on staged
 # pipeline — and deciding HOW the wheel reaches CI (rebuild-in-CI vs. a private index / cached
-# artifact) — is owned by 05_code_plans/02 (#29). Until then this job is `workflow_dispatch`
+# artifact) — is an open decision. Until then this job is `workflow_dispatch`
 # (manual) and self-skips when the wheel is absent, so it never spuriously fails a normal run.
 
 name: ort-training-smoke
@@ -32,7 +32,7 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::ORT-training wheel absent; skipping smoke (see #29 for CI wheel provisioning)."
+            echo "::warning::ORT-training wheel absent; skipping smoke. See third_party/onnxruntime/BUILD.md."
           fi
 
       - name: Verify wheel checksum matches manifest

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The adaptive launcher icon's background layer.
+
+  Taken from the logo's own outline colour (#171E22). It is dark deliberately: the mark carries a
+  white sticker outline, which vanishes completely on a light background — on white the icon reads as
+  a yellow blob with no silhouette. Generated resources reference this, so changing it here changes
+  the icon everywhere.
+-->
+<resources>
+    <color name="ic_launcher_background">#171E22</color>
+</resources>

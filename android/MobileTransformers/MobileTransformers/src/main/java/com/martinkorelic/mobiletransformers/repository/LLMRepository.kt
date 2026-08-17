@@ -215,7 +215,7 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
      * `prepareTraining`/`prepareGeneration`/`prepareRetriever` each destroy and create native handles
      * and reassign [llmState]. Nothing serialized them, so two concurrent calls (a train kicked off
      * while a generate was still loading, say) could race on the same handles — a use-after-free in
-     * native code, not a Kotlin exception. `IMPLEMENTATION_ORDER.md` recorded this lock as done and
+     * native code, not a Kotlin exception. This lock was once recorded as done and
      * #34's scheduler is specified against it, but no lock existed anywhere in the library.
      *
      * Held only across session *setup/teardown*, never across a full training run or generation loop,

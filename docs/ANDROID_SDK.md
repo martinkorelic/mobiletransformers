@@ -103,6 +103,49 @@ val model = MobileTransformers.fromPretrained(
 
 Asking for a missing feature raises `FeatureNotInstalledException`, naming what *is* installed.
 
+### Asking the package what it can do
+
+`model.capabilities` is a `RuntimeCapabilities`, computed from the artifacts actually installed. It is
+the honest answer to "what can I offer the user", and the sample app's whole navigation derives from
+it — a UI built on it cannot claim a capability the package lacks, or withhold one it has.
+
+| property | type | means |
+| --- | --- | --- |
+| `supportsTraining` / `supportsMerge` / `supportsRag` / `supportsEmbedding` | `Boolean` | the corresponding stage is installed |
+| `supportsClassification` | `Boolean` | it is a classifier **and** its labels are named. See below |
+| `isClassifier` | `Boolean` | the graph is a classification graph, labels or not |
+| `isEncoderOnly` | `Boolean` | no generative head at all — `generate` will not work |
+| `task` | `PackageTask` | the exported task, incl. `inferenceGraphPrecision` and `labelCount` |
+| `graphPrecision` | `String?` | the **measured** precision of the inference graph |
+| `peftMethods` / `primaryPeftMethod` | `Set<String>` / `String?` | what the package was exported with (`lora`, `lora-xs`, `mars`) |
+| `trainingParameterCount` | `Long` | trainable parameters, from the training config |
+| `toolCalling` / `supportsToolCalling` | `ToolCallSupport` / `Boolean` | whether the package declares a tool-call format |
+| `engine` / `availableEngines` | `InferenceEngine` | resolved engine, and what could be selected |
+| `supportsScheduledTraining` | `Boolean` | WorkManager-backed scheduling is usable |
+
+`supportsClassification` is deliberately **not** `isClassifier`. A classification graph whose labels
+are unknown runs fine and answers `LABEL_3`, which is a number in a costume — so
+`supportsClassification` additionally requires `task.labelCount > 0`. Gate a Classify UI on it.
+
+`graphPrecision` reports what the graph *is*, not what the variant is called. A variant named
+`cpu-int4` legitimately ships an fp32 inference graph; this is the field that tells you so.
+
+## Classification
+
+```kotlin
+if (model.capabilities.supportsClassification) {
+    val result = model.classify("this sentence is grammatical", topK = 5)
+    println("${result.best?.label} ${result.best?.score}")
+}
+```
+
+Asking a decoder to classify **throws** rather than reading generation logits as class scores, which
+would be a confident wrong answer instead of an error. `topK` bounds `result.top`; the full ranking is
+always in `result.scores`.
+
+Prefer showing the distribution over the single top label: a classifier that is 34%/33%/33% has told
+you nothing, and a top label hides that completely.
+
 ## Engines
 
 Two inference engines run over the **same** `inference/` directory:
@@ -150,14 +193,51 @@ different method raises `PeftMismatchException`.
 ## RAG
 
 ```kotlin
-model.ingest(listOf(Document(id = "1", content = "…")))
-val hits = model.retrieve("query", topK = 4)
-val answer = model.generateWithRag("query", GenerationConfig(maxNewTokens = 64))
+model.ingest(path = "/sdcard/…/notes.md", config = RagConfig())
+val hits   = model.retrieve("query", RagConfig())          // search alone, nothing generated
+val answer = model.generateWithRag("query", RagConfig(), GenerationConfig(maxNewTokens = 64))
 ```
+
+`retrieve` is a first-class operation, not only a step inside `generateWithRag`. It needs
+`supportsEmbedding` and nothing else, so it works on a **pure encoder** package that cannot generate at
+all. It is also the only way to judge retrieval on its own: inside a grounded answer, bad retrieval and
+a model ignoring good retrieval are indistinguishable.
+
+`generateWithRag` returns a `GroundedResult` whose `prompt` is the text that was actually assembled —
+without it a bad grounded answer is undebuggable.
 
 Backed by ObjectBox HNSW with cosine distance. The encoder's output dimension must be one the on-device
 store can index (64/128/256/384/512/768/1024/1536) — the exporter fails closed rather than shipping an
 unusable `embedding/` stage. See [RAG.md](RAG.md).
+
+## Generation results
+
+`GenerationResult` carries more than `text`:
+
+| field | means |
+| --- | --- |
+| `text` | the generated continuation |
+| `promptTokenCount` | how many tokens the prompt consumed |
+| `contextLimit` | the model's context window |
+
+The pair is what lets a UI say "you have used 400 of 2048 tokens" *before* generation truncates
+something. Read them rather than estimating from character counts.
+
+## Tool calls
+
+A package that declares a tool-call format (`capabilities.supportsToolCalling`) can emit a structured
+call instead of prose. The result is a `ToolCallResult`:
+
+- `ToolCallResult.NoCall` — the model answered normally. **This is the common case**, and it is a
+  distinct type rather than a null so a caller cannot forget to handle it.
+- a parsed call — validated against your `ActionSpec` allowlist before anything runs.
+
+`ActionSpec.requiredPermissions` and `IntendedAction.requiredPermissions` declare what an action needs.
+Today every showcased action is install-time, because intent-based actions delegate the sensitive work
+to the target app, which enforces its own permissions behind its own UI. The runtime-request path
+exists for when an action needs one.
+
+Nothing executes without an explicit accept. That is the design, not a sample-app convention.
 
 ## Errors
 

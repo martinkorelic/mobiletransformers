@@ -8,10 +8,12 @@ from pathlib import Path
 import pytest
 
 from mobiletransformers.artifacts.handoff_map import (
+    ALREADY_TRANSPOSED,
     HANDOFF_MAP_READER_VERSION,
     HandoffEntry,
     HandoffMap,
     TrainableTensorCodec,
+    derive_transpose_policy,
 )
 from mobiletransformers.artifacts.versioning import SchemaVersionError, check_compat
 from mobiletransformers.config.constants import HandoffMode
@@ -386,3 +388,42 @@ def test_the_derivation_agrees_with_a_real_exported_package() -> None:
     assert set(decidable.values()) == {ALREADY_TRANSPOSED}, (
         f"derivation disagrees with the orientation the device merge observes: {decidable}"
     )
+
+
+def test_mars_orientation_is_observed_not_defaulted() -> None:
+    """MARS names its down-projection `shared_A`; orientation must still be observed.
+
+    The regression this pins: `derive_transpose_policy` read only `adapter_A`, so every MARS layer
+    fell through to the "nothing to observe" branch and declared `no_transpose` — for shapes that
+    decide the question unambiguously. A consumer honouring that value would write every merged
+    weight transposed, which is the exact defect this function exists to prevent, re-introduced
+    through a naming difference rather than an unassigned field.
+
+    Real shapes, from `mobiletransformers/gemma-3-270m-it` (the first MARS package published).
+    """
+    # q_proj: [640, 1024] on disk; B @ A = [1024, 8] @ [8, 640] = [1024, 640] — the reverse.
+    assert (
+        derive_transpose_policy((640, 1024), {"adapter_B": (1024, 8), "shared_A": (8, 640)})
+        == ALREADY_TRANSPOSED
+    )
+    # v_proj: [640, 256] on disk; B @ A = [256, 8] @ [8, 640] = [256, 640] — also the reverse.
+    assert (
+        derive_transpose_policy((640, 256), {"adapter_B": (256, 8), "shared_A": (8, 640)})
+        == ALREADY_TRANSPOSED
+    )
+    # And the LoRA spelling still resolves the same way, so the fix did not move the other convention.
+    assert (
+        derive_transpose_policy((576, 192), {"adapter_A": (8, 576), "adapter_B": (192, 8)})
+        == ALREADY_TRANSPOSED
+    )
+
+
+def test_an_unknown_down_projection_name_refuses_rather_than_defaulting() -> None:
+    """A third naming convention must fail loudly, not silently declare `no_transpose`.
+
+    The whole family of defects here is "a value nobody computed, honoured by a consumer". Returning
+    a default for shapes we simply failed to parse is how that happens, so this path raises and names
+    the keys it saw.
+    """
+    with pytest.raises(ValueError, match="down-projection"):
+        derive_transpose_policy((640, 1024), {"adapter_B": (1024, 8), "future_A": (8, 640)})

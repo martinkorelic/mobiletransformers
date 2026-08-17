@@ -43,7 +43,7 @@ import com.martinkorelic.mobiletransformers.app.viewmodels.ToolCallCard
 import com.martinkorelic.mobiletransformers.app.viewmodels.ToolExecution
 
 /**
- * #11/#24/#27/#37 — generate and stream, ground in ingested documents, and call tools, all in one
+ * Generate and stream, ground in ingested documents, and call tools, all in one
  * conversation.
  *
  * The retrieved sources and the assembled prompt hang off **the message they produced**, not off the

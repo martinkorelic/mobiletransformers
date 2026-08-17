@@ -4,8 +4,8 @@ MobileTransformers runs retrieval on-device: an embedding model produces query/d
 on-device vector store (ObjectBox HNSW) does nearest-neighbour search, and the retrieved context is fed
 to generation.
 
-> **Scope of this page.** The **vector-store boundary** (#25), **ingestion/chunking** (#26) and
-> **grounded generation + `RagConfig`** (#27) are all implemented and documented below. The remaining
+> **Scope of this page.** The **vector-store boundary**, **ingestion/chunking** and
+> **grounded generation + `RagConfig`** are all implemented and documented below. The remaining
 > gap is device acceptance: the instrumented `RagDeviceTest` and the ObjectBox parity smoke both
 > require a package pushed to a device.
 
@@ -58,7 +58,7 @@ dimension must be one the registry supports or installation/retrieval fails clos
 parsed, and `ORTRetriever` dispatches on the enum — an unrecognized value fails closed at the parse
 boundary rather than reaching the retriever.
 
-## Ingestion and chunking (#26)
+## Ingestion and chunking
 
 `model.ingest(path, RagConfig(...))` chunks a document, embeds each chunk and inserts it into the
 vector store. The loader is resolved from the file extension through `DOCUMENT_LOADER_REGISTRY`:
@@ -75,7 +75,27 @@ empty document would poison retrieval. Convert to `.txt`/`.md` first.
 Chunking is pure character windowing (`chunkSize` / `chunkOverlap` on `RagConfig`), so it is JVM-testable
 and independent of the tokenizer. `IngestionProgress` reports per-chunk progress.
 
-## Grounded generation (#27)
+## Retrieval on its own
+
+`model.retrieve(query, RagConfig())` returns ranked matches with scores and generates nothing. It is a
+first-class operation, not merely the first half of `generateWithRag`, for two reasons.
+
+**It is the only part of the retrieval story a pure encoder can show.** `retrieve` requires
+`capabilities.supportsEmbedding` and nothing else — no generative head, no KV cache. An
+`all-MiniLM-L6-v2` package installed on its own can search, and the sample app's drawer reflects that
+by offering Retrieval while hiding Chat.
+
+**It is the only place retrieval can be judged.** Inside a grounded answer, bad retrieval and a model
+ignoring good retrieval produce the same symptom — a wrong answer — and are indistinguishable. Looking
+at the matches directly separates them, which is why this is a screen in the sample app and not a
+debug flag.
+
+```kotlin
+val hits = model.retrieve("how do I merge an adapter?", RagConfig(topK = 4, minScore = 0.2f))
+hits.matches.forEach { println("%.3f  %s".format(it.score, it.content)) }
+```
+
+## Grounded generation
 
 `model.generateWithRag(query, rag, generation, promptStrategy)` runs retrieve → assemble → generate and
 returns a `GroundedResult` carrying the answer, the matches, **and the assembled prompt** so the exact
@@ -90,5 +110,5 @@ retriever, and a change of embedding model rebuilds it.
 
 ## Not yet (tracked)
 
-- **Device acceptance**: the instrumented `RagDeviceTest` (#26/#27) and the ObjectBox parity smoke
-  (#25) both `assumeTrue` on a package pushed to a device.
+- **Device acceptance**: the instrumented `RagDeviceTest` and the ObjectBox parity smoke
+  both `assumeTrue` on a package pushed to a device.

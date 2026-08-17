@@ -2,7 +2,7 @@
 
 The SemVer-governed public surface (F5) has three peers: the **Python library API**, the **CLI**, and the
 **Kotlin facade**. The Python side is exactly the surface declared in `mobiletransformers.__all__`
-(owned by `00_code_plans/10`, guarded by a parity test against `src/mobiletransformers/public_api.txt`).
+(guarded by a parity test against `src/mobiletransformers/public_api.txt`).
 
 All three surfaces are documented below. See also [EXPORT.md](EXPORT.md), [MODEL_FORMAT.md](MODEL_FORMAT.md),
 [HUB_PACKAGE_FORMAT.md](HUB_PACKAGE_FORMAT.md), [ARCHITECTURE.md](ARCHITECTURE.md) and [RAG.md](RAG.md).
@@ -42,7 +42,7 @@ against `public_api.txt`, so any addition is a deliberate SemVer change.
 | `support-matrix` | Generate `model_support_matrix.json` (+ `--docs`, `--md`). |
 | `push-adapter` | Publish a trained adapter (PEFT Mode 1 / native Mode 2). |
 | `federated` | `federated simulate` — FedAvg simulation over codec-ordered adapter records. |
-| `agent-dataset` | Build the #37 tool-call training set + action schema (import a corpus, or synthesise per-user). |
+| `agent-dataset` | Build the tool-call training set + action schema (import a corpus, or synthesise per-user). |
 
 Run `mobiletransformers <command> --help` for flags. `make help` lists the wrapper targets
 (`export-model`, `package-model`, `android-build`, …).
@@ -55,12 +55,17 @@ package when it is not already in the cache.
 | Symbol | Kind | Purpose |
 | --- | --- | --- |
 | `MobileTransformers.fromPretrained` | entry point | resolve → (pull) → load; returns a `MobileTransformerModel`. |
-| `MobileTransformerModel` | handle | `train`/`trainingJob`/`merge`/`generate`/`retrieve`/`ingest`/`generateWithRag`/`applyPeft`/`pushAdapter`/`close`. |
+| `MobileTransformerModel` | handle | `train`/`trainingJob`/`merge`/`generate`/`retrieve`/`ingest`/`generateWithRag`/`classify`/`applyPeft`/`pushAdapter`/`close`. |
 | `TrainingJob` | lifecycle | `status`/`events` flows, cooperative `cancel`, `checkpoint()`/`canResume`. |
-| `RuntimeCapabilities`, `EngineCapabilities` | capability | installed features, resolved engine, merged-weight support. |
+| `RuntimeCapabilities`, `EngineCapabilities` | capability | installed features, resolved engine, merged-weight support. Also `supportsClassification`, `isEncoderOnly`, `graphPrecision`, `peftMethods`, `trainingParameterCount`, `toolCalling`. |
+| `PackageTask` | capability | the exported task; carries `inferenceGraphPrecision` (the **measured** precision, which a variant name may not match) and `labelCount`. |
 | `InferenceEngine` | enum | `NATIVE` (the floor) \| `GENAI`. |
 | `TrainConfig`, `GenerationConfig`, `RagConfig`, `DatasetConfig`, `PeftConfig`, `HubConfig`, `DeviceConfig` | config | public configs; mapped to the internal `ORT*Config` types. |
-| `TrainingResult`, `TrainingSummary`, `GenerationResult`, `MergeResult`, `RetrievalResult`, `GroundedResult`, `IngestResult`, `PushResult` | results | plain data; no `ORT*`/`*Native` type appears on this surface. |
+| `TrainingScheduleConfig` | config | WorkManager-backed scheduling. `initialDelayMinutes` is a floor, not an appointment — an exact start needs `SCHEDULE_EXACT_ALARM`, which Play restricts. |
+| `TrainingResult`, `TrainingSummary`, `GenerationResult`, `MergeResult`, `RetrievalResult`, `GroundedResult`, `IngestResult`, `PushResult` | results | plain data; no `ORT*`/`*Native` type appears on this surface. `GenerationResult` also carries `promptTokenCount` and `contextLimit`; `GroundedResult` carries the assembled `prompt`. |
+| `ClassificationResult` | results | `scores` (full ranking), `top` (bounded by `topK`), `best`. |
+| `ToolCallResult`, `ToolCallSupport` | tool calls | `ToolCallResult.NoCall` is the common case and a distinct type, so a caller cannot forget to handle "the model just answered". |
+| `ActionSpec`, `IntendedAction` | tool calls | the allowlist a parsed call is validated against, and the bound action. Both declare `requiredPermissions`. |
 | `TrainCallback`, `GenerateCallback`, `RetrieveCallback` | callbacks | streaming progress. |
 | `MobileTransformersException` | errors | base of the hierarchy (`ModelNotInstalledException`, `MissingArtifactException`, `PeftMismatchException`, `FeatureNotInstalledException`, `EngineUnavailableException`, `NotImplementedFeatureException`). Deliberately `open`, not `sealed`: subclasses live in sibling packages (e.g. `hub.AdapterUploadDisabledException`). |
 | `constants/*` | enums | wire-value mirrors of the Python enums, parity-checked by `make parity`. |
@@ -71,4 +76,4 @@ Internal packages (`repository`, `internal.*`, `ORT*`/`*Native`) are **not** pub
 
 The three surfaces above are the public contract; internal modules (`export.pipeline`, `hub.*`,
 `artifacts.*`, `support.*`, `adapter.*`) may change between releases. The full surface is finalized and
-version-locked at #32.
+version-locked at the v1.0 release.

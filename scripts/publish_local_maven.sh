@@ -9,10 +9,7 @@ set -euo pipefail
 
 GRADLE_ROOT="android/MobileTransformers"
 
-: "${JAVA_HOME:=}"
-if [ -z "${JAVA_HOME}" ] && [ -d /opt/android-studio/jbr ]; then
-  export JAVA_HOME=/opt/android-studio/jbr
-fi
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/java_home.sh"
 
 # Same ABI caveat as android_build_aar.sh: pass -Pandroid.injected.build.abi=<abi> when the
 # vendored libraries are only complete for one ABI.

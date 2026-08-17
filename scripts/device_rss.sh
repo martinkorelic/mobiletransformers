@@ -8,14 +8,14 @@
 #   weight load   -> `adb shell setprop debug.mtf.mmap_weights {0,1}` (an instrumented test cannot set
 #                    an environment variable in the process it is measuring)
 # Each run writes one JSON row into the app's external files dir; this pulls them and applies the
-# thresholds ratified in agent_docs/01_tier0_foundation_decisions.md.
+# project's ratified memory-gate thresholds.
 set -euo pipefail
 
 GRADLE_ROOT="android/MobileTransformers"
 TEST_PKG="${TEST_PKG:-com.martinkorelic.mobiletransformers.test}"
 RSS_REMOTE="/sdcard/Android/data/$TEST_PKG/files/mt_rss"
 OUT="${OUT:-build/rss}"
-export JAVA_HOME="${JAVA_HOME:-/opt/android-studio/jbr}"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/java_home.sh"
 
 command -v adb >/dev/null || { echo "adb not found on PATH" >&2; exit 1; }
 test "$(adb devices | grep -c 'device$')" -ge 1 || { echo "no authorized device" >&2; exit 1; }
@@ -82,7 +82,7 @@ for engine in ("native", "genai"):
         failures.append(f"Gate 0.2 [{engine}]")
 
 # A failed gate is a real result to record, not a broken run — the mmap experiment is explicitly
-# allowed to come back negative (01_code_plans/04). Report, do not exit non-zero.
+# allowed to come back negative. Report, do not exit non-zero.
 print("\n" + ("all evaluated gates PASS" if not failures else "gates not met: " + ", ".join(failures)))
 PY
 

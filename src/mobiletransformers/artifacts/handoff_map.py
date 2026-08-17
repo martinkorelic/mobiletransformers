@@ -56,8 +56,9 @@ def derive_transpose_policy(
     **This replaces a field that was never assigned.** ``ObservedInit.transposed`` defaulted to
     ``False`` and nothing in the codebase ever set it, so every package ever produced declared
     ``no_transpose`` by omission — including packages where it was demonstrably wrong. The merge
-    honoured that value and wrote every weight transposed; see the 2026-08-14 entry in
-    ``agent_docs/IMPLEMENTATION_ORDER.md``.
+    honoured that value and wrote every weight transposed, undetected by four independent gates —
+    a norm, a sum, a byte count and a checksum are all transpose-invariant, so none of them can
+    detect a permutation of elements.
 
     The orientation is *observable*, so it is observed rather than declared. The merger computes
     ``base + scale * (adapter_B @ adapter_A)``, whose shape is ``(B.rows, A.cols)``. If that equals the
@@ -69,8 +70,27 @@ def derive_transpose_policy(
     (not). Callers should resolve a package-wide policy from the entries that *can* be decided; see
     :func:`resolve_package_transpose_policy`.
     """
-    a = adapter_shapes.get("adapter_A")
+    # The down-projection is `adapter_A` under LoRA and `shared_A` under MARS — MARS shares one A
+    # across the layers of a block, which is what the method IS, so the name differs by design.
+    #
+    # Reading only `adapter_A` made every MARS layer take the fail-open branch below and declare
+    # `no_transpose` for an orientation that is fully observable. That is the same shape as the defect
+    # this function was written to kill: a value nobody computed, honoured by a consumer. Caught by
+    # `test_the_derivation_agrees_with_a_real_exported_package` on the first MARS package ever
+    # exported (2026-08-17, gemma-3-270m-it) — the test reads a real artifact for exactly this reason.
+    a = adapter_shapes.get("adapter_A") or adapter_shapes.get("shared_A")
     b = adapter_shapes.get("adapter_B")
+
+    if b and not a:
+        # B described but A under neither known name: a THIRD convention this function does not
+        # understand. Refuse rather than default — silently returning `no_transpose` here is precisely
+        # how every merged weight came to be written transposed.
+        raise ValueError(
+            f"adapter shapes {sorted(adapter_shapes)} describe an up-projection but no "
+            "down-projection under `adapter_A` or `shared_A`, so orientation cannot be observed. "
+            "Teach this function the new name rather than letting it guess."
+        )
+
     if not a or not b or len(a) != 2 or len(b) != 2 or len(weight_shape) != 2:
         # Nothing to observe (no adapters described, or not a 2-D weight): keep the historical value
         # rather than inventing one.
@@ -147,7 +167,7 @@ class ObservedInit:
     # NOTE: a `transposed: bool = False` field used to live here and was the sole input to
     # `transposePolicy`. **Nothing in the codebase ever assigned it**, so every package ever produced
     # declared `no_transpose` by omission, the on-device merge honoured that, and every merged weight
-    # was written transposed (2026-08-14; see IMPLEMENTATION_ORDER "Magnitude-based checks cannot
+    # was written transposed (2026-08-14; a magnitude-based check cannot
     # detect a permutation"). It is deliberately NOT re-added: the orientation is observable from the
     # adapter and weight shapes, so `derive_transpose_policy` observes it instead of trusting a flag
     # someone must remember to set.

@@ -450,7 +450,7 @@ JNIEXPORT jbyteArray JNICALL
  *
  * ## Why this, and not `exportTrainableTensors(session, handoffMapPath) -> ByteArray`
  *
- * `04_code_plans/04` names that wider signature — the whole record built in C++. This deliberately
+ * The federated plan names that wider signature — the whole record built in C++. This deliberately
  * does less, for one reason: the record's byte layout is **already owned** by
  * `federated/AdapterTensorCodec.kt`, which is pinned byte-for-byte against
  * `tests/federated/fixtures/federated_record.golden.bin`. Building the record here would be a SECOND

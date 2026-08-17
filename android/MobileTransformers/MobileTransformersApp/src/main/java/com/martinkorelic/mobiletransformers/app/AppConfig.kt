@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * `SamplingOptions`, `DeviceOptions` and `SchedulerConfig`. This holds the **public** equivalents and
  * nothing else, which is the whole point of the rewrite: if a setting the old app could express is not
  * reachable through `GenerationConfig`/`TrainConfig`/`RagConfig`/`DatasetConfig`, that is a facade gap
- * to record against #17/#19 — not a reason to reach for an `ORT*` type.
+ * to record against the facade — not a reason to reach for an `ORT*` type.
  */
 object AppConfig {
     private val _generation = MutableStateFlow(GenerationConfig())

@@ -253,6 +253,38 @@ class OnnxSequenceClassificationTrainerWrapper(torch.nn.Module):
         )
 
 
+class OnnxSequenceClassificationNoTokenTypeIdsTrainerWrapper(torch.nn.Module):
+    """Classification training-graph wrapper for encoders that have no ``token_type_ids``.
+
+    Same objective and label contract as :class:`OnnxSequenceClassificationTrainerWrapper` — one
+    ``[batch]`` class index per sequence — differing only in the exported input set. It exists because
+    **DistilBERT has no segment embedding**: it dropped BERT's next-sentence-prediction objective, so
+    ``DistilBertOnnxConfig.inputs`` is ``[input_ids, attention_mask]`` where ``BertOnnxConfig``'s is
+    ``[input_ids, attention_mask, token_type_ids]``, and Optimum passes the dummy inputs to the traced
+    module **positionally**. Against the four-parameter classification wrapper that would bind
+    ``labels`` into ``token_type_ids``' slot and leave ``labels`` unbound.
+
+    This is the encoder form of the same disagreement :class:`OnnxDecoderNoPositionIdsTrainerWrapper`
+    exists for on the decoder side, and it was caught by
+    :func:`_check_wrapper_matches_config_inputs` — the cross-check written for that one — before
+    ``torch.jit`` could report it as a bare ``TypeError`` from a frame this repo does not own.
+
+    A separate class rather than an optional parameter for the reason given on
+    :class:`OnnxTrainerWrapper`: ``torch.onnx`` derives the exported ONNX input names from the forward
+    signature by introspection, so the signature IS the on-device contract and must be written out
+    literally.
+    """
+
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.backbone = model
+        self.config = model.config
+        self.training = True
+
+    def forward(self, input_ids, attention_mask, labels):
+        return self.backbone(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+
+
 def compare_weights(model_path1, model_path2):
     """
     Compares weights of two models based on their initializers.
@@ -813,7 +845,7 @@ def load_train_config_from_file(config_file: str):
 
     This is the one `load_config_from_file` copy that was never the shared helper: it pre-indexes into
     ``config[TRAIN_CONFIG]``, so a caller expecting the whole document gets the train section instead.
-    That difference is exactly what `00_code_plans/02`'s deferral note warned about — silently
+    That difference is exactly what the config-layering deferral note warned about — silently
     repointing this name at `utils.yaml.load_config_from_file` would have changed what every call site
     receives. Renamed rather than merged, so the two shapes can no longer be confused.
     """

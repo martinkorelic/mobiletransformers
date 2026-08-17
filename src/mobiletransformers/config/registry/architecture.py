@@ -176,8 +176,18 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
     "LlamaForCausalLM": ArchitectureSpec(
         "LlamaForCausalLM", f"{_OC}.LlamaOnnxConfig", ("q_proj", "v_proj"), f"{_INF}.LlamaModel"
     ),
+    # The whole Gemma line, and Nemotron, omit `position_ids` from their OnnxConfig — this is not a
+    # Gemma-3 peculiarity as it first appeared. Measured 2026-08-17 by
+    # `test_trainer_wrapper_signature_matches_the_configs_input_set`, which checks every row rather
+    # than the one architecture someone happened to export.
     "GemmaForCausalLM": ArchitectureSpec(
-        "GemmaForCausalLM", f"{_OC}.GemmaOnnxConfig", ("q_proj", "v_proj"), f"{_INF}.GemmaModel"
+        "GemmaForCausalLM",
+        f"{_OC}.GemmaOnnxConfig",
+        ("q_proj", "v_proj"),
+        f"{_INF}.GemmaModel",
+        trainer_wrapper_class=(
+            "mobiletransformers.export.training_export.OnnxDecoderNoPositionIdsTrainerWrapper"
+        ),
     ),
     # Gemma2/Gemma3 bind their OWN Optimum configs. Both rows previously pointed at `GemmaOnnxConfig`,
     # which is a different architecture — Gemma2 adds alternating sliding-window attention and logit
@@ -186,7 +196,13 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
     # NOT exercised end to end here: no profile in this checkout has optimum installed, and the dotted
     # paths resolve lazily, so this is a correctness fix that the export profile still has to confirm.
     "Gemma2ForCausalLM": ArchitectureSpec(
-        "Gemma2ForCausalLM", f"{_OC}.Gemma2OnnxConfig", ("q_proj", "v_proj"), f"{_INF}.Gemma2Model"
+        "Gemma2ForCausalLM",
+        f"{_OC}.Gemma2OnnxConfig",
+        ("q_proj", "v_proj"),
+        f"{_INF}.Gemma2Model",
+        trainer_wrapper_class=(
+            "mobiletransformers.export.training_export.OnnxDecoderNoPositionIdsTrainerWrapper"
+        ),
     ),
     # `Gemma3TextOnnxConfig`, NOT `Gemma3OnnxConfig`. Gemma-3 ships as two model types and optimum
     # maps them to two different configs: `gemma3` (multimodal, class
@@ -270,7 +286,13 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
         warnings=("Phi3V export covers the TEXT component only; forcing exclude_embeds=true.",),
     ),
     "NemotronForCausalLM": ArchitectureSpec(
-        "NemotronForCausalLM", f"{_OC}.NemotronOnnxConfig", ("q_proj", "v_proj"), f"{_INF}.NemotronModel"
+        "NemotronForCausalLM",
+        f"{_OC}.NemotronOnnxConfig",
+        ("q_proj", "v_proj"),
+        f"{_INF}.NemotronModel",
+        trainer_wrapper_class=(
+            "mobiletransformers.export.training_export.OnnxDecoderNoPositionIdsTrainerWrapper"
+        ),
     ),
     # Two architecture strings for one model: a quantized ChatGLM declares
     # `ChatGLMForConditionalGeneration`, the HF model declares `ChatGLMModel`. Both rows point at the
@@ -326,6 +348,14 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
         attention_module_name="attention",
         projection_names=dict(_BERT_PROJECTION_NAMES),
         task=TaskType.SEQUENCE_CLASSIFICATION,
+        # RoBERTa has no `token_type_ids` in its exported input set. The *model* accepts the argument
+        # — it is what makes it a drop-in for BERT — but it carries a single segment and RoBERTa was
+        # pretrained without the next-sentence objective, so `RobertaOnnxConfig` does not declare it
+        # while `BertOnnxConfig` does. Only `BertForSequenceClassification` keeps the task's default
+        # four-parameter wrapper. Measured 2026-08-17.
+        trainer_wrapper_class=(
+            "mobiletransformers.export.training_export.OnnxSequenceClassificationNoTokenTypeIdsTrainerWrapper"
+        ),
     ),
     "DistilBertForSequenceClassification": ArchitectureSpec(
         "DistilBertForSequenceClassification",
@@ -336,6 +366,15 @@ ARCHITECTURE_REGISTRY: dict[str, ArchitectureSpec] = {
         attention_module_name="attention",
         projection_names=dict(_DISTILBERT_PROJECTION_NAMES),
         task=TaskType.SEQUENCE_CLASSIFICATION,
+        # `trainer_wrapper_class`: the encoder form of the Gemma-3 disagreement above. DistilBERT
+        # dropped BERT's next-sentence-prediction objective and with it the segment embedding, so
+        # `DistilBertOnnxConfig.inputs` is [input_ids, attention_mask] where BERT's and RoBERTa's
+        # carry `token_type_ids` too. The task's default wrapper declares four parameters, Optimum
+        # binds positionally, and `labels` would land in the `token_type_ids` slot. Caught by the
+        # signature/inputs cross-check rather than by `torch.jit`. Measured 2026-08-17.
+        trainer_wrapper_class=(
+            "mobiletransformers.export.training_export.OnnxSequenceClassificationNoTokenTypeIdsTrainerWrapper"
+        ),
     ),
 }
 

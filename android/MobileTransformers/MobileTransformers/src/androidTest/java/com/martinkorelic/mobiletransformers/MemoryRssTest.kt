@@ -35,7 +35,8 @@ import org.junit.runner.RunWith
  * to load cannot be recorded as a flattering measurement), and that the mmap toggle resolved to what the
  * operator set.
  *
- * Thresholds are the ratified ones in `agent_docs/01_tier0_foundation_decisions.md`.
+ * The thresholds are the project's ratified memory-gate figures, restated in `scripts/device_rss.sh`
+ * where they are actually applied — this test only produces the rows.
  */
 @RunWith(AndroidJUnit4::class)
 class MemoryRssTest {

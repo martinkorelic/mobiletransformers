@@ -14,20 +14,32 @@ android {
         applicationId = "com.martinkorelic.mobiletransformers.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        // Derived from the root `version` property (gradle.properties), which `test_version_sites.py`
+        // pins to pyproject.toml. It was the literal "1.0", which matched no other site in the repo:
+        // the sample app is the one artifact a user sees a version number on, and it advertised a
+        // release that does not exist.
+        versionName = rootProject.findProperty("version")?.toString() ?: "0.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Hub token for pulling a PRIVATE or GATED package, taken from the build environment.
         //
         // An Android app cannot read the host's environment at runtime, so the value has to be baked
-        // in at build time. Source order: `-PmtHubToken=...` wins, else the `HF_TOKEN` environment
-        // variable, else empty. Empty is the normal case and means "anonymous" — public packages pull
-        // without any of this.
+        // in at build time. Source order: `-PmtHubToken=...` wins, else `HF_TOKEN_ORG`, else
+        // `HF_TOKEN`, else empty. Empty is the normal case and means "anonymous" — public packages
+        // pull without any of this.
         //
-        //   HF_TOKEN=hf_xxx ./gradlew :MobileTransformersApp:assembleDebug
+        //   HF_TOKEN_ORG=hf_xxx ./gradlew :MobileTransformersApp:assembleDebug
         //   ./gradlew :MobileTransformersApp:assembleDebug -PmtHubToken=hf_xxx
+        //
+        // `HF_TOKEN_ORG` is tried FIRST, and the ordering is load-bearing rather than arbitrary. Four
+        // of the five catalog entries are private repos under the `mobiletransformers` org, and a
+        // fine-grained personal `HF_TOKEN` scoped to one repo cannot see them — so an APK built with
+        // the personal token shows a full catalog whose Install button 401s on almost every row. That
+        // is exactly the shape of failure this project keeps re-learning: the build succeeds, the app
+        // looks right, and the capability is silently absent. Same precedence as
+        // `scripts/publish_catalog.sh`, which publishes those repos.
         //
         // ⚠️ A token compiled into an APK is EXTRACTABLE by anyone holding the APK — `strings` on the
         // dex is enough. This is a development and demo affordance for reaching your own private repo,
@@ -36,7 +48,9 @@ android {
         // authenticated backend and hand it to `MobileTransformers.fromPretrained(hubConfig = ...)`,
         // which is the same public entry point this uses.
         val hubToken = (project.findProperty("mtHubToken") as String?)
-            ?: System.getenv("HF_TOKEN")
+            ?.takeIf { it.isNotBlank() }
+            ?: System.getenv("HF_TOKEN_ORG")?.takeIf { it.isNotBlank() }
+            ?: System.getenv("HF_TOKEN")?.takeIf { it.isNotBlank() }
             ?: ""
         buildConfigField("String", "HF_TOKEN", "\"$hubToken\"")
 

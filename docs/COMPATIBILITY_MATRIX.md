@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-> **Generated** — rendered from `model_support_matrix.json` (#20). Do not hand-edit. Regenerate with `mobiletransformers support-matrix --md docs/COMPATIBILITY_MATRIX.md` under the `export` profile (live detection needs transformers + optimum).
+> **Generated** — rendered from `model_support_matrix.json`. Do not hand-edit. Regenerate with `mobiletransformers support-matrix --md docs/COMPATIBILITY_MATRIX.md` under the `export` profile (live detection needs transformers + optimum).
 
 - Generated at: `2026-07-14T00:00:00Z`
 - Toolchain: optimumOnnxVersion=0.1.0, transformersVersion=4.46.2

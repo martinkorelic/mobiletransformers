@@ -3,7 +3,7 @@
 MobileTransformers configuration is a **typed, closed-set** contract. Every closed string set is an enum
 mirrored 1:1 between Python and Kotlin; every cross-boundary config is a Pydantic v2 model with a generated
 JSON schema; and every extension point (PEFT method, architecture, merger) is a registry entry. This page is
-sourced from the config contract owner (`src/mobiletransformers/config/`, #6).
+sourced from the config contract owner, `src/mobiletransformers/config/`.
 
 ## Enum vocabulary (Python ↔ Kotlin mirrors)
 

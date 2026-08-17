@@ -16,13 +16,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCS = REPO_ROOT / "docs"
 MARKDOWN = sorted(DOCS.glob("*.md")) + [REPO_ROOT / "README.md", REPO_ROOT / "CHANGELOG.md"]
 
-#: EVERY tracked markdown file, `docs/` and `agent_docs/` alike.
+#: EVERY tracked markdown file.
 #:
-#: The link check used to cover `docs/` + README + CHANGELOG only. The 2026-08-14 review found the
-#: worst reference rot was in `agent_docs/` — plan text still pointing at `tools/parser_config.py` and
-#: other files deleted in S9 — precisely because nothing checked it. A planning doc that names a file
-#: which no longer exists sends the next cold agent to a dead address, which is the same failure a
-#: broken link in `docs/` is, with a longer feedback loop.
+#: The link check used to cover `docs/` + README + CHANGELOG only, and was widened in 2026-08-14 to
+#: every tracked page after the review found the worst reference rot in `agent_docs/`. That directory
+#: was untracked on 2026-08-17, so it now falls out of this scan by the same `git ls-files` rule that
+#: excludes build output — deliberately, and worth stating: the shipped docs are what this gate is
+#: for, and the planning material is no longer part of the repo's public surface.
 #:
 #: Deliberately relative links only. Checking external URLs needs the network, goes red for reasons
 #: outside this repo, and would make the one gate that always runs the flakiest one.
@@ -69,7 +69,11 @@ def test_no_tracked_markdown_links_to_a_missing_file() -> None:
     pages = _tracked_markdown()
     if not pages:
         pytest.skip("git not available or not a checkout")
-    assert len(pages) > 50, f"only {len(pages)} markdown files found — the sweep is not seeing the repo"
+    # Vacuity floor: this sweep is only meaningful if it is actually seeing the repo, and a `git
+    # ls-files` that returns nothing useful would otherwise pass silently. Lowered from 50 to 20 on
+    # 2026-08-17 when `agent_docs/` (52 tracked pages) was untracked — re-pointed rather than deleted,
+    # because the assertion still does its job at the new size (30 pages today).
+    assert len(pages) > 20, f"only {len(pages)} markdown files found — the sweep is not seeing the repo"
 
     broken = {str(page.relative_to(REPO_ROOT)): links for page in pages if (links := _broken_links(page))}
     assert not broken, (
@@ -113,6 +117,18 @@ _KOTLIN_DECL = re.compile(
     r"fun interface|object)\s+([A-Z][A-Za-z0-9_]*)"
 )
 
+#: UpperCamelCase enum ENTRIES (`ModelFeature.Inference`), which are not declarations but which the
+#: docs legitimately name. The existing SCREAMING_CASE carve-out does not reach them.
+_KOTLIN_ENUM_BODY = re.compile(r"\benum class\s+[A-Z][A-Za-z0-9_]*[^{]*\{(.*?)(?:\n\s*;|\n\})", re.DOTALL)
+_KOTLIN_ENUM_ENTRY = re.compile(r"^\s*([A-Z][A-Za-z0-9_]*)\s*(?:\(|,|$)", re.MULTILINE)
+
+#: Kotlin stdlib types a doc table names as a *column value* (`Boolean`, `Long`), not as a symbol this
+#: repo declares. Listing them beats loosening the identifier pattern, which would stop catching a
+#: genuinely renamed type.
+_KOTLIN_BUILTINS = frozenset(
+    {"Boolean", "Long", "Int", "String", "Float", "Double", "Set", "List", "Map", "Unit", "Any"}
+)
+
 
 def test_documented_kotlin_facade_symbols_exist() -> None:
     """Every type named in the Kotlin facade table must be a real declaration.
@@ -127,13 +143,23 @@ def test_documented_kotlin_facade_symbols_exist() -> None:
     if not _KOTLIN_FACADE_ROOT.is_dir():
         pytest.skip("Android sources not present in this checkout")
 
-    declared: set[str] = set()
+    declared: set[str] = set(_KOTLIN_BUILTINS)
     for source in _KOTLIN_FACADE_ROOT.rglob("*.kt"):
-        declared.update(_KOTLIN_DECL.findall(source.read_text(encoding="utf-8")))
+        text = source.read_text(encoding="utf-8")
+        declared.update(_KOTLIN_DECL.findall(text))
+        for body in _KOTLIN_ENUM_BODY.findall(text):
+            declared.update(_KOTLIN_ENUM_ENTRY.findall(body))
 
     page = (DOCS / "PUBLIC_API.md").read_text(encoding="utf-8")
     section = page.partition("## Kotlin facade")[2].partition("\n## ")[0]
     assert section.strip(), "docs/PUBLIC_API.md has no Kotlin facade section"
+
+    # ANDROID_SDK.md's capability/result/tool-call tables name the same types and were unguarded, so
+    # the 2026-08-17 doc sweep could have invented a property name and nothing would have noticed.
+    # Only the TABLE rows are scanned: the prose around them legitimately names Java/Android types
+    # (`WorkManager`, `Play`) that are not declarations in this repo.
+    sdk = (DOCS / "ANDROID_SDK.md").read_text(encoding="utf-8")
+    section += "\n" + "\n".join(line for line in sdk.splitlines() if line.startswith("| `"))
 
     # Types are the backticked identifiers in UpperCamelCase. SCREAMING_CASE tokens are enum *values*
     # (`NATIVE`, `GENAI`), which `make parity` already checks against the Python enums wire-value by

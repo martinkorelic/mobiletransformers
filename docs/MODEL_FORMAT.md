@@ -4,8 +4,8 @@ A MobileTransformers package is a self-describing directory: a top-level manifes
 **variant** (ABI × quantization × feature set). One package feeds **both** inference engines (the native
 ORT runtime and the ONNX Runtime GenAI engine) — the engine is a selection over the same files, never a
 separate download. This page is sourced from the manifest owner
-(`src/mobiletransformers/hub/package_format.py` + `artifacts/manifest.py`, #13/#14) and the weight-handoff
-owner (`src/mobiletransformers/artifacts/handoff_map.py`, #8/#9).
+(`src/mobiletransformers/hub/package_format.py` + `artifacts/manifest.py`) and the weight-handoff
+owner (`src/mobiletransformers/artifacts/handoff_map.py`).
 
 Two JSON contracts govern the on-disk shape: **`mobiletransformers_manifest.json`** (what the package
 contains and how to select/download it) and **`weight_handoff_map.json`** (the single source of tensor
@@ -109,13 +109,13 @@ name was the only (misleading) signal. Two things now make it explicit:
   naming the missing file, **before** any load.
 - `select_variant(execution_provider, quantization, total_mem_mb, requested_engine)` hard-filters variants by
   requested ABI/EP/engine/memory and returns a `SelectedVariant`. (The soft preference layer — quant
-  preference, download-size tie-break, storage-budget ceiling — lives in `hub/variant_select.py`, #21.)
+  preference, download-size tie-break, storage-budget ceiling — lives in `hub/variant_select.py`.)
 
 ## `weight_handoff_map.json`
 
 The single source of tensor identity. It replaces the implicit name-agreement between the merge writer,
 the native load side, and the inference graph with one declarative artifact. Owned by
-`artifacts/handoff_map.py`; every consumer (#9 merger, #13 manifest, #23 native load, #35 federated) reads
+`artifacts/handoff_map.py`; every consumer — the merger, the manifest, the native load path and the federated exporter — reads
 this shape and none may redefine it.
 
 Document-level fields:

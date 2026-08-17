@@ -147,11 +147,26 @@ def plan_export(
 def _discover_task(model: str, discover: Callable[[str], str] | None) -> str:
     if discover is not None:
         return discover(model)
-    # Real path: lazy-import the #7 registry (pulls optimum). Only hit when no --task + no injection.
+    # Real path: lazy-import the registry (pulls optimum). Only hit when no --task + no injection.
+    from mobiletransformers.config.settings import get_settings
+    from mobiletransformers.exceptions import UnsupportedModelError
     from mobiletransformers.export.registry import choose_task, discover_tasks
 
-    supported = discover_tasks(model).supported_tasks
-    return choose_task(supported)
+    # The token matters here: a GATED base model 401s on its config read, and `discover_tasks` is
+    # fail-open — it swallows the exception into `blocker` and returns no tasks.
+    discovery = discover_tasks(model, token=get_settings().hf_token)
+
+    # Surface that blocker. Without this the caller sees `choose_task(())` fail with "no supported
+    # task in preference order (...) for []", which names neither the model nor the reason — an empty
+    # list reads as "this architecture is unsupported" when the actual cause was a missing token or a
+    # network error. Measured 2026-08-17 on google/gemma-3-270m-it, which cost a full export run to
+    # diagnose because the real message had already been computed and thrown away.
+    if not discovery.supported_tasks:
+        raise UnsupportedModelError(
+            f"cannot determine an export task for {model!r}: "
+            f"{discovery.blocker or 'Optimum reports no ONNX task for this model type'}"
+        )
+    return choose_task(discovery.supported_tasks)
 
 
 def manifest_skeleton(plan: ExportPlan, *, base_model_id: str | None = None) -> dict[str, Any]:

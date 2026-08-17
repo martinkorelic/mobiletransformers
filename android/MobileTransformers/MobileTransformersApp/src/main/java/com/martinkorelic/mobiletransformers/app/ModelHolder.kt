@@ -192,11 +192,8 @@ object ModelHolder {
                     _download.value = DownloadUi(
             // `WaitingForConstraints` is the state worth naming: with wifiOnly it means "waiting for
             // Wi-Fi", an indefinite and entirely normal wait that otherwise reads as a stall.
-            phase = if (job.state == DownloadJob.State.WaitingForConstraints) {
-                "waiting for Wi-Fi"
-            } else {
-                job.phase ?: job.state.name
-                },
+            phase = job.phase ?: job.state.name,
+            waitingForConstraints = job.state == DownloadJob.State.WaitingForConstraints,
             filesDone = job.filesDone,
             filesTotal = job.filesTotal,
             path = "",
@@ -324,6 +321,16 @@ sealed interface ModelState {
  */
 data class DownloadUi(
     val phase: String,
+    /**
+     * The worker is enqueued and waiting on a constraint — in practice, Wi-Fi.
+     *
+     * A boolean rather than a magic phase string, because that is exactly how this broke: the phase
+     * was set to the human sentence `"waiting for Wi-Fi"`, and `downloadPhaseLabel` — which matches
+     * `Resolving`/`Verifying`/`Installing` and sends everything else to `"Downloading"` — swallowed
+     * it. The app then showed an active download that never advanced, which is precisely the state
+     * the sentence existed to distinguish it from. Two correct halves, one unverified seam.
+     */
+    val waitingForConstraints: Boolean = false,
     val filesDone: Int,
     val filesTotal: Int,
     val path: String,

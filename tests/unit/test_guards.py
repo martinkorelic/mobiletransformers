@@ -465,3 +465,327 @@ def test_the_library_manifest_declares_the_permissions_its_own_code_needs() -> N
         "— only a device run can:\n"
         + "\n".join(f"  {name} — {reason}" for name, reason in sorted(missing.items()))
     )
+
+
+# --- portability: no machine-specific absolute paths in tracked files ---------------------------
+
+#: Absolute paths that only resolve on one developer's machine. `/home/<user>` and `/Users/<user>`
+#: leak an identity and break for everyone else; `/opt/android-studio` is a *Linux Android Studio*
+#: install location that is simply absent on macOS, on a CI runner, and under any standalone JDK.
+_MACHINE_PATH_PATTERNS = (
+    re.compile(r"/home/[a-z][a-z0-9_-]*/"),
+    re.compile(r"/Users/[A-Za-z][A-Za-z0-9_-]*/"),
+    re.compile(r"/opt/android-studio"),
+)
+
+#: repo-relative path -> why this file is allowed to name one. **Deliberately tiny.** Each entry is a
+#: documented fallback of last resort, not a dependency: every one of them probes for a portable
+#: answer first and reaches the literal only when nothing else is found.
+_MACHINE_PATH_ALLOWLIST: dict[str, str] = {
+    "Makefile": "JAVA_HOME fallback, after probing PATH for a JDK 17+",
+    "scripts/lib/java_home.sh": "the shared JAVA_HOME probe — the one place the fallback is defined",
+    "spikes/genai_external_swap/README.md": "a spike's recorded command line, not a code path",
+    # A guard cannot avoid spelling out what it forbids: the patterns, the docstring explaining them
+    # and the can-it-fail samples all contain literal matches. This is gotcha 8 in the operational
+    # notes ("grep guards match docstrings") in its unavoidable form — hence the separate
+    # `test_the_machine_path_guard_can_actually_fail`, which is what keeps this file honest given
+    # that it exempts itself.
+    "tests/unit/test_guards.py": "defines the patterns and the samples proving they still match",
+}
+
+#: Extensions worth scanning. Binary and vendored trees are excluded by `git ls-files` naturally
+#: (they are gitignored), so this is about keeping the scan cheap and the failures readable.
+_MACHINE_PATH_SUFFIXES = (
+    ".py",
+    ".sh",
+    ".kt",
+    ".kts",
+    ".java",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cmake",
+    ".md",
+    ".json",
+    ".yml",
+    ".yaml",
+    ".toml",
+    ".properties",
+    ".gradle",
+    ".xml",
+    ".cff",
+)
+
+
+def _tracked_files() -> list[str]:
+    """Tracked paths only. `git ls-files` rather than `rglob` so gitignored trees — `build/`, the
+    vendored `jniLibs/`, every `.venv` — are excluded by construction rather than by an exclude list
+    that rots. The same choice `tests/unit/test_docs.py` documents."""
+    out = subprocess.run(["git", "ls-files"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+    return out.stdout.splitlines()
+
+
+def test_no_machine_specific_absolute_paths_in_tracked_files() -> None:
+    """A fresh clone on another machine must not inherit this one's filesystem layout.
+
+    Written for the portability pass: `/opt/android-studio/jbr` was the *only* JAVA_HOME fallback in
+    the Makefile and four scripts, so on macOS or a CI runner Gradle failed with a Java-version error
+    naming neither JAVA_HOME nor the file that set it. They now share `scripts/lib/java_home.sh`,
+    which probes PATH first — and this guard is what stops the literal spreading back out.
+
+    Verified able to fail: reverting any of those five files to its hardcoded form turns this red.
+    """
+    violations: list[str] = []
+    for rel in _tracked_files():
+        if not rel.endswith(_MACHINE_PATH_SUFFIXES) or rel in _MACHINE_PATH_ALLOWLIST:
+            continue
+        path = REPO_ROOT / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for pattern in _MACHINE_PATH_PATTERNS:
+                if pattern.search(line):
+                    violations.append(f"  {rel}:{lineno}: {line.strip()[:110]}")
+
+    assert not violations, (
+        "machine-specific absolute paths in tracked files — a fresh clone on another machine cannot "
+        "use these. Probe for the value (see scripts/lib/java_home.sh) or take it from the "
+        "environment; add to _MACHINE_PATH_ALLOWLIST only for a documented last-resort fallback:\n"
+        + "\n".join(violations)
+    )
+
+
+def test_machine_path_allowlist_entries_still_exist() -> None:
+    """A stale allow-list entry must fail, so this ratchet cannot silently rot."""
+    for rel in _MACHINE_PATH_ALLOWLIST:
+        assert (REPO_ROOT / rel).is_file(), (
+            f"_MACHINE_PATH_ALLOWLIST names {rel}, which no longer exists — drop the entry"
+        )
+
+
+def test_the_machine_path_guard_can_actually_fail() -> None:
+    """The guard's own regexes, exercised against a literal. A grep guard whose pattern silently
+    stopped matching passes forever and asserts nothing — the failure mode this repo calls
+    "scanning the void"."""
+    samples = ("/home/someone/Projects/x", "/Users/Someone/Projects/x", "/opt/android-studio/jbr")
+    for sample in samples:
+        assert any(p.search(sample) for p in _MACHINE_PATH_PATTERNS), f"no pattern matches {sample}"
+    assert not any(p.search("~/Android/Sdk") for p in _MACHINE_PATH_PATTERNS)
+    assert not any(p.search("$HOME/Android/Sdk") for p in _MACHINE_PATH_PATTERNS)
+
+
+# --- internal plan identifiers must not reach a reader ------------------------------------------
+
+#: `#12`, `#37` etc. — the numbering of this project's internal implementation plans. They are
+#: meaningless to anyone outside the build, and `agent_docs/` (where they were defined) is no longer
+#: even in the repository, so every one of them is now a reference to nothing.
+_PLAN_ID = re.compile(r"(^|[^0-9A-Za-z_&])#[0-9]{1,2}\b")
+
+#: Paths into the untracked planning material. These are dead references by construction.
+_PLAN_PATH = re.compile(r"agent_docs/|IMPLEMENTATION_ORDER|\d\d_code_plans/")
+
+#: Areas that are CLEAN and must stay clean. A hit here fails the build.
+#:
+#: These were chosen because they are what a reader outside this project actually encounters: the
+#: shipped documentation, the sample app that an integrator reads as the reference consumer, and —
+#: most importantly — anything a *user* can see at runtime.
+#: 2026-08-17, second pass: the first pass guarded `docs/` and the app and left everything else to
+#: the ratchet below — which covers `src`, `android/.../MobileTransformers/src` and `scripts` and
+#: therefore covered NONE of the repo root, the CI workflows, `config/` or `examples/`. The owner
+#: found `#35` still sitting in `pyproject.toml`. A ratchet only holds the ground it is pointed at,
+#: and "everything else" was nobody's ground. `"."` closes that: it scans tracked files at the repo
+#: ROOT plus any directory not otherwise listed, so a new top-level file is covered by default
+#: rather than by someone remembering to add it here.
+_PLAN_ID_CLEAN_AREAS = (
+    "docs",
+    "android/MobileTransformers/MobileTransformersApp/src/main",
+    ".github",
+    "config",
+    "examples",
+    ".",
+)
+
+#: repo-relative dir -> plan-identifier hits currently tolerated. ENTRIES MAY ONLY SHRINK.
+#:
+#: These are internal implementation comments. The 2026-08-17 pass cleaned the reader-facing surfaces
+#: above and stopped there, deliberately: mechanically deleting `(#8 schema)` from prose leaves
+#: `(schema)`, and a whole-tree regex rewrite of comments was attempted on 2026-08-16 and had to be
+#: fully reverted — a test suite cannot validate a rewrite of comments, because comments do not affect
+#: behaviour, so every gate stayed green over 300 files of mangled prose. Each of these is a sentence
+#: that has to be re-written by a human, not a substitution.
+#:
+#: The ratchet's job is that the numbers only fall.
+_PLAN_ID_ALLOWLIST: dict[str, int] = {
+    "src": 175,
+    "android/MobileTransformers/MobileTransformers/src": 383,
+    "scripts": 18,
+}
+
+#: File types this guard reads.
+#:
+#: The 2026-08-17 first pass omitted `.toml`, `.yml`, `.yaml`, `.json`, `.properties` and `.cff` — so
+#: `pyproject.toml` and all three CI workflows were **structurally invisible** to it. The guard read
+#: as if it covered the repo and did not, which is worse than an absent guard: the owner found `#35`
+#: in `pyproject.toml` by eye, on a tree this test had just passed.
+#:
+#: The lesson is the one this repo keeps relearning about ratchets — a scan is only as wide as its
+#: filter, and a filter that silently excludes is indistinguishable from a clean result. Any config
+#: format that carries comments belongs here.
+_PLAN_ID_SUFFIXES = (
+    ".py",
+    ".kt",
+    ".kts",
+    ".java",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".md",
+    ".sh",
+    ".xml",
+    ".txt",
+    ".toml",
+    ".yml",
+    ".yaml",
+    ".json",
+    ".properties",
+    ".cff",
+    ".cmake",
+    "Makefile",
+    "CMakeLists.txt",
+)
+
+
+def _scan_tracked(area: str, pattern: re.Pattern[str]) -> list[str]:
+    """`pattern` hits in TRACKED files under `area`, as `path:line: text`.
+
+    Tracked-only, via `git ls-files`, and the reason is a bug this guard shipped with for one run: an
+    `rglob` sweep read `android/**/build/tmp/kapt3/stubs/**/*.java` — generated Kotlin stubs that
+    copy every KDoc comment verbatim — and reported ~60 phantom hits in build output nobody can edit.
+    Anything gitignored is out by construction, which is the same choice `test_docs.py` documents.
+    """
+    prefix = "" if area == "." else f"{area}/"
+    hits: list[str] = []
+    for rel in _tracked_files():
+        if not rel.startswith(prefix) or not rel.endswith(_PLAN_ID_SUFFIXES):
+            continue
+        path = REPO_ROOT / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if pattern.search(line):
+                hits.append(f"  {rel}:{lineno}: {line.strip()[:100]}")
+    return hits
+
+
+#: Trees whose plan-identifier debt is ACCEPTED and tracked by `_PLAN_ID_ALLOWLIST` instead, plus the
+#: gate spikes. Excluded from the repo-root sweep so the two do not double-report the same lines.
+#:
+#: `spikes/` is deliberately out of both: they are recorded gate experiments, referenced from the
+#: operational notes by the identifiers they were run under, and rewriting that prose would make the
+#: record harder to follow rather than easier.
+_PLAN_ID_ROOT_EXCLUDES = (
+    "src/",
+    "android/",
+    "scripts/",
+    "docs/",
+    "tests/",
+    "spikes/",
+    "research/",
+    ".github/",
+    "config/",
+    "examples/",
+)
+
+
+def _plan_id_hits(area: str) -> list[str]:
+    hits = _scan_tracked(area, _PLAN_ID)
+    if area == ".":
+        hits = [h for h in hits if not h.strip().startswith(_PLAN_ID_ROOT_EXCLUDES)]
+    return hits
+
+
+@pytest.mark.parametrize("area", _PLAN_ID_CLEAN_AREAS)
+def test_no_plan_identifiers_in_reader_facing_areas(area: str) -> None:
+    """The shipped docs and the sample app must not cite this project's internal plan numbering."""
+    if not (REPO_ROOT / area).is_dir():
+        pytest.skip(f"{area} not present in this checkout")
+    hits = _plan_id_hits(area)
+    assert not hits, (
+        f"internal plan identifiers in {area} — these mean nothing to a reader and point at "
+        "`agent_docs/`, which is not in the repository. Rewrite the sentence without the "
+        "identifier:\n" + "\n".join(hits)
+    )
+
+
+def test_no_plan_identifiers_in_user_visible_strings() -> None:
+    """The strongest form of this rule: a *user* must never see one.
+
+    Three did reach here — one of them inside `ModelNotInstalledException`'s message, which is a
+    string an integrator hits on their first wrong call. Scoped to double-quoted Kotlin literals in
+    `main` source sets, which is where every user-facing message in the SDK lives.
+    """
+    android = REPO_ROOT / "android"
+    if not android.is_dir():
+        pytest.skip("Android sources not present in this checkout")
+
+    literal = re.compile(r'"[^"\n]*"')
+    hits: list[str] = []
+    for path in sorted(android.rglob("src/main/**/*.kt")):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for match in literal.findall(line):
+                # `"#$rank"` and friends are Kotlin string templates rendering a real number.
+                if _PLAN_ID.search(match) and "$" not in match:
+                    hits.append(f"  {path.relative_to(REPO_ROOT)}:{lineno}: {match[:100]}")
+    assert not hits, "a plan identifier is reachable in a user-visible string:\n" + "\n".join(hits)
+
+
+def test_no_dead_references_to_the_untracked_planning_material() -> None:
+    """`agent_docs/` was untracked on 2026-08-17, so any pointer to it from shipped code is dead.
+
+    Covers the plan directories too (`00_code_plans/…`, `IMPLEMENTATION_ORDER`): they live in the same
+    untracked tree, so a comment citing one sends a reader to an address that does not exist in the
+    repository they cloned.
+
+    `tests/` is exempt because several of its comments *explain* the untracking and necessarily name
+    the directory — the same unavoidable self-reference the machine-path guard has.
+    """
+    hits: list[str] = []
+    for area in ("src", "docs", "scripts", "android", "."):
+        if area == ".":
+            # CHANGELOG.md is exempt: it is a historical record, and the 0.2.0 entry that *announces*
+            # the untracking cannot describe it without naming the directory. Its one genuinely dead
+            # pointer (an older entry citing `agent_docs/HANDOFF.md` for a parameter count) was
+            # removed rather than exempted.
+            hits += [
+                h for h in _scan_tracked(".", _PLAN_PATH) if h.strip().startswith(("README.md", "Makefile"))
+            ]
+        elif (REPO_ROOT / area).is_dir():
+            hits += _scan_tracked(area, _PLAN_PATH)
+    assert not hits, (
+        "reference(s) to the untracked planning material from shipped files. That tree is not in the "
+        "repository, so these point at nothing for anyone who clones it:\n" + "\n".join(hits)
+    )
+
+
+def test_plan_identifier_debt_only_shrinks() -> None:
+    """Internal comments still carry them; the count may only fall. See `_PLAN_ID_ALLOWLIST`."""
+    for area, allowed in _PLAN_ID_ALLOWLIST.items():
+        if not (REPO_ROOT / area).is_dir():
+            continue
+        actual = len(_plan_id_hits(area))
+        assert actual <= allowed, (
+            f"{area}: {actual} plan identifiers, allowance {allowed} — a NEW one was introduced. "
+            "Write the comment without the identifier."
+        )
+        assert actual == allowed, (
+            f"{area}: down to {actual} plan identifiers (allowance {allowed}) — lower "
+            "_PLAN_ID_ALLOWLIST so the ratchet holds"
+        )

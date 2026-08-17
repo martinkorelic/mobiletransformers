@@ -1,7 +1,7 @@
 package com.martinkorelic.mobiletransformers.rag
 
 /**
- * A small, testable boundary around on-device vector search (#25, 03_code_plans/03).
+ * A small, testable boundary around on-device vector search.
  *
  * ObjectBox is the default backing store on-device ([ObjectBoxVectorStore]); [VectorStore] lets
  * chunking / ingestion / retrieval be unit-tested on the JVM with no Android/ObjectBox via a pure

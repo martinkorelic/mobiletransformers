@@ -179,7 +179,7 @@ ARTIFACT_BUILDER:
   test_eval: false
 
   inference_export_config:
-    # Weight-handoff mode (#9). Only "external_initializer" is supported in v1 (dual-engine, no graph
+    # Weight-handoff mode. Only "external_initializer" is supported in v1 (dual-engine, no graph
     # rewrite); "model_input" (the legacy weight_input path) and "adapter" are fail-closed stubs.
     handoff_mode: external_initializer
     # Whether to include trainable weights as model input (legacy toggle for handoff_mode: model_input)

@@ -30,7 +30,7 @@ import com.martinkorelic.mobiletransformers.MobileTransformerModel
 import com.martinkorelic.mobiletransformers.app.viewmodels.StartDelay
 import com.martinkorelic.mobiletransformers.app.viewmodels.TrainViewModel
 
-/** #18/#19/#34 — the training lifecycle: status, charts, events, cancel, resume, merge, scheduling. */
+/** The training lifecycle: status, charts, events, cancel, resume, merge, scheduling. */
 @Composable
 fun TrainScreen(vm: TrainViewModel) {
     val state by vm.modelState.collectAsState()

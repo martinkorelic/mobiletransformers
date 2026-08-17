@@ -98,7 +98,7 @@
     "noticeFile": "licenses/BASE_MODEL_LICENSE"
   },
   "minReaderVersion": "1.0",
-  "mobiletransformersVersion": "0.1.0",
+  "mobiletransformersVersion": "0.2.0",
   "onnxRuntimeGenAIVersion": "0.14.0",
   "onnxRuntimeTrainingVersion": "1.23.0",
   "optimumOnnxVersion": "0.1.0",

@@ -1,6 +1,6 @@
 """Render a :class:`SupportMatrix` into ``docs/COMPATIBILITY_MATRIX.md`` (#31, F6).
 
-The matrix (``model_support_matrix.json``, #20) is the generated source of truth; the docs page is
+The matrix (``model_support_matrix.json``) is the generated source of truth; the docs page is
 **rendered from it**, never hand-maintained. Axis legends are enumerated from the #6 enums/registries so
 they cannot drift from the code. A row's "evidence" is its recorded blockers (or ✅ when fully ready).
 """
@@ -11,7 +11,7 @@ from mobiletransformers.config.constants import MergerVariant, PEFTMethod, Quant
 from mobiletransformers.support.models import SupportMatrix
 from mobiletransformers.support.statuses import STATUS_ORDER
 
-#: Canonical engines (native is the guaranteed path; genai is opt-in) — see 01_code_plans/03 (#11).
+#: Canonical engines: native is the guaranteed path, genai is opt-in.
 _ENGINES = ("native", "genai")
 
 _STATUS_HEADERS = {
@@ -49,7 +49,7 @@ def render_matrix_markdown(matrix: SupportMatrix) -> str:
     out.append("# Compatibility Matrix")
     out.append("")
     out.append(
-        "> **Generated** — rendered from `model_support_matrix.json` (#20). Do not hand-edit. "
+        "> **Generated** — rendered from `model_support_matrix.json`. Do not hand-edit. "
         "Regenerate with `mobiletransformers support-matrix --md docs/COMPATIBILITY_MATRIX.md` "
         "under the `export` profile (live detection needs transformers + optimum)."
     )

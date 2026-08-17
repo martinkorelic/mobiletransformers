@@ -1,0 +1,112 @@
+# The badge workflow: the checks that are cheap, deterministic and meaningful on a bare runner.
+#
+# Separate from `ci.yml` on purpose. That workflow stages everything including `export-smoke` (which
+# installs torch + optimum) and `android-assemble` (which SELF-SKIPS without the vendored native
+# deps). Neither belongs behind a status badge: one is slow enough to discourage pushing, and the
+# other would report green by skipping — a badge that is green when nothing ran is worse than no
+# badge, because it is trusted.
+#
+# So this file runs only what a hosted runner can do honestly, in a couple of minutes, with no model
+# downloads, no NDK, no vendored binaries and no credentials:
+#
+#   python   -> lint + typecheck + enum parity + guards + docs gate + the core unit suite
+#   cpp      -> host googletests over the ORT-free headers
+#   kotlin   -> SDK + app JVM unit tests (Kotlin compiler + Android SDK stubs; no native libs)
+#
+# Every job here was verified against a SIMULATED FRESH CLONE on 2026-08-17 — the tracked files only,
+# with no `third_party/wheels/` wheel, no `jniLibs`/`aarLibs`, no `.env` and no device. That run is
+# what caught `make check` failing on a bare machine: `[tool.uv.sources]` points
+# `onnxruntime-training` at a local path, and a bare `uv run` validates it before executing, so
+# `make lint` died on a missing 632 MB training wheel. The Makefile now uses `uv run --frozen`.
+# Without that fix this workflow would have gone red on its first run.
+#
+# `ci.yml` stays `workflow_dispatch`-only and keeps the heavier stages. Anything needing the native
+# dependencies, a device or a token belongs there, not here.
+name: checks
+
+on:
+  push:
+    branches: [main, restructure]
+    tags: ['v*']
+  pull_request: {}
+  workflow_dispatch: {}
+
+# A new push supersedes an in-flight run of the same ref: the badge should reflect the tip, and
+# queued runs of superseded commits cost minutes for an answer nobody reads.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: python (lint, typecheck, parity, guards, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      # The core/dev profile: no onnxruntime provider, no torch, no model downloads. `--frozen` so a
+      # drifted lock fails here rather than silently resolving something else.
+      - name: Sync core + dev (Python 3.10)
+        run: uv sync --frozen --group dev --python 3.10
+      - name: Lint
+        run: make lint
+      - name: Typecheck
+        run: make typecheck
+      - name: Enum/schema parity (Python source of truth vs Kotlin + C++ mirrors)
+        run: make parity
+      - name: Guards (secrets, registry dispatch, plan identifiers, machine paths)
+        run: make guard
+      - name: Docs gate (markdown links, CLI table, Kotlin facade symbols)
+        run: uv run pytest tests/unit/test_docs.py -q
+      - name: Unit tests
+        run: make test
+
+  cpp:
+    name: cpp (host googletest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # Host toolchain only. The shipping library needs the NDK and ONNX Runtime, but the headers
+      # carrying the fail-closed logic are ORT-free and testable anywhere.
+      - name: C++ host unit tests
+        run: make test-cpp
+
+  kotlin:
+    name: kotlin (SDK JVM unit tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/MobileTransformers/**/*.gradle.kts', 'android/MobileTransformers/gradle/libs.versions.toml') }}
+      # JVM-only: no NDK, no vendored native libs — both modules were confirmed to build and test
+      # against a tree with an empty `jniLibs`/`aarLibs`. The app module is included because it holds
+      # the navigation, download-state and PEFT-label suites, which are exactly the logic that has
+      # broken from under the UI before.
+      - name: JVM unit tests (SDK + sample app)
+        working-directory: android/MobileTransformers
+        run: ./gradlew :MobileTransformers:testDebugUnitTest :MobileTransformersApp:testDebugUnitTest
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-test-report
+          path: |
+            android/MobileTransformers/MobileTransformers/build/reports/tests/testDebugUnitTest
+            android/MobileTransformers/MobileTransformersApp/build/reports/tests/testDebugUnitTest

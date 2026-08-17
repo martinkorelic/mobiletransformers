@@ -2,7 +2,7 @@
 
 ## Why synthetic, and why per-user
 
-The differentiation gate in ``04_code_plans/05`` is explicit that running a vendor's off-device tutorial
+The differentiation gate is explicit that running a vendor's off-device tutorial
 is not a contribution. What this project can show that a hosted assistant cannot is a model fine-tuned
 **on one person's own action vocabulary, on their device, from data that never leaves it**. That needs a
 per-user dataset, and a per-user dataset cannot be downloaded — it has to be generated from the action

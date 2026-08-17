@@ -15,7 +15,7 @@ import kotlinx.coroutines.launch
 /**
  * The encoder story's payoff: ask a fine-tuned classifier something and see the class it picks.
  *
- * #33 built the whole encoder path — `text-classification` export, a trainable head, `classify()` on
+ * The encoder path is complete — `text-classification` export, a trainable head, `classify()` on
  * the facade, `ClassifierSession` under it — and then had nowhere to show it. A classifier could be
  * pulled and fine-tuned on device and never asked a single question, which made the encoder work
  * unfalsifiable from the app.

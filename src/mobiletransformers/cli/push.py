@@ -11,6 +11,7 @@ a command that normally runs against an organisation account.
 from __future__ import annotations
 
 import argparse
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -18,8 +19,19 @@ from typing import Any
 from mobiletransformers.artifacts.manifest import MobileTransformersManifest
 from mobiletransformers.config.settings import get_settings
 from mobiletransformers.exceptions import MobileTransformersError
-from mobiletransformers.export.model_card import render_model_card
+from mobiletransformers.export.model_card import BANNER_FILENAME, render_model_card
 from mobiletransformers.hub.package_format import MANIFEST_FILENAME
+
+
+def _repo_root() -> Path:
+    """The checkout this package was installed from, for build-time-only assets like the banner.
+
+    `src/mobiletransformers/cli/push.py` -> up four. Returns a path that simply will not exist for a
+    wheel installed outside a checkout, which the caller already handles by skipping the banner —
+    an installed wheel has no `docs/` and should publish a card without a header image rather than
+    fail the push.
+    """
+    return Path(__file__).resolve().parents[3]
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -56,7 +68,21 @@ def run(args: argparse.Namespace, *, uploader: Callable[..., Any] | None = None)
         print(f"push aborted — package failed validation: {exc}")
         return 1
 
-    card = render_model_card(manifest.to_dict(), str(package_dir))
+    # Stage the header image INTO the package so the card can reference it relatively. Hot-linking
+    # the framework repository would tie a published page to that repo's visibility, default branch
+    # and directory layout — and it renders as a broken image for as long as any of those disagree.
+    # Copied here rather than at export time because it is a publishing concern: a package pulled to
+    # a device has no use for it.
+    banner_source = _repo_root() / "docs" / "assets" / BANNER_FILENAME
+    banner: str | None = None
+    if banner_source.is_file():
+        shutil.copyfile(banner_source, package_dir / BANNER_FILENAME)
+        banner = BANNER_FILENAME
+    else:
+        # Referencing a name we did not upload is worse than having no banner at all.
+        print(f"note: {banner_source} not found — publishing the card without its header image")
+
+    card = render_model_card(manifest.to_dict(), str(package_dir), banner=banner, repo_id=args.repo)
     (package_dir / "README.md").write_text(card, encoding="utf-8")
 
     if args.dry_run:

@@ -1,0 +1,144 @@
+{
+  "schemaVersion": "1.0",
+  "minReaderVersion": "1.0",
+  "version": "0.2.0",
+  "_comment": [
+    "The Android native dependencies a `git clone` does NOT bring, and the only thing standing",
+    "between a fresh checkout and a buildable Android SDK.",
+    "",
+    "Every path below is gitignored: together they are ~180 MB of prebuilt binaries and vendored",
+    "headers that cannot live in git. Before this file existed their absence was undiscoverable —",
+    "`android_build_aar.sh` failed pointing at a docs page that never mentioned jniLibs at all.",
+    "",
+    "`scripts/fetch_native_deps.sh` is the consumer: it downloads `bundles[].filename` from",
+    "`baseUrl`, verifies the archive sha256, unpacks it under `unpackRoot`, and then verifies every",
+    "`artifacts[]` sha256 individually. Both checks matter — the archive hash proves the download,",
+    "the per-file hashes prove the unpack, and a half-populated jniLibs is the failure mode that",
+    "produces a linker error naming nothing.",
+    "",
+    "`make doctor` reports which of these are missing without downloading anything."
+  ],
+
+  "unpackRoot": "android/MobileTransformers/MobileTransformers/src/main",
+
+  "baseUrl": null,
+  "_baseUrl_comment": [
+    "OWNER ACTION: set this to the directory URL the bundles are hosted at (a GitHub Release keeps",
+    "the URL stable across tags). Until it is set, `scripts/fetch_native_deps.sh` refuses to run and",
+    "says so, rather than emitting a 404 that reads like a network problem.",
+    "Override at call time with URL=<base> for a mirror or a local file:// path."
+  ],
+
+  "bundles": [
+    {
+      "name": "natives",
+      "filename": "mobiletransformers-natives-0.2.0-arm64-v8a.tar.zst",
+      "sha256": "e4b00892d719fabe6dfcc7b52d5886e404997ed89e45337caf28bf0e47450fa1",
+      "size": 65787553,
+      "required": true,
+      "contains": ["jniLibs/arm64-v8a/", "aarLibs/", "cpp/includes/"],
+      "note": "Everything needed to build and run the Android SDK. Stripped to the same bytes AGP would strip to at packaging, so this costs clone size, never APK size."
+    },
+    {
+      "name": "debug-symbols",
+      "filename": "mobiletransformers-natives-0.2.0-arm64-v8a-debug-symbols.tar.zst",
+      "sha256": "2383869b5015b0c3d3db83b7572542cf175598889f6d83f5d46eca84d0cd23d6",
+      "size": 272913723,
+      "required": false,
+      "contains": ["jniLibs/arm64-v8a/"],
+      "note": "The UNSTRIPPED originals, for symbolicating a native crash. Not needed to build. These cannot be regenerated without a full ORT source build, so this archive is the only copy — see docs/ARCHITECTURE.md."
+    }
+  ],
+
+  "artifacts": [
+    {
+      "path": "jniLibs/arm64-v8a/libonnxruntime.so",
+      "size": 59872456,
+      "sha256": "49dfafa414ecf9aa8d02f063787890ea76669cfa0874e7d63540b17948dcfdcb",
+      "provenance": "ONNX Runtime *training* 1.23.0, source-built (see third_party/onnxruntime/manifest.json for the commit). Version string verified in the binary.",
+      "role": "Linked by libmobiletransformers.so. Keeps the SONAME libonnxruntime.so; the GenAI engine gets libort_gen.so instead so the two ORTs never collide."
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libort_gen.so",
+      "size": 27985664,
+      "sha256": "70c0a5b67d70ce9907263dcb0436610abb9ef0ad9a81551e6907388c34d6db16",
+      "provenance": "Stock ONNX Runtime 1.27.0 Android AAR from Maven Central, with its SONAME raw-patched to libort_gen.so. Version string verified in the binary. Reproduce with spikes/genai_external_swap/setup_ort_separation.sh.",
+      "role": "The ORT that GenAI dlopens. The distinct SONAME is essential — with both named libonnxruntime.so the linker dedups them and GenAI silently gets the training build (observed: SIGABRT)."
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libonnxruntime-genai.so",
+      "size": 5628272,
+      "sha256": "7d28291ab238b9c977db490175da94461c49e98ed24755f10b27e3cf325ed043",
+      "provenance": "Extracted from aarLibs/onnxruntime-genai.aar, stripped, and raw-patched so its dlopen target reads libort_gen.so instead of libonnxruntime.so.",
+      "role": "The GenAI inference engine."
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libonnxruntime-genai-jni.so",
+      "size": 42408,
+      "sha256": "0e10a928fd7180762534076d7e93e5fcebccb357c65260e4fa7de3831458f205",
+      "provenance": "Extracted from aarLibs/onnxruntime-genai.aar and stripped.",
+      "role": "JNI shim for the GenAI Java classes."
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libonnxruntime4j_jni.so",
+      "size": 92136,
+      "sha256": "d2c713da7bc909e8d21eab34e9d236c63f27a67d0d60c4bf8b2b0f305e26830f",
+      "provenance": "ONNX Runtime Java JNI shim, paired with the training build above.",
+      "role": "Only needed by the ORT Java API surface."
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libtokenizers_c.a",
+      "size": 26146738,
+      "sha256": "f2b59da928ecdc9046c5b3232fb1eb3d581807619fc74cfd42a669484472243d",
+      "provenance": "tokenizers-cpp built for android arm64-v8a. Upstream commit not recorded at bundling time.",
+      "role": "Static link input for libmobiletransformers.so — the on-device tokenizer."
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libtokenizers_cpp.a",
+      "size": 188806,
+      "sha256": "8a31d6907c23c12d02038c946c606c3d1d2c836b2f4b97772ef6f5a437203ece",
+      "provenance": "tokenizers-cpp built for android arm64-v8a. Upstream commit not recorded at bundling time.",
+      "role": "Static link input for libmobiletransformers.so — the C++ wrapper over libtokenizers_c.a."
+    },
+    {
+      "path": "jniLibs/arm64-v8a/libprotobuf-lite.a",
+      "size": 1398194,
+      "sha256": "1458c40fbaf4ea02ca525b4dad8fa88ccd58454eca5caa6329434762b059bd8a",
+      "provenance": "protobuf-lite built for android arm64-v8a. Upstream version not recorded at bundling time.",
+      "role": "Retained as a link input; the ONNX proto reader that needed it was dropped with weight_serializer.cpp."
+    },
+    {
+      "path": "aarLibs/onnxruntime-genai.aar",
+      "size": 40046770,
+      "sha256": "c2e9b967a1ecdf766246fbee8572c6637df01183cc263f9b954c01a9ec591f69",
+      "provenance": "onnxruntime-genai Android AAR, the 0.14 line per spikes/genai_external_swap/README.md. The AAR declares no version internally, so this pairing is documented rather than read off the artifact.",
+      "role": "NOT a Gradle dependency. It is the source the two genai .so files are extracted from, and it supplies the x86_64 libraries. The shipping binaries come from jniLibs."
+    }
+  ],
+
+  "directories": [
+    {
+      "path": "cpp/includes/google",
+      "approxSize": 12582912,
+      "provenance": "protobuf sources/headers, vendored. Upstream version not recorded at bundling time.",
+      "role": "CMake include path. Verified as a set by the bundle sha256 rather than per-file — there are ~1150 files."
+    },
+    {
+      "path": "cpp/includes/protobuf",
+      "approxSize": 12582912,
+      "provenance": "protobuf sources/headers, vendored. Upstream version not recorded at bundling time.",
+      "role": "CMake include path."
+    }
+  ],
+
+  "abis": ["arm64-v8a"],
+  "_abis_comment": [
+    "arm64-v8a only, deliberately. jniLibs/x86_64 never had libonnxruntime.so or the tokenizer",
+    "archives — absent here and upstream — so libmobiletransformers.so has never existed for x86_64.",
+    "It was dropped from abiFilters rather than advertising an ABI that dies at System.loadLibrary.",
+    "Restoring it means building ORT-training and tokenizers-cpp for x86_64 first."
+  ],
+
+  "bundledOn": "2026-08-16",
+  "bundledFrom": "the sibling ORTTransformer checkout, on the maintainer's Linux workstation"
+}

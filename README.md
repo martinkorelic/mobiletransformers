@@ -1,190 +1,175 @@
-# 📱 MobileTransformers: An On-Device LLM PEFT Framework for Fine-Tuning and Inference
+![MobileTransformers](docs/assets/mobiletransformers_banner.png)
 
-**MobileTransformers** is a modular framework designed for fully **on-device execution** of large and small language models (LLM / SLM) on mobile and edge devices.  
-Built on top of **ONNX Runtime**, it leverages hardware-accelerated execution providers such as **XNNPACK**, **NNAPI**, and **QNN** for efficient inference and training on Android and similar platforms.
+# MobileTransformers: An On-Device LLM PEFT Framework for Fine-Tuning and Inference
 
-- **OR**: ONNX Runtime  
-- **Transformers**: Core architecture of large language models  
-- **Mobile**: Fully on-device mobile execution 
+[![checks](https://github.com/martinkorelic/mobiletransformers/actions/workflows/checks.yml/badge.svg)](https://github.com/martinkorelic/mobiletransformers/actions/workflows/checks.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Android 7.0+](https://img.shields.io/badge/Android-API%2024%2B-3DDC84?logo=android&logoColor=white)](docs/ANDROID_SDK.md)
+[![Models on Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20models-mobiletransformers-FFD21E)](https://huggingface.co/mobiletransformers)
 
-![Example of MobileTransformers application](docs/ortransformer-feature.gif)
-> Example of MobileTransformers Android application running on Google Pixel 6 (2021) with support for on-device LLM training and inference with retrieval-augmented generation.
+**Export a Hugging Face model, pull it onto a phone, then chat with it, retrieve over your own
+documents, classify text, fine-tune it, merge the adapter into the weights, and let it call tools —
+entirely on the device.** No server, no inference API, no data leaving the phone.
 
+Built on **ONNX Runtime**, for both inference *and* training on Android.
 
-## 📥 Main links
+---
 
-### Documentation
+## See it work
 
-Installation instructions, training and inference examples, and API documentation.
+|🧩 Base model |⚙️ Fine-tuned on the phone|
+|----|----|
+|![Base on-device model](docs/assets/base-model.gif)|![On-device trained LLM model](docs/assets/on-device-trained.gif)|
 
-[MobileTransformers Documentation](https://martinkorelic.github.io/mobiletransformers-docs/)
+**The same prompt, before and after a training run and an on-device merge.** Adapted to a
+smartphone-automation dataset, where a user states an intent and the model proposes the action.
+Trained, merged and run entirely on the phone — no server at any point.
 
-### Research
+<!--
+  RECORDING PLACEHOLDERS. Mechanics and the ffmpeg recipe: docs/assets/README.md
 
-For a comprehensive understanding of the research behind MobileTransformers, including detailed explanations of Multi-Adapter Rank Sharing (MARS), on-device training methodologies, and experimental results:
+  1. REPLACE the two-GIF table above with a single clip, on-device-finetune.gif — one unbroken take of
+     prompt -> train -> merge -> the same prompt. Two files the reader has to compare by eye is a
+     weaker version of the same claim. Delete base-model.gif and on-device-trained.gif in that commit.
 
-[Master's Thesis - Parameter-Efficient Tuning of Large Language Models on Mobile Devices](https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=175561)
+  2. ADD offline-generation.gif below this comment, with the caption:
+     "Airplane mode, still generating. Nothing is uploaded and nothing is fetched — the weights and
+      the tokenizer are already on the device."
+     This is the strongest thing the app can do and no current asset shows it.
 
-### In-repo docs
+  3. ortransformer-feature.gif predates the app rewrite and is no longer referenced. Delete it.
+
+  Only these two clips belong in the README. Everything else — the drawer changing shape per package,
+  tool calls firing a real alarm, install-from-catalog, retrieval, classify — goes in
+  docs/SHOWCASE.md beside the section it illustrates. A README with seven GIFs is a README nobody
+  finishes loading.
+-->
+
+More, capability by capability, in **[docs/SHOWCASE.md](docs/SHOWCASE.md)**.
+
+---
+
+## What is actually here
+
+| | |
+| --- | --- |
+| **A host export pipeline** | Hugging Face → PEFT-enabled training graph + ONNX inference graph + a manifest, in one command |
+| **An Android SDK** (Kotlin + C++) | `mobiletransformers-android` — an AAR you can consume from your own app |
+| **A sample app** | The reference consumer of that SDK, and the fastest way to see the whole loop |
+| **A published model shelf** | Six packages on the Hub, each shipping both an inference and a training stage — including one exported with MARS |
+| **Custom PEFT methods** | LoRA, LoRA-XS, and **MARS** (Multi-Adapter Rank Sharing) — the project's own method |
+| **Federated adapter exchange** | Export local factors, aggregate on a host, import the average back |
+
+The two things that distinguish this from "run a small model on a phone": **training happens on the
+device**, and the trained adapter is **merged into the inference weights on the device**, so the
+personalised model is the one that then generates.
+
+## Quick start
+
+```bash
+make doctor                   # what is missing, and the command that fixes each
+make setup                    # core + dev environment (uv, Python 3.10)
+make check                    # lint + typecheck + enum parity + guards + unit tests
+```
+
+Export a package and put it on a phone:
+
+```bash
+make setup-export
+mobiletransformers export --model HuggingFaceTB/SmolLM2-135M-Instruct \
+                          --output build/pkg --genai --validate
+
+make device-package MODEL=HuggingFaceTB/SmolLM2-135M-Instruct TRAIN=1 RAG=1
+make device-test
+```
+
+Or build the app and install a package from the Hub inside it:
+
+```bash
+make fetch-native-deps        # the gitignored Android natives — see below
+make android-build
+```
+
+Dependency profiles are deliberately isolated: the `export` extra and the `ort-training-local` group
+**cannot** co-install. Always pass an explicit `--group`/`--extra` to `uv run`, and reset with
+`uv sync --frozen --group dev --python 3.10` before `make check` — a leftover profile is the single
+most common way to "break" the repo. See [docs/EXPORT.md](docs/EXPORT.md).
+
+> **A fresh clone cannot build the Android SDK on its own.** ~180 MB of prebuilt native binaries and
+> vendored headers are gitignored. `make doctor` tells you what is missing; `make fetch-native-deps`
+> gets it. See [docs/ARCHITECTURE.md ▸ Native dependencies](docs/ARCHITECTURE.md).
+
+## The model shelf
+
+Six packages under [`mobiletransformers`](https://huggingface.co/mobiletransformers) on the Hub.
+Every one ships **both an inference and a training stage** — a shelf entry that cannot be fine-tuned
+demonstrates half the framework, so `scripts/publish_catalog.sh` asserts it.
+
+| model | task | inference | total | features |
+| --- | --- | --- | --- | --- |
+| [SmolLM2-135M-Instruct](https://huggingface.co/mobiletransformers/SmolLM2-135M-Instruct) | text-generation | 663 MB | 935 MB | inference, train, rag |
+| [functiongemma-270m-it](https://huggingface.co/mobiletransformers/functiongemma-270m-it) | text-generation | 3557 MB | 3875 MB | inference, train |
+| [gemma-3-270m-it](https://huggingface.co/mobiletransformers/gemma-3-270m-it) | text-generation | 1814 MB | 2131 MB | inference, train (**MARS**) |
+| [Qwen2.5-0.5B-Instruct](https://huggingface.co/mobiletransformers/Qwen2.5-0.5B-Instruct) | text-generation | 2554 MB | 3212 MB | inference, train, rag |
+| [all-MiniLM-L6-v2](https://huggingface.co/mobiletransformers/all-MiniLM-L6-v2) | text-classification | 94 MB | 214 MB | inference, train, rag |
+| [distilbert-sst2-english](https://huggingface.co/mobiletransformers/distilbert-sst2-english) | text-classification | 270 MB | 361 MB | inference, train |
+
+Sizes are measured off each pushed package's manifest, not estimated. Start with **SmolLM2**. Full
+detail, and why the encoders are exported as `text-classification`, in
+[docs/CATALOG.md](docs/CATALOG.md).
+
+## The sample app
+
+Eight destinations, and which you see depends on what the loaded package can actually do — a chat box
+on an embedding model is a promise the package cannot keep, so it is hidden rather than greyed out.
+
+**Models** → **Chat** (streaming, grounded answers, tool calls) → **Retrieval** → **Classify** →
+**Train** (live loss curve, then merge) → **Federated** → **Configuration** → **About**.
+
+[docs/SHOWCASE.md](docs/SHOWCASE.md) is the tour: one section per capability, the package each needs,
+and what you should see.
+
+## Documentation
 
 | Page | Covers |
 | --- | --- |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the host exporter and the Android SDK fit together |
-| [docs/EXPORT.md](docs/EXPORT.md) | the one-command export CLI, profiles, flags |
+| [docs/SHOWCASE.md](docs/SHOWCASE.md) | a tour of the sample app, capability by capability |
+| [docs/CATALOG.md](docs/CATALOG.md) | the published packages: sizes, features, which to start with |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the host exporter and the Android SDK fit together; native dependencies |
+| [docs/EXPORT.md](docs/EXPORT.md) | the one-command export CLI, profiles, per-task flag rules |
 | [docs/MODEL_FORMAT.md](docs/MODEL_FORMAT.md) | the manifest + `weight_handoff_map.json` on-disk contracts |
 | [docs/HUB_PACKAGE_FORMAT.md](docs/HUB_PACKAGE_FORMAT.md) | package layout on the Hub; pull/verify/install |
-| [docs/ANDROID_SDK.md](docs/ANDROID_SDK.md) | consuming the AAR: install, load, generate, train, merge |
-| [docs/COOKBOOK.md](docs/COOKBOOK.md) | copy-pasteable Kotlin per task, mirroring the sample app's screens |
+| [docs/ANDROID_SDK.md](docs/ANDROID_SDK.md) | consuming the AAR: install, load, generate, classify, retrieve, train, merge |
+| [docs/COOKBOOK.md](docs/COOKBOOK.md) | copy-pasteable Kotlin per task, mirroring the app's screens |
 | [docs/ANDROID_CACHE_FORMAT.md](docs/ANDROID_CACHE_FORMAT.md) | where an installed model lives on device |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | the enum vocabulary, typed configs, extension points |
 | [docs/PUBLIC_API.md](docs/PUBLIC_API.md) | the Python, CLI and Kotlin public surfaces |
 | [docs/RAG.md](docs/RAG.md) | on-device retrieval, ingestion, grounded generation |
 | [docs/FEDERATED.md](docs/FEDERATED.md) | federated adapter exchange + the Flower simulation |
 | [docs/COMPATIBILITY_MATRIX.md](docs/COMPATIBILITY_MATRIX.md) | per-model support, generated from the matrix |
+| [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) | what a release requires |
+| [docs/mobile_evaluation.md](docs/mobile_evaluation.md) | host-side evaluation of on-device runs |
 
-> `agent_docs/` holds the **implementation plans and audit records** for the ongoing restructure. It is
-> working material, not user documentation — start with `docs/` above.
+### External
 
----
+- [MobileTransformers Documentation](https://martinkorelic.github.io/mobiletransformers-docs/)
+- [Master's Thesis — Parameter-Efficient Tuning of Large Language Models on Mobile Devices](https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=175561)
+  — the research behind MARS, the on-device training methodology, and the experimental results.
 
-## ⚡ Quick start
+## Built on
 
-Everything is driven through `make`; run `make help` for the full target list.
+- [**ONNX Runtime**](https://onnxruntime.ai/) — training and inference, with XNNPACK / NNAPI /
+  Qualcomm QNN execution providers
+- [**Hugging Face Transformers**](https://huggingface.co/) + [**Optimum**](https://huggingface.co/docs/optimum/)
+  — model export
+- [**ObjectBox**](https://objectbox.io/) — the on-device vector database behind RAG
 
-```bash
-make setup                    # core + dev environment (uv, Python 3.10)
-make check                    # lint + typecheck + enum parity + guards + unit tests
+## Where this is going
 
-# Export a model to a device-ready package (needs the export profile)
-make setup-export
-mobiletransformers export --model HuggingFaceTB/SmolLM2-135M-Instruct \
-                          --output build/pkg --genai --validate
-
-# Android
-make test-jvm                 # SDK JVM unit tests (no device, no NDK)
-make test-cpp                 # C++ host unit tests
-make android-build            # assemble the SDK + sample app
-
-# On a connected device
-make device-package MODEL=<hf-id>   # export, reshape, adb push
-make device-test                    # instrumented tests against the pushed package
-```
-
-Profiles are deliberately isolated: the `export` extra and the `ort-training-local` group **cannot**
-co-install (see [docs/EXPORT.md](docs/EXPORT.md)). Always pass an explicit `--group`/`--extra` to
-`uv run`, and reset with `make setup` before running `make check`.
-
----
-
-## 🚀 What is MobileTransformers?
-
-A comprehensive, privacy-first framework that empowers researchers and developers to export, fine-tune, merge, and deploy transformer-based language models directly on your Android device. Eliminate dependency on cloud services while maintaining full control over your AI models in your pocket.
-Perfect for privacy-preserving NLP applications, offline AI assistants, personalized chatbots, and edge computing scenarios where data sovereignty and real-time responsiveness are crucial. Whether you're building the next generation of pocket AI or developing enterprise edge solutions, **MobileTransformers** provides the foundation for truly autonomous mobile intelligence.
-
-**Key Benefits**:
-
-- 🔒 **Complete Privacy**: Your data never leaves your device
-- 📱 **Pocket-Sized AI**: Full LLM/SLM capabilities in your smartphone
-- 🔧 **Hardware execution provider support**: Hardware-accelerated inference for efficient on-device execution
-- 🌐 **Offline-First**: Works anywhere, anytime, without internet connectivity
-- 🤖 **Universal Model Support**: Compatible with most custom LLMs/SLMs from Huggingface
-
----
-
-## 📦 Repository Contents
-
-This comprehensive repository provides everything needed for on-device LLM deployment:
-
-- 🔄 **Export Pipeline**: Streamlined conversion system transforming Huggingface LLMs/SLMs into PEFT-enabled training models and ONNX inference graphs optimized for Android deployment
-- 📱 **Complete Android Application**: Full-featured Android folder containing the entire mobile application stack, ready for pocket deployment
-- 🧪 **Custom PEFT support**: Customizable PEFT solutions for on-device fine-tuning (e.g. LoRA - Low-rank approximation, MARS - Multi-Adapter Rank Sharing and more)
-- 🐍 **Training & Inference Scripts**: Python implementations supporting both PyTorch and ONNX Runtime, optimized for mobile hardware constraints
-- 🔬 **Evaluation Scripts**: Comprehensive benchmarking suite for trained models across diverse NLP tasks, including mobile-specific performance metrics and battery consumption analysis
-
----
-
-## 📱 Android Application: MobileTransformersApp
-
-The Android app is split into two main parts:
-
-- 📲 **Kotlin UI Layer**  
-  A lightweight interface acting as a communication bridge, calling APIs from the backend on the mobile device
-
-- ⚙️ **Backend: MobileTransformers**  
-  The core engine of the entire framework, implemented in **Kotlin and C++**. Can be easily implemented in re-used in another application, pick and choose which features you need.
-
-🔧 Key features include:  
-  - **Modular Android Project**: Clean separation of concerns with isolated modules for **training**, **inference**, **RAG** and **weight management** 
-  - **Hardware-Accelerated Loops**: **On-device training / fine-tuning** and generation loops leveraging NNAPI, XNNPACK, and Qualcomm QNN for optimal mobile performance
-  - **Dynamic Configuration**: Real-time customization of training parameters and inference settings tailored to your Android device's capabilities
-  - **ONNX Runtime Integration**: Optimized model execution specifically tuned for mobile and edge hardware 
-  - **Weight Management**: **On-device weight merging** with automatic export to **Android filesystem**, enabling model personalization without cloud dependency
-  - **Seamless Model Loading**: Direct import of merged weights into inference graphs for immediate pocket deployment
-  - **RAG support**: Support for **Retrieval-Augmented Generation (RAG)** using **ObjectBox** as a fast **on-device vector database**
-
-
----
-
-## ✅ Key Capabilities
-
-| Feature                                     | Description                                                        |
-|---------------------------------------------|------------------------------------------------------------------|
-| ✅ Export **custom PyTorch Huggingface SLM / LLM models** | Convert Huggingface models with PEFT methods to training & ONNX inference models for on-device use |
-| ✅ On-device **fine-tuning/training** loop       | Perform parameter-efficient training (PEFT) directly on mobile devices |
-| ✅ On-device **generation** loop with KV caching | Efficient text generation using cached key-value tensors for faster autoregressive inference |
-| ✅ **Customizable** training and generation      | Flexible configuration to adapt training and generation to specific tasks and hardware |
-| ✅ On-device **weight exporting**                 | Save trained or merged weights directly on-device (mobile filesystem) |
-| ✅ On-device **weight merging**                    | Merge base and PEFT weights on-device, with optional quantization for optimized size and speed |
-| ✅ Direct inference from **merged weights**       | Load merged weights into the inference graph for seamless on-device model execution |
-| ✅ **Retrieval-Augmented Generation** (RAG)       | Fully on-device vector database integration with ObjectBox for augmented generation |
-
----
-
-## 🔧 On-device example
-
-Example of a model being adapted to a personalized smartphone automation dataset where users express intents and the model recommends appropriate automatic actions to perform on the device. This task-oriented dataset is specifically designed for on-device intelligence scenarios.
-
-|🧩 Base Model	|⚙️ On-device Fine-tuned model|
-|----|----|
-|![Base on-device model](docs/base-model.gif)|![On-device trained LLM model](docs/on-device-trained.gif)|
-
-> This example shows how a base model can be fine-tuned and personalized entirely on-device, meaning no data ever leaves the device. During the process, adapters are trained locally, then merged and integrated into the base model on the mobile phone to produce the final fine-tuned version.
-
----
-
-## 🛠️ Built On
-
-- [**ONNX Runtime**](https://onnxruntime.ai/) for training/inference and support for mobile-optimized execution providers:  
-  - XNNPACK  
-  - NNAPI  
-  - Qualcomm QNN  
-- [**Huggingface Transformers**](https://huggingface.co/) ecosystem compatibility for model export  
-- [**ObjectBox**](https://objectbox.io/) for lightweight on-device vector databases in RAG workflows  
-
----
-
-## 🎯 Why MobileTransformers?
-
-- Fully **on-device** - no cloud dependency, maximizing privacy and minimizing latency 
-- Enables **parameter-efficient fine-tuning (PEFT)** on mobile hardware  
-- Modular and customizable for research and production use
-- Ready for **Android** and adaptable to other edge devices  
-- Combines cutting-edge generation techniques with practical on-device deployment  
-
----
-
-## 🔧 Extensibility and Future Work
-
-MobileTransformers is designed as a flexible platform, allowing easy extension for advanced on-device ML workflows, such as:
-
-- Beyond text generation - classification, sentiment analysis, named entity recognition, question answering, summarization, and custom NLP tasks tailored for mobile use cases
-- On-device **reinforcement learning**  
-- **Federated learning** leveraging exported merged weights  
-- Integration with additional hardware acceleration backends  
-- Support for more PEFT methods and quantization techniques  
-- Expansion to other mobile platforms and edge systems
-
----
+- Beyond generation and classification: NER, question answering, summarization
+- On-device reinforcement learning
+- More PEFT methods and quantization techniques
+- Additional hardware acceleration backends, and platforms beyond Android
 
 ## Citation
 
@@ -198,8 +183,6 @@ If you are using this framework for your own work, please cite:
   howpublished = {\url{https://gitlab.fri.uni-lj.si/lrk/mobiletransformers}}
 }
 ```
-
----
 
 ## Acknowledgements
 

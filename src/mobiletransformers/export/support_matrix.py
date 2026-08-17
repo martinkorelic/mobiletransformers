@@ -3,7 +3,7 @@
 This plan (#7) sets the two statuses it can prove: ``optimum_exportable`` (from task discovery) and
 ``mobile_package_exportable`` (from a successful normalized export). The remaining canonical statuses
 (``train_artifacts_exportable``, ``android_inference_ready``, ``android_training_ready``, ``rag_ready``)
-are seeded as ``None`` and flipped by later plans. ``02_code_plans/02`` (#20) owns the canonical schema
+are seeded as ``None`` and flipped later. This module owns the canonical schema
 + field list and is the reporting layer that reads/extends this file — so ``merge_row`` preserves any
 field it does not own.
 

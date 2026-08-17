@@ -25,7 +25,7 @@ FIXTURE_DIR = Path(__file__).parent / "tiny_package"
 TRAINABLE = "model.layers.0.attn.q_proj.MatMul.weight"
 
 _REPORT = {
-    "mobiletransformersVersion": "0.1.0",
+    "mobiletransformersVersion": "0.2.0",
     "architectures": ["LlamaForCausalLM"],
     "supportedTasks": ["text-generation", "text-generation-with-past"],
     "selectedTask": "text-generation-with-past",
