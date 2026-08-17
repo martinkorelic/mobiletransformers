@@ -53,6 +53,17 @@ jobs:
         # Deliberately not `uv sync`: the site needs mkdocs and nothing else, and the project's own
         # profiles carry torch-sized dependencies that have no bearing on rendering markdown.
         run: pip install mkdocs mkdocs-material
+      # Switches the repository's Pages source to "GitHub Actions" if it is not already.
+      #
+      # This step is why it matters: with Pages left on "Deploy from a branch", GitHub runs JEKYLL
+      # over the repository root instead of serving this workflow's artifact. Jekyll then renders
+      # `README.md` as the site index — so the site looks like the README rather than these docs —
+      # and renders every *other* `README.md` in the tree as its own page, which is how
+      # `examples/consumer-app` ended up published at a URL of its own. Neither symptom is a mkdocs
+      # problem, and no amount of fixing the site fixes them; the source setting is the whole cause.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - name: Build
         run: mkdocs build --strict
       - uses: actions/upload-pages-artifact@v3
