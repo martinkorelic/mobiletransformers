@@ -4,7 +4,7 @@ All notable changes to MobileTransformers are documented here. The format follow
 [Keep a Changelog](https://keepachangelog.com/), and the project follows Semantic Versioning from
 v1.0.0 onward.
 
-## [0.2.0] — 2026-08-17
+## [0.2.0] — 17-08-2026
 
 First public release.
 
