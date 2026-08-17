@@ -120,13 +120,27 @@ class MobileTransformerModel internal constructor(
         topK: Int = 5,
     ): ClassificationResult = session.classify(text, device, topK)
 
-    /** #27: grounded generation — retrieve → assemble prompt → generate. `result.prompt` is inspectable. */
+    /**
+     * #27: grounded generation — retrieve → assemble prompt → generate. `result.prompt` is inspectable.
+     *
+     * Pass [callback] to stream the answer as it is produced; it observes the generation leg, so its
+     * first event doubles as "retrieval is done". A grounded turn is the slowest thing this SDK does
+     * — an embedding pass, a vector search, then a decode over a prompt several hundred tokens long
+     * — and it was the only one with no way to watch it happen.
+     *
+     * Pass [retrieveCallback] to see the matches **as soon as they are retrieved**, rather than in
+     * the returned [GroundedResult] after the answer is complete. A UI that wants to show its
+     * sources before the answer they produced needs them at that moment, not at the end.
+     */
     suspend fun generateWithRag(
         query: String,
         rag: RagConfig = RagConfig(),
         generation: GenerationConfig = GenerationConfig(),
         promptStrategy: PromptStrategy = PromptAssembler.DEFAULT,
-    ): GroundedResult = session.generateWithRag(query, rag, generation, promptStrategy)
+        callback: GenerateCallback? = null,
+        retrieveCallback: RetrieveCallback? = null,
+    ): GroundedResult =
+        session.generateWithRag(query, rag, generation, promptStrategy, callback, retrieveCallback)
 
     /** #19 surface; throws `NotImplementedFeatureException` until the #22 adapter push-back lands. */
     suspend fun pushAdapter(hubConfig: HubConfig, repoId: String): PushResult =

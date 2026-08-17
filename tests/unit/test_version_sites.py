@@ -15,6 +15,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GRADLE_PROPERTIES = REPO_ROOT / "android/MobileTransformers/gradle.properties"
+CONSUMER_PROPERTIES = REPO_ROOT / "examples/consumer-app/gradle.properties"
 CITATION = REPO_ROOT / "CITATION.cff"
 
 _SEMVER = re.compile(r"^\d+\.\d+\.\d+([-+].+)?$")
@@ -63,6 +64,25 @@ def test_gradle_version_matches() -> None:
     props = _properties(GRADLE_PROPERTIES)
     assert "version" in props, f"{GRADLE_PROPERTIES.name} declares no `version`"
     assert props["version"] == declared_version()
+
+
+@pytest.mark.skipif(not CONSUMER_PROPERTIES.is_file(), reason="consumer example not present")
+def test_the_consumer_example_resolves_a_version_that_exists() -> None:
+    """`examples/consumer-app` is the proof that the published AAR is consumable from outside this
+    repo — so it has to ask for the version this repo actually publishes.
+
+    It was pinned at `0.1.0` against a `0.2.0` project, one minor behind, under a comment in that
+    same file promising it was kept in step. The guard stopped one directory short of the file that
+    drifted, which is the whole reason this exists: a version site nobody checks is a version site
+    that rots, and this one rots in the example a newcomer is most likely to copy.
+    """
+    props = _properties(CONSUMER_PROPERTIES)
+    assert "mobiletransformersVersion" in props, (
+        f"{CONSUMER_PROPERTIES} declares no `mobiletransformersVersion`"
+    )
+    assert props["mobiletransformersVersion"] == declared_version(), (
+        "the consumer example resolves an SDK version this repository does not publish"
+    )
 
 
 @pytest.mark.skipif(not GRADLE_PROPERTIES.is_file(), reason="Android tree not present")

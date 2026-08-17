@@ -20,8 +20,10 @@ import com.martinkorelic.mobiletransformers.app.ModelHolder
 import com.martinkorelic.mobiletransformers.app.ModelState
 import com.martinkorelic.mobiletransformers.app.PermissionGate
 import com.martinkorelic.mobiletransformers.app.SampleData
+import com.martinkorelic.mobiletransformers.RetrieveCallback
 import com.martinkorelic.mobiletransformers.rag.PromptAssembler
 import com.martinkorelic.mobiletransformers.runtime.InferenceEngine
+import com.martinkorelic.mobiletransformers.runtime.RetrievalResult
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -264,18 +266,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         model: com.martinkorelic.mobiletransformers.MobileTransformerModel,
         prompt: String,
     ) {
+        val raw = StringBuilder()
         val result = model.generate(
             prompt = prompt,
             config = AppConfig.generation.value,
             callback = object : GenerateCallback {
                 override fun onPartialResult(progress: GenerateProgress) {
-                    _ui.value = _ui.value.copy(streaming = _ui.value.streaming + progress.token)
+                    // Cleaned for DISPLAY only, off a raw accumulator. Cleaning the displayed string
+                    // and appending to that would feed `trim()` its own output every token, so a
+                    // token ending in a newline — every list item, every paragraph break — would lose
+                    // it and the next token would run straight on.
+                    raw.append(progress.token)
+                    _ui.value = _ui.value.copy(streaming = cleanTurnMarkers(raw.toString()))
                 }
             },
         )
         _ui.value = _ui.value.copy(
             messages = _ui.value.messages + ChatMessage(
-                text = result.text,
+                text = cleanTurnMarkers(result.text),
                 fromUser = false,
                 turnStats = TurnStats.of(result),
             ),
@@ -285,36 +293,73 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Retrieve → assemble → generate, with both halves attached to the answer.
      *
-     * The grounded path does not stream, so without a phase indicator a 20-second answer is a frozen
-     * screen. Naming the phase is the difference between "it is retrieving" and "it has hung".
+     * ### Why this streams
+     *
+     * It did not, and that made the grounded path unusable rather than merely slow. `phase` was set
+     * to "retrieving…" once and then not touched again until the whole turn was over — so the screen
+     * said "retrieving" through the retrieval, through the prompt assembly, and through a decode over
+     * a prompt several hundred tokens longer than a plain one, which is the overwhelming majority of
+     * the wait. The one message shown was wrong for most of the time it was shown, and there was no
+     * other sign of life: no bubble, no tokens, nothing. It reads exactly like a hang.
+     *
+     * Both halves now report: the phase names the retrieval while it runs, then hands over to the
+     * same streaming bubble a plain answer uses.
      */
     private suspend fun sendGrounded(
         model: com.martinkorelic.mobiletransformers.MobileTransformerModel,
         prompt: String,
     ) {
         _ui.value = _ui.value.copy(phase = "retrieving…")
+        val raw = StringBuilder()
         val grounded = model.generateWithRag(
             query = prompt,
             rag = AppConfig.rag.value,
             generation = AppConfig.generation.value,
             promptStrategy = PromptAssembler.DEFAULT,
+            // Posted the moment retrieval returns, which is the whole reason this callback is here:
+            // the sources are known long before the answer, and showing them then is what turns a
+            // silent wait into a conversation with a visible first step.
+            retrieveCallback = object : RetrieveCallback {
+                override fun onQueryResults(result: RetrievalResult) {
+                    _ui.value = _ui.value.copy(
+                        messages = _ui.value.messages + ChatMessage(
+                            text = "",
+                            fromUser = false,
+                            retrieval = RetrievalCard(
+                                passages = result.matches.map { SourceCard(it.text, it.score, it.title) },
+                                documents = result.documentTitles,
+                                queryTimeMs = result.queryTimeMs,
+                            ),
+                        ),
+                    )
+                }
+            },
+            callback = object : GenerateCallback {
+                // The first generation event is also the proof retrieval finished — retrieve → assemble
+                // → generate is sequential, so nothing can start generating while a query is open.
+                override fun onStartGeneration(progress: GenerateProgress) {
+                    _ui.value = _ui.value.copy(phase = "generating from ${progress.promptTokenCount} prompt tokens…")
+                }
+
+                override fun onPartialResult(progress: GenerateProgress) {
+                    // Raw accumulator, cleaned for display — see sendPlain for why the reverse loses
+                    // a newline at the end of a token.
+                    raw.append(progress.token)
+                    _ui.value = _ui.value.copy(phase = null, streaming = cleanTurnMarkers(raw.toString()))
+                }
+            },
         )
         _ui.value = _ui.value.copy(
             phase = null,
+            streaming = "",
             messages = _ui.value.messages + ChatMessage(
-                text = grounded.text,
+                text = cleanTurnMarkers(grounded.text),
                 fromUser = false,
-                // Carried ON the message, not in a screen-level field. The previous version put them
-                // in a global "Sources" section that was detached from the answer and cleared by the
-                // next question, so a conversation with three grounded answers showed one set of
-                // sources belonging to none of them in particular.
-                sources = grounded.matches.map { SourceCard(it.text, it.score) },
+                // The passages are NOT repeated here: they are their own turn above this one, posted
+                // when they were found. What stays on the answer is the prompt that produced it —
+                // the retrieval report says what was found, this says what was asked with it.
                 assembledPrompt = grounded.prompt,
-                stats = if (grounded.matches.isEmpty()) {
-                    "no sources retrieved — the answer is ungrounded"
-                } else {
-                    "${grounded.matches.size} sources"
-                },
+                stats = if (grounded.matches.isEmpty()) "ungrounded — nothing was retrieved" else null,
                 turnStats = TurnStats.of(grounded.generation),
             ),
         )
@@ -347,6 +392,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // to be a call is decided *after* it is complete, so there is no reason not to show it
         // arriving; if it does turn out to be a call, the streamed text is replaced by the card.
         var lastProgress: GenerateProgress? = null
+        val raw = StringBuilder()
         val result = model.generateToolCall(
             instruction = prompt,
             validator = validator,
@@ -354,11 +400,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             callback = object : GenerateCallback {
                 override fun onPartialResult(progress: GenerateProgress) {
                     lastProgress = progress
-                    _ui.value = _ui.value.copy(
-                        // Turn markers are prompt scaffolding, not content: a model that keeps
-                        // talking past its turn would otherwise stream "<end_of_turn>" into the bubble.
-                        streaming = cleanTurnMarkers(_ui.value.streaming + progress.token),
-                    )
+                    // Turn markers are prompt scaffolding, not content: a model that keeps talking
+                    // past its turn would otherwise stream "<end_of_turn>" into the bubble. Cleaned
+                    // off a raw accumulator — see sendPlain.
+                    raw.append(progress.token)
+                    _ui.value = _ui.value.copy(streaming = cleanTurnMarkers(raw.toString()))
                 }
 
                 override fun onCompletion(progress: GenerateProgress) {
@@ -415,17 +461,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Drop the turn markers a tool-declaring prompt invites the model to echo.
+     * Drop the turn markers a chat model echoes, whichever template it was trained on.
      *
-     * The prompt ends with `<start_of_turn>model`, and a model that keeps talking past its turn emits
-     * `<end_of_turn><start_of_turn>user` and carries on with a conversation it invented. Only the
-     * first turn is this model's answer; the rest is it playing both parts.
+     * Two separate things put them in front of a reader:
+     *
+     * - A model that keeps talking past its turn emits its end marker and then carries on with a
+     *   conversation it invented, playing both parts. Only the first turn is this model's answer.
+     * - The end marker IS the eos token for several of these templates (`<|im_end|>` for SmolLM2 and
+     *   Qwen2.5), so it also arrives as the final token of a perfectly normal reply. The engines now
+     *   suppress that one at the emit site; this is the reader-facing net under it, and it is the
+     *   layer that also catches a marker the tokenizer does not recognise as eos.
+     *
+     * A leading role label is stripped only as its own line, which is how the template writes it —
+     * see [ROLE_LABEL_LINES] for why the looser form was wrong.
      */
-    private fun cleanTurnMarkers(raw: String): String =
-        raw.substringBefore("<end_of_turn>")
-            .substringBefore("<start_of_turn>")
-            .removePrefix("model")
-            .trim()
+    private fun cleanTurnMarkers(raw: String): String = Companion.cleanTurnMarkers(raw)
 
     /**
      * Feed a tool result back and let the model speak about it — the second half of the loop.
@@ -469,6 +519,43 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun clear() {
         _ui.value = ChatUiState(useRag = _ui.value.useRag, toolExecution = _ui.value.toolExecution)
     }
+
+    companion object {
+        /**
+         * Turn markers across the chat templates this app's catalog actually ships.
+         *
+         * ChatML (`<|im_end|>`) for SmolLM2 and Qwen2.5, Gemma's pair for the two Gemma-3 packages,
+         * and `<|endoftext|>` because several tokenizers keep it as a second stop and a merged
+         * adapter can bring it back. Reply text is cut at the FIRST of these that appears.
+         */
+        internal val TURN_MARKERS = listOf(
+            "<|im_end|>",
+            "<|im_start|>",
+            "<end_of_turn>",
+            "<start_of_turn>",
+            "<|endoftext|>",
+        )
+
+        /** A role label the model completed for itself, as it appears at the START of a reply. */
+        private val ROLE_LABEL_LINES = listOf("model\n", "model\r\n", "assistant\n", "assistant\r\n")
+
+        /** See the instance-level doc. Lives here so it is reachable from a JVM test. */
+        internal fun cleanTurnMarkers(raw: String): String {
+            var text = raw
+            for (marker in TURN_MARKERS) text = text.substringBefore(marker)
+            // Gemma's prompt ends with `<start_of_turn>model\n`, and the model routinely completes
+            // that label itself, so a reply can open with a bare "model" line. Matched WITH its
+            // newline: `removePrefix("model")` alone also fires on "model weights are on device",
+            // turning a correct sentence into "weights are on device".
+            for (label in ROLE_LABEL_LINES) {
+                if (text.startsWith(label)) {
+                    text = text.removePrefix(label)
+                    break
+                }
+            }
+            return text.trim()
+        }
+    }
 }
 
 data class ChatUiState(
@@ -497,7 +584,8 @@ data class ChatUiState(
 data class ChatMessage(
     val text: String,
     val fromUser: Boolean,
-    val sources: List<SourceCard> = emptyList(),
+    /** Non-null when this turn IS the retrieval report — see [RetrievalCard]. */
+    val retrieval: RetrievalCard? = null,
     val assembledPrompt: String? = null,
     val toolCall: ToolCallCard? = null,
     val stats: String? = null,
@@ -505,7 +593,45 @@ data class ChatMessage(
     val turnStats: TurnStats? = null,
 )
 
-data class SourceCard(val text: String, val score: Double)
+data class SourceCard(
+    val text: String,
+    val score: Double,
+    /** The file this passage was ingested from, e.g. `notes.md`. Blank when the store did not keep one. */
+    val title: String = "",
+)
+
+/**
+ * What retrieval found, as a turn of its own — posted **before** the answer it will produce.
+ *
+ * ### Why this is a message rather than a section of the answer
+ *
+ * Grounding is two steps, and only the first is fast. Hanging the sources off the answer meant they
+ * appeared at the same moment as the answer, i.e. after the whole slow half was over — so the part
+ * that explains where a grounded reply comes from arrived too late to set any expectation about it,
+ * and the wait itself still showed nothing. Retrieval finishing is a real event with a real result,
+ * and the conversation is the honest place to say so.
+ *
+ * It also makes a bad grounded answer diagnosable in the ordinary reading direction: you see what was
+ * found, and then what the model did with it.
+ */
+data class RetrievalCard(
+    val passages: List<SourceCard>,
+    /** Distinct source files, best-scoring first. Empty when nothing was attributed. */
+    val documents: List<String>,
+    val queryTimeMs: Long = 0L,
+) {
+    /** e.g. `"Found 4 passages in 2 documents"`, or the honest empty answer. */
+    val headline: String
+        get() = when {
+            passages.isEmpty() -> "No matching passages — the answer will be ungrounded"
+            documents.isEmpty() -> "Found ${passages.size} ${plural(passages.size, "passage")}"
+            else ->
+                "Found ${passages.size} ${plural(passages.size, "passage")} in " +
+                    "${documents.size} ${plural(documents.size, "document")}"
+        }
+
+    private fun plural(n: Int, word: String) = if (n == 1) word else "${word}s"
+}
 
 /**
  * The per-turn numbers shown under an assistant message.

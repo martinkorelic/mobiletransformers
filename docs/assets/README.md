@@ -1,18 +1,26 @@
 # Assets
 
-Source art and screen recordings. Referenced from [the README](../../README.md) and the docs pages.
+Source art and screen recordings. Referenced from [the README](https://github.com/martinkorelic/mobiletransformers/blob/main/README.md) and the docs pages.
 
 | file | used by |
 | --- | --- |
 | `mobiletransformers_banner.png` | the README header, every model card, the Hugging Face org card |
+| `mobiletransformers_banner_small.png` | **nothing in this repository.** Kept because a Hugging Face org/model card may reference it by URL, which a grep here cannot see. Delete it if not. |
 | `mobiletransformers_logo.png` | **the source the Android icons were cut from** — see below |
-| `base-model.gif` / `on-device-trained.gif` | README ▸ See it work. **Stale** — predate the app rewrite; to be replaced by a single `on-device-finetune.gif` |
-| `ortransformer-feature.gif` | **nothing — orphaned.** Predates the app rewrite; delete when the new clips land |
+| `mobiletransformers_train.gif` | README ▸ Examples · `SHOWCASE.md` ▸ Training — a LoRA run and the merge that follows it |
+| `mobiletransformers_functioncall.gif` | README ▸ Examples · `SHOWCASE.md` ▸ Chat — a tool call validated and fired as a real alarm |
+| `mobiletransformers_rag.gif` | README ▸ Examples · `SHOWCASE.md` ▸ Retrieval — grounded answering, sources shown first |
+| `mobiletransformers_classify.gif` | README ▸ Examples · `SHOWCASE.md` ▸ Classify — a sentiment encoder scoring text on device |
 
 ## Recording a showcase clip
 
-Clips still to make: `on-device-finetune.gif` and `offline-generation.gif` for the README, plus the
-per-capability ones marked in `SHOWCASE.md`. Each placeholder there says what to capture.
+Still unrecorded, and marked as `<!-- CLIP: … -->` placeholders in `SHOWCASE.md`: the drawer changing
+shape per package, and install-from-catalog. Each placeholder says what to capture.
+
+The four committed clips are **800px wide and 1–7 MB**, above the guidance below. They were kept at
+capture resolution deliberately: the phone UI's body text stops being legible when scaled to 480, and
+an unreadable screenshot of a text-heavy screen demonstrates nothing. Treat the numbers below as the
+target for a *new* clip, not as a rule to retrofit onto these.
 
 **One claim per clip, and the claim must be visible without the caption.** A reader sees motion,
 decides in two seconds, and scrolls. Aim for 6–12 seconds and under 5 MB — longer and GitHub

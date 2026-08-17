@@ -87,6 +87,8 @@ class ToolCallFramingTest {
             rag: RagConfig,
             generation: GenerationConfig,
             promptStrategy: PromptStrategy,
+            callback: com.martinkorelic.mobiletransformers.GenerateCallback?,
+            retrieveCallback: com.martinkorelic.mobiletransformers.RetrieveCallback?,
         ) = GroundedResult("")
         override suspend fun pushAdapter(hubConfig: HubConfig, repoId: String) = PushResult(repoId)
         override suspend fun federatedRound(

@@ -89,15 +89,15 @@ object MobileTransformers {
         }
 
         val repo = LLMRepository(context.applicationContext, cacheDir, initialModel = sanitized)
-        if (!repo.isGenerationAvailable && !repo.isTrainingAvailable && !repo.isRagAvailable) {
+        // #19: fail at construction (not first use) if a requested genuine feature isn't installed.
+        // Engine selectors (GenAI/ManualInference) are not downloads — skip them here.
+        val installed = detectFeatures(repo)
+        if (installed.isEmpty()) {
             throw MissingArtifactException(
                 "package '$repoId' has no usable train/inference/embedding config under $modelDir",
             )
         }
 
-        // #19: fail at construction (not first use) if a requested genuine feature isn't installed.
-        // Engine selectors (GenAI/ManualInference) are not downloads — skip them here.
-        val installed = detectFeatures(repo)
         features.filterNot { it.isEngineSelector }.forEach { requested ->
             if (requested !in installed) throw FeatureNotInstalledException(requested, installed)
         }
@@ -220,11 +220,34 @@ object MobileTransformers {
         return runCatching { MobileTransformersManifest.load(manifestFile) }.getOrNull()
     }
 
-    private fun detectFeatures(repo: LLMRepository): Set<ModelFeature> {
+    private fun detectFeatures(repo: LLMRepository): Set<ModelFeature> =
+        detectFeatures(
+            inference = repo.isInferenceAvailable || repo.isGenerationAvailable,
+            training = repo.isTrainingAvailable,
+            rag = repo.isRagAvailable,
+        )
+
+    /**
+     * The stage-presence → feature-group rule, with nothing Android in it so it can be asserted.
+     *
+     * Split out because the [inference] input is where a real defect lived: it was
+     * `LLMRepository.isGenerationAvailable`, i.e. "`inference/generation_config.json` exists", so
+     * every ENCODER package — a sequence classifier, an embedder — reported no Inference feature at
+     * all. Installing DistilBERT SST-2 from the catalog therefore failed at `fromPretrained` with
+     * "Feature 'Inference' is not installed for this package", naming the one group the package
+     * definitely had. An encoder simply has no HF generation config, and never will.
+     *
+     * The rule itself is the same for every task: a group is installed when its stage is on disk.
+     */
+    internal fun detectFeatures(
+        inference: Boolean,
+        training: Boolean,
+        rag: Boolean,
+    ): Set<ModelFeature> {
         val features = mutableSetOf<ModelFeature>()
-        if (repo.isGenerationAvailable) features += ModelFeature.Inference
-        if (repo.isTrainingAvailable) features += ModelFeature.Training
-        if (repo.isRagAvailable) {
+        if (inference) features += ModelFeature.Inference
+        if (training) features += ModelFeature.Training
+        if (rag) {
             features += ModelFeature.Rag
             features += ModelFeature.Embedding
         }

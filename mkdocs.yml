@@ -1,0 +1,109 @@
+# The documentation site, built from this repository's own `docs/` directory.
+#
+# WHY IT LIVES HERE. The site used to be a separate repository holding its own copy of the docs. That
+# copy drifted: by the time it was folded back in it described module paths that no longer existed
+# (`trainer.builder`), an ABI the project does not ship, and an install route through a Google Drive
+# folder — while none of the 16 pages under `docs/` had ever been published. One tree, one source of
+# truth, and an "edit this page" link on every page back to the file that produced it.
+#
+# `mkdocs build --strict` turns an unresolved internal link into a build failure, and `make docs` runs
+# it. That is the structural half of the fix; this file is the other half.
+
+site_name: MobileTransformers
+site_description: On-Device LLM PEFT Fine-Tuning and Inference Framework
+site_author: Martin Korelič
+site_url: https://martinkorelic.github.io/mobiletransformers/
+
+repo_name: martinkorelic/mobiletransformers
+repo_url: https://github.com/martinkorelic/mobiletransformers
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: assets/mobiletransformers_logo.png
+  favicon: assets/mobiletransformers_logo.png
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - toc.integrate
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    # Every page carries a link to the file it was rendered from. This is what stops the site and the
+    # repository drifting apart again: a wrong page is one click from the place to fix it.
+    - content.action.edit
+
+nav:
+  - Start here:
+      - Overview: index.md
+      - Getting started: getting-started.md
+      - A tour of the app: SHOWCASE.md
+      - The model shelf: CATALOG.md
+  - Android SDK:
+      - Using the SDK: ANDROID_SDK.md
+      - Cookbook: COOKBOOK.md
+      - Public API: PUBLIC_API.md
+      - On-device cache format: ANDROID_CACHE_FORMAT.md
+  - Exporting models:
+      - Export a model: EXPORT.md
+      - Package format: MODEL_FORMAT.md
+      - Hub package format: HUB_PACKAGE_FORMAT.md
+      - Compatibility matrix: COMPATIBILITY_MATRIX.md
+  - Capabilities:
+      - PEFT methods: on-device-peft.md
+      - Retrieval (RAG): RAG.md
+      - Federated adapters: FEDERATED.md
+      - Measured performance: mobile_evaluation.md
+  - Reference:
+      - Architecture: ARCHITECTURE.md
+      - Configuration: CONFIGURATION.md
+      - Release checklist: RELEASE_CHECKLIST.md
+      - Citation: citation.md
+      - Further reading: references.md
+
+# Maintenance notes, not pages. Listed so `--strict` does not fail on files that are deliberately
+# outside the nav rather than accidentally missing from it.
+not_in_nav: |
+  assets/README.md
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+
+plugins:
+  - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/martinkorelic/mobiletransformers
+    - icon: fontawesome/brands/python
+      link: https://huggingface.co/mobiletransformers
+      name: Model packages on Hugging Face
+    - icon: fontawesome/brands/linkedin
+      link: https://www.linkedin.com/in/martin-koreli%C4%8D/

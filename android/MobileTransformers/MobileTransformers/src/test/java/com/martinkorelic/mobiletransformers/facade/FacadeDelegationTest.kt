@@ -105,6 +105,8 @@ class FacadeDelegationTest {
             rag: RagConfig,
             generation: GenerationConfig,
             promptStrategy: com.martinkorelic.mobiletransformers.rag.PromptStrategy,
+            callback: com.martinkorelic.mobiletransformers.GenerateCallback?,
+            retrieveCallback: com.martinkorelic.mobiletransformers.RetrieveCallback?,
         ): com.martinkorelic.mobiletransformers.runtime.GroundedResult {
             calls += "generateWithRag:$query"
             return com.martinkorelic.mobiletransformers.runtime.GroundedResult("grounded")

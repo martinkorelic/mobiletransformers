@@ -46,6 +46,8 @@ Outline:
 > A full ORT source build needs tens of GB of scratch space and many minutes. This machine's disk is
 > near-full, so the build is intentionally **not** run here — the prebuilt wheel is reused as-is.
 
-The Android training `.so`/AAR build (`build_ort_training_android.sh`) is a **later** plan
-(`agent_docs/00_code_plans/04`) and its manifest fields (`ndk_version`, `abis`, `android.*`) are left
-null until then.
+The Android training `.so`/AAR build (`build_ort_training_android.sh`) is not reproduced here —
+the shipped Android binaries were built separately and are described by
+[`third_party/android/manifest.json`](../android/manifest.json). This file's `ndk_version`, `abis`
+and `android.*` fields are therefore left null: they would otherwise claim provenance for a build
+these steps do not perform.

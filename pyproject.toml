@@ -61,7 +61,7 @@ hub    = ["huggingface-hub>=0.34"]
 [dependency-groups]
 # Local-only workflows. Never part of the published install surface.
 dev   = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
-docs  = ["mkdocs>=1.6"]
+docs  = ["mkdocs>=1.6", "mkdocs-material>=9.5"]
 smoke = ["pytest>=8"]
 android-build = ["pyyaml>=6.0"]
 # onnxruntime-genai>=0.14 pulls onnxruntime>=1.26 which needs Python>=3.11; marker keeps the

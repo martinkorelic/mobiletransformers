@@ -21,11 +21,18 @@
 
   "unpackRoot": "android/MobileTransformers/MobileTransformers/src/main",
 
-  "baseUrl": null,
+  "baseUrl": "https://huggingface.co/datasets/mobiletransformers/build-artifacts/resolve/main",
   "_baseUrl_comment": [
-    "OWNER ACTION: set this to the directory URL the bundles are hosted at (a GitHub Release keeps",
-    "the URL stable across tags). Until it is set, `scripts/fetch_native_deps.sh` refuses to run and",
-    "says so, rather than emitting a 404 that reads like a network problem.",
+    "A PUBLIC Hugging Face dataset repo, and public is load-bearing: this fetch happens before the",
+    "first build on a machine that has nothing, so it must work with no token and no CLI. An",
+    "anonymous `resolve/main/<file>` request answers 302-to-CDN then 200, which `curl -fL` follows.",
+    "",
+    "Not a Storage Bucket: buckets are the more natural home for a pile of build outputs, but their",
+    "documented access paths are the `hf` CLI, the Python API and an S3 endpoint — a dependency the",
+    "bootstrap step cannot take. Not a GitHub Release: those were unreachable while the repository",
+    "was private, and this had to work before it went public.",
+    "",
+    "Producer: `scripts/publish_build_artifacts.py` (`make publish-artifacts`).",
     "Override at call time with URL=<base> for a mirror or a local file:// path."
   ],
 

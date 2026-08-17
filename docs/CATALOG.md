@@ -25,7 +25,7 @@ group is ~91 MB on every decoder above, because it is the same all-MiniLM-L6-v2 
 
 `mobiletransformers/functiongemma-270m-it` is public. The other five are **private**; making them
 public is a deliberate separate step. Set `HF_TOKEN` to reach them (see
-[`.env.example`](../.env.example)).
+[`.env.example`](https://github.com/martinkorelic/mobiletransformers/blob/main/.env.example)).
 
 ## Which one to start with
 
@@ -71,7 +71,7 @@ KEEP=1 scripts/publish_catalog.sh                 # skip re-export where a packa
 Needs `HF_TOKEN_ORG` in `.env` — a token with `repo.write` on the target org. A fine-grained personal
 token scoped to one repo returns `RepositoryNotFoundError` for every other, and the Hub returns that
 identically for "does not exist" and "you cannot see it", so a permissions problem reads as a typo.
-See [`.env.example`](../.env.example).
+See [`.env.example`](https://github.com/martinkorelic/mobiletransformers/blob/main/.env.example).
 
 The script keeps the per-model task and engine flags, which are not obvious and fail late when wrong:
 

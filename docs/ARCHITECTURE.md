@@ -122,7 +122,7 @@ TRAINING=1 scripts/fetch_native_deps.sh      # those plus the ORT-training wheel
 SYMBOLS=1  scripts/fetch_native_deps.sh      # plus the unstripped debug symbols (260 MB)
 ```
 
-[`third_party/android/manifest.json`](../third_party/android/manifest.json) is the source of truth:
+[`third_party/android/manifest.json`](https://github.com/martinkorelic/mobiletransformers/blob/main/third_party/android/manifest.json) is the source of truth:
 one entry per artifact with its destination, size, **sha256** and provenance.
 `scripts/fetch_native_deps.sh` reads it, verifies the archive hash, unpacks, then verifies every file
 individually. It refuses rather than half-populating — a partly-filled `jniLibs/` fails the link

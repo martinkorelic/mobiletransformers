@@ -62,12 +62,25 @@ interface ModelSession {
      */
     suspend fun classify(text: String, device: DeviceConfig, topK: Int): ClassificationResult
 
-    /** #27: retrieve → assemble prompt → generate; the assembled prompt is returned for inspection. */
+    /**
+     * #27: retrieve → assemble prompt → generate; the assembled prompt is returned for inspection.
+     *
+     * [callback] observes the GENERATION leg only — retrieval is over by the time it fires, so its
+     * first event is also the signal that the retrieve half finished. Without it a grounded answer
+     * was the one path in the SDK that produced nothing at all until it was completely done, which
+     * on a phone is tens of seconds of a screen that cannot be told apart from a hang.
+     *
+     * [retrieveCallback] observes the retrieve leg, and delivers the matches at the moment they are
+     * found rather than at the end of the whole turn. That ordering is the point: what was retrieved
+     * is knowable, and worth showing, long before the answer built on it exists.
+     */
     suspend fun generateWithRag(
         query: String,
         rag: RagConfig,
         generation: GenerationConfig,
         promptStrategy: PromptStrategy,
+        callback: GenerateCallback? = null,
+        retrieveCallback: RetrieveCallback? = null,
     ): GroundedResult
 
     /** #19 surface; throws `NotImplementedFeatureException` until the #22 adapter push-back lands. */

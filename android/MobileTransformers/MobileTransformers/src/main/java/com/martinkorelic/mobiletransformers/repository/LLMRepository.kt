@@ -142,6 +142,21 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
     var isGenerationAvailable : Boolean = false
     var isRagAvailable : Boolean = false
 
+    /**
+     * A runnable inference graph is present, whether or not this package can *generate*.
+     *
+     * Distinct from [isGenerationAvailable] on purpose, and the distinction is a bug: that flag is
+     * set from `inference/generation_config.json`, which is the model's own HF **generation** config
+     * and exists only for models with a generative head. An encoder — a sequence classifier like
+     * DistilBERT SST-2, or the MiniLM embedder — ships a complete, runnable `inference/` stage with
+     * no such file, so it read as "inference not installed" and `fromPretrained` refused it with
+     * "Feature 'Inference' is not installed for this package" while the graph sat right there.
+     *
+     * `classify()` runs off exactly this stage, so this is the flag that answers "can the inference
+     * group do anything at all" for every task, not only for decoders.
+     */
+    var isInferenceAvailable : Boolean = false
+
     // Callback properties
     var generationCallback: GenerationCallback? = null
     var trainingCallback: TrainingCallback? = null
@@ -295,6 +310,13 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
         } else {
             Log.w(LOG_TAG, "Generation config not found at: $generationConfigPath")
             isGenerationAvailable = false
+        }
+
+        // Independent of the generation config above: an encoder has a graph and no way to generate.
+        val inferenceDir = PackagePaths.forCache(cacheDir, _modelName).inference
+        isInferenceAvailable = File(inferenceDir, resolveInferenceGraphName(inferenceDir.absolutePath)).isFile
+        if (!isInferenceAvailable) {
+            Log.w(LOG_TAG, "No inference graph found under: ${inferenceDir.absolutePath}")
         }
 
         // Check if embedding config exists before parsing
@@ -611,6 +633,11 @@ class LLMRepository(val applicationContext: Context, private val cacheDir : Stri
                 }
             } catch (e : Exception) {
                 Log.e(LOG_TAG, "Generation failed: ${e.message}")
+                // Told to the caller, not only to logcat. A `generate()` is awaited on a deferred that
+                // only `onCompletion`/`onError` can complete, so swallowing the failure here does not
+                // produce a failed generation — it produces one that NEVER RETURNS, and a UI that sits
+                // on its progress indicator forever with the reason visible only over adb.
+                generationCallback?.onError(e)
             } finally {
                 llmState = LLMState.ReadyGenerate
             }

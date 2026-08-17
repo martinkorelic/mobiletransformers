@@ -26,6 +26,9 @@ name: checks
 
 on:
   push:
+    # `restructure` is the active work branch and is listed so the badge means something before it
+    # merges. Drop it once it does — a public config naming a private-feeling branch is confusing,
+    # and a badge pinned to a branch that no longer exists silently reports nothing.
     branches: [main, restructure]
     tags: ['v*']
   pull_request: {}
@@ -62,7 +65,10 @@ jobs:
       - name: Guards (secrets, registry dispatch, plan identifiers, machine paths)
         run: make guard
       - name: Docs gate (markdown links, CLI table, Kotlin facade symbols)
-        run: uv run pytest tests/unit/test_docs.py -q
+        # `--frozen` for the reason spelled out at the top of this file: a bare `uv run` validates
+        # the local-path `onnxruntime-training` source before running anything, and that wheel is
+        # git-ignored. Every `uv run` in a workflow carries it — see test_guards.py.
+        run: uv run --frozen pytest tests/unit/test_docs.py -q
       - name: Unit tests
         run: make test
 

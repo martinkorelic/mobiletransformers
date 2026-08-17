@@ -16,9 +16,11 @@ from tensorflow.lite.python import interpreter
 
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoProcessor
 
-kaggle_username = "TODO"
-kaggle_key = "TODO"
-hf_token = "TODO"
+# Read from the environment, never written here. A credential-shaped placeholder in a tracked
+# file is an invitation to paste a real one into it and commit it by accident.
+kaggle_username = os.environ.get("KAGGLE_USERNAME", "")
+kaggle_key = os.environ.get("KAGGLE_KEY", "")
+hf_token = os.environ.get("HF_TOKEN", "")
 
 def convert_llm_tflite(archive_dir, tflite_path, rank=4, use_lora=True, model_type="gemma"):
 

@@ -142,7 +142,7 @@ adb push "$DEVICE_CACHE/." "$DEVICE_DEST" >/dev/null
 adb shell "chmod -R 777 '$DEVICE_DEST' 2>/dev/null" || true
 adb shell "ls '$DEVICE_DEST'"
 
-echo ">> [3b] staging the #10 GenAI spike dir -> $SPIKE_DEST"
+echo ">> [3b] staging the GenAI spike dir -> $SPIKE_DEST"
 adb shell "rm -rf '$SPIKE_DEST' && mkdir -p '$SPIKE_DEST'"
 adb push "$DEST/inference" "$SPIKE_DEST/inference" >/dev/null
 adb shell "chmod -R 777 '$SPIKE_DEST' 2>/dev/null" || true

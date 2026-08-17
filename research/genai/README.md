@@ -4,10 +4,9 @@
 repo, hardcodes a model path, and its two functions are exploratory smokes for the onnxruntime-genai
 Python loop.
 
-It is kept because the plans explicitly name it as a reference —
-`agent_docs/01_code_plans/03_inference_engine_abstraction_native_and_genai.md` says it "stays as the
-desktop reference for the GenAI loop", and the Tier-0 doc cites its `params.set_model_input` prototype.
-It stays **out** of `src/` for the same reason the S8 benchmark scripts do: a wheel should not ship
-modules that run an experiment on import.
+It is kept as the **desktop reference for the GenAI loop**: the Android engine in
+`ORTGeneratorGenAI.kt` is a port of it, so when the two disagree this is the version that can be
+stepped through in a debugger. It stays **out** of `src/` for the same reason the benchmark scripts
+do: a wheel should not ship modules that run an experiment on import.
 
 The shipping GenAI path is the Android engine (`ORTGeneratorGenAI` + `genai_runtime.cpp`), not this.

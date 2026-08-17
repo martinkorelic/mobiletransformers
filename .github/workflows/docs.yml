@@ -1,0 +1,72 @@
+# Build and publish the documentation site to GitHub Pages.
+#
+# WHY THE OFFICIAL PAGES ACTIONS AND NOT `mkdocs gh-deploy`. The previous, separate docs repository
+# used `gh-deploy --force`, which pushes a built site to a `gh-pages` branch from inside the runner.
+# It silently stopped publishing: four commits — including the one that fixed the site's branding —
+# were merged and never appeared, and nothing went red, because a failed push in that flow does not
+# always fail the step. `configure-pages` + `deploy-pages` publishes an artifact through the Pages
+# API instead: there is no branch to get out of sync, and a failure is a failed job.
+#
+# `--strict` is the point of the build step: it turns an unresolved internal link into a build
+# failure. The docs and the code live in one tree now, so a rename that breaks a link should break
+# the build rather than ship a 404.
+#
+# REQUIRES: Settings -> Pages -> Source = "GitHub Actions" (a one-time repository setting).
+
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A queued deploy should wait for the running one rather than race it, but an in-progress build is
+# still worth finishing — cancelling it would lose the link check on the newer commit.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (mkdocs --strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install MkDocs
+        # Deliberately not `uv sync`: the site needs mkdocs and nothing else, and the project's own
+        # profiles carry torch-sized dependencies that have no bearing on rendering markdown.
+        run: pip install mkdocs mkdocs-material
+      - name: Build
+        run: mkdocs build --strict
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    # PRs get the link check from `build`, but must not publish. Only main deploys.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

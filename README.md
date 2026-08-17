@@ -15,35 +15,50 @@ Built on **ONNX Runtime**, for both inference *and* training on Android.
 
 ---
 
-## See it work
+## Examples
 
-|🧩 Base model |⚙️ Fine-tuned on the phone|
-|----|----|
-|![Base on-device model](docs/assets/base-model.gif)|![On-device trained LLM model](docs/assets/on-device-trained.gif)|
+A few of the features, recorded on a phone.
 
-**The same prompt, before and after a training run and an on-device merge.** Adapted to a
-smartphone-automation dataset, where a user states an intent and the model proposes the action.
-Trained, merged and run entirely on the phone — no server at any point.
+<table>
+<tr>
+<td width="50%" valign="top">
 
-<!--
-  RECORDING PLACEHOLDERS. Mechanics and the ffmpeg recipe: docs/assets/README.md
+<img src="docs/assets/mobiletransformers_train.gif" alt="Fine-tuning a model on the phone" width="100%">
 
-  1. REPLACE the two-GIF table above with a single clip, on-device-finetune.gif — one unbroken take of
-     prompt -> train -> merge -> the same prompt. Two files the reader has to compare by eye is a
-     weaker version of the same claim. Delete base-model.gif and on-device-trained.gif in that commit.
+**Fine-tuning, on the phone.** A LoRA adapter trained against a local dataset — loss falling, step by
+step, on the device's own CPU. The adapter is then merged into the weights so the next answer comes
+from the fine-tuned model, not from an adapter stacked at runtime.
 
-  2. ADD offline-generation.gif below this comment, with the caption:
-     "Airplane mode, still generating. Nothing is uploaded and nothing is fetched — the weights and
-      the tokenizer are already on the device."
-     This is the strongest thing the app can do and no current asset shows it.
+</td>
+<td width="50%" valign="top">
 
-  3. ortransformer-feature.gif predates the app rewrite and is no longer referenced. Delete it.
+<img src="docs/assets/mobiletransformers_functioncall.gif" alt="A chat reply becoming an Android alarm intent" width="100%">
 
-  Only these two clips belong in the README. Everything else — the drawer changing shape per package,
-  tool calls firing a real alarm, install-from-catalog, retrieval, classify — goes in
-  docs/SHOWCASE.md beside the section it illustrates. A README with seven GIFs is a README nobody
-  finishes loading.
--->
+**A sentence becomes an Android action.** The model answers with a structured tool call; the app
+validates it against its own allowlist, shows the exact intent it is about to fire, and waits. Accept,
+and a real alarm appears in the clock app.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+<img src="docs/assets/mobiletransformers_rag.gif" alt="Answering from documents stored on the device" width="100%">
+
+**Grounded in your own documents.** Retrieval runs against a vector store on the phone and reports
+what it found — how many passages, from which files — *before* the answer streams in underneath it.
+
+</td>
+<td width="50%" valign="top">
+
+<img src="docs/assets/mobiletransformers_classify.gif" alt="Classifying text on the device" width="100%">
+
+**Not only decoders.** A DistilBERT sentiment classifier, scoring text on the device and showing the
+probability for every label. Encoders can be fine-tuned here too — that is what makes the bars move.
+
+</td>
+</tr>
+</table>
 
 More, capability by capability, in **[docs/SHOWCASE.md](docs/SHOWCASE.md)**.
 
@@ -149,12 +164,11 @@ and what you should see.
 | [docs/COMPATIBILITY_MATRIX.md](docs/COMPATIBILITY_MATRIX.md) | per-model support, generated from the matrix |
 | [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) | what a release requires |
 | [docs/mobile_evaluation.md](docs/mobile_evaluation.md) | host-side evaluation of on-device runs |
+| [docs/getting-started.md](docs/getting-started.md) | three routes in: run the app, consume the SDK, export a model |
+| [docs/on-device-peft.md](docs/on-device-peft.md) | LoRA, LoRA-XS and MARS, and what each costs on a phone |
 
-### External
-
-- [MobileTransformers Documentation](https://martinkorelic.github.io/mobiletransformers-docs/)
-- [Master's Thesis — Parameter-Efficient Tuning of Large Language Models on Mobile Devices](https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=175561)
-  — the research behind MARS, the on-device training methodology, and the experimental results.
+**All of the above is published as a searchable site at
+[martinkorelic.github.io/mobiletransformers](https://martinkorelic.github.io/mobiletransformers/).**
 
 ## Built on
 
@@ -170,6 +184,13 @@ and what you should see.
 - On-device reinforcement learning
 - More PEFT methods and quantization techniques
 - Additional hardware acceleration backends, and platforms beyond Android
+
+## References
+
+- [The original codebase](https://gitlab.fri.uni-lj.si/lrk/mobiletransformers) — the address this
+  work was published under, and the one the citation below names.
+- [Master's Thesis — Parameter-Efficient Tuning of Large Language Models on Mobile Devices](https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=175561)
+  — the research behind MARS, the on-device training methodology, and the experimental results.
 
 ## Citation
 

@@ -26,7 +26,20 @@ object AppConfig {
     private val _train = MutableStateFlow(TrainConfig())
     val train: StateFlow<TrainConfig> = _train.asStateFlow()
 
-    private val _rag = MutableStateFlow(RagConfig())
+    /**
+     * The SDK default with a smaller [RagConfig.topK], and the difference is felt rather than read.
+     *
+     * `topK = 10` at the SDK's `chunkSize = 512` assembles roughly 5,000 characters of context, so a
+     * grounded turn on a phone spends most of a minute in prefill before it can emit a token — for
+     * ten passages of which the tail is usually irrelevant, because `minScore` defaults to no floor.
+     * Four keeps the sources list readable and the wait watchable, which is what this app is for.
+     *
+     * Not changed in the SDK: `topK` is a documented default and a caller with a server-class budget
+     * should keep getting ten. Raise it on the Configuration screen, which edits exactly this.
+     */
+    private val defaultRag = RagConfig(topK = 4)
+
+    private val _rag = MutableStateFlow(defaultRag)
     val rag: StateFlow<RagConfig> = _rag.asStateFlow()
 
     private val _dataset = MutableStateFlow(DatasetConfig())
@@ -96,11 +109,11 @@ object AppConfig {
         _peft.value = value
     }
 
-    /** Restore every section to the SDK's own defaults. */
+    /** Restore every section to what a fresh launch uses — see [defaultRag] for the one deviation. */
     fun reset() {
         _generation.value = GenerationConfig()
         _train.value = TrainConfig()
-        _rag.value = RagConfig()
+        _rag.value = defaultRag
         _dataset.value = DatasetConfig()
         _device.value = DeviceConfig()
         _peft.value = PeftConfig.Lora()

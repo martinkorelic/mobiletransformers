@@ -178,15 +178,45 @@ def test_documented_kotlin_facade_symbols_exist() -> None:
     )
 
 
-def test_every_doc_page_is_reachable_from_the_readme() -> None:
-    """A page nobody links to is a page nobody reads."""
+def test_every_doc_page_is_reachable() -> None:
+    """A page nobody links to is a page nobody reads.
+
+    There are now **two** front doors, and a page needs only one of them:
+
+    - `README.md`, for someone reading the repository on GitHub.
+    - `mkdocs.yml`'s `nav`, for someone reading the published site.
+
+    Checking the README alone was right when it was the only index. It stopped being right when the
+    documentation site moved into this repository: `index.md` is the site's home page and would be a
+    strange thing to link from the README, while a page missing from the **nav** is invisible on the
+    site no matter how well the README links it. Requiring either catches both kinds of orphan.
+    """
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    # Generated//checklist pages are referenced from their owning docs, not the README index.
+    mkdocs = (REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+    # Generated/checklist pages are referenced from their owning docs, not the README index.
     exempt = {"RELEASE_CHECKLIST.md", "mobile_evaluation.md", "COMPATIBILITY_MATRIX.md"}
     unlinked = sorted(
-        p.name for p in DOCS.glob("*.md") if p.name not in exempt and f"docs/{p.name}" not in readme
+        p.name
+        for p in DOCS.glob("*.md")
+        if p.name not in exempt and f"docs/{p.name}" not in readme and f": {p.name}" not in mkdocs
     )
-    assert not unlinked, f"not linked from README.md: {unlinked}"
+    assert not unlinked, (
+        f"unreachable from both README.md and the mkdocs nav: {unlinked}. Add it to the README's "
+        "documentation table, or to `nav` in mkdocs.yml, or both."
+    )
+
+
+def test_the_site_nav_names_only_pages_that_exist() -> None:
+    """The other half: `nav` must not point at a page that is not there.
+
+    `mkdocs build --strict` catches this too, but only where mkdocs is installed — this keeps it in
+    the gate that always runs, so a renamed page fails in `make check` rather than in CI.
+    """
+    mkdocs = (REPO_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+    referenced = set(re.findall(r"^\s+\S.*?:\s+(\S+\.md)\s*$", mkdocs, re.MULTILINE))
+    assert referenced, "mkdocs.yml nav names no pages — this guard would pass vacuously"
+    missing = sorted(name for name in referenced if not (DOCS / name).is_file())
+    assert not missing, f"mkdocs.yml nav names pages that do not exist: {missing}"
 
 
 #: Types a Kotlin snippet may legitimately name without the SDK declaring them: Kotlin/Java stdlib,

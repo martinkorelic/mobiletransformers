@@ -64,18 +64,19 @@ naming the loaded package, its engine and its precision.
 
 ## Chat — generation, streaming, grounded answers, tool calls
 
-<!-- CLIP: docs/assets/tool-call-alarm.gif — to record.
-     "set an alarm for 7am" -> the confirmation -> Accept -> CUT TO THE CLOCK APP showing the alarm.
-     That last cut is the whole point; without it this is just a chat bubble. -->
+![A chat reply becoming a validated Android alarm intent](assets/mobiletransformers_functioncall.gif)
 
 **Needs:** any decoder (SmolLM2, Qwen2.5, FunctionGemma). Hidden for encoders.
 
 Type and send; tokens stream as they are produced. Two things worth doing here:
 
 **Ground with RAG** (the chip, enabled once the package has an embedding stage) answers from the
-documents you ingested on the Retrieval screen instead of from the model's own weights. The answer
-carries the prompt that was actually built, so a bad grounded answer is debuggable — you can see
-whether retrieval was wrong or the model ignored good retrieval.
+documents you ingested on the Retrieval screen instead of from the model's own weights. Retrieval
+posts its own turn *before* the answer — "Found 4 passages in 2 documents", naming the files, with the
+passages themselves behind a toggle — and then the answer streams in beneath it, carrying the prompt
+that was actually built. So a bad grounded answer is debuggable in reading order: you see what was
+found, then what the model did with it, which is what separates wrong retrieval from a model ignoring
+good retrieval.
 
 **Tool calls** are detected from the answer, not declared in advance. Ask FunctionGemma to set an
 alarm and it emits a structured call; the app validates it against the allowlist in
@@ -86,9 +87,7 @@ What you should see: for an accepted `SET_ALARM`, an alarm actually appearing in
 
 ## Retrieval — search on its own
 
-<!-- CLIP: docs/assets/retrieval.gif — to record.
-     Ingest samples -> search -> ranked passages with scores. Then Chat with grounding on, expanding
-     the assembled prompt — showing the prompt is what separates this from a black box. -->
+![Grounded answering over documents held on the device](assets/mobiletransformers_rag.gif)
 
 **Needs:** any package with an embedding stage — including `all-MiniLM-L6-v2` by itself.
 
@@ -102,8 +101,7 @@ and a model ignoring good retrieval are indistinguishable.
 
 ## Classify — labels with probabilities
 
-<!-- CLIP: docs/assets/classify.gif — to record.
-     A clearly negative sentence -> probabilities -> a positive one -> they flip. The flip is the proof. -->
+![Classifying text on the device, with a probability per label](assets/mobiletransformers_classify.gif)
 
 **Needs:** a classifier that names its labels. In practice: **distilbert-sst2-english**.
 
@@ -118,8 +116,7 @@ absent screen. See [CATALOG.md](CATALOG.md) for why the encoder is exported that
 
 ## Train — fine-tuning, on the phone
 
-<!-- CLIP: docs/assets/training-loss.gif — to record.
-     Start -> the loss curve visibly moving -> Merge. Cut early; nobody watches a loss curve for 40s. -->
+![A LoRA training run on the device, and the merge that follows](assets/mobiletransformers_train.gif)
 
 **Needs:** a package pulled with Training requested (`train` in its features).
 

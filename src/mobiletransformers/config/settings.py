@@ -23,6 +23,14 @@ class Settings:
     """Immutable snapshot of secrets + machine-specific paths, read from the environment."""
 
     hf_token: str | None
+    #: Token for writing to the **organisation**, when it differs from the personal one.
+    #:
+    #: These are genuinely two credentials, and conflating them fails in a way that looks like
+    #: success: the personal ``HF_TOKEN`` here is fine-grained and scoped to a single repo, so an
+    #: org upload authenticated with it either 401s or lands in the wrong namespace. Held as its
+    #: own field rather than by overwriting ``HF_TOKEN`` in a subprocess env, which is what the
+    #: shell publishers do and what makes "which identity actually pushed this" unanswerable.
+    hf_token_org: str | None
     hf_cache: Path | None
     # Azure OpenAI (evaluation only)
     azure_openai_endpoint: str | None
@@ -41,6 +49,21 @@ class Settings:
             )
         return self.hf_token
 
+    def require_org_token(self) -> str:
+        """The token to push to the organisation with — ``HF_TOKEN_ORG``, else ``HF_TOKEN``.
+
+        The fallback is deliberate but narrow: a contributor who only has one token should still be
+        able to run a publisher, while a machine that has both never silently picks the weaker one.
+        """
+        token = self.hf_token_org or self.hf_token
+        if not token:
+            raise RuntimeError(
+                "neither HF_TOKEN_ORG nor HF_TOKEN is set (mobiletransformers.config.settings). "
+                "Publishing to the organisation needs a token with write access to it — see "
+                ".env.example."
+            )
+        return token
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
@@ -52,6 +75,7 @@ def get_settings() -> Settings:
 
     return Settings(
         hf_token=os.environ.get("HF_TOKEN"),
+        hf_token_org=os.environ.get("HF_TOKEN_ORG"),
         hf_cache=_path(os.environ.get("HF_CACHE")),
         azure_openai_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
         azure_openai_api_key=os.environ.get("AZURE_OPENAI_API_KEY"),

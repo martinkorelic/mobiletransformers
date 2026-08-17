@@ -622,7 +622,10 @@ _PLAN_ID_CLEAN_AREAS = (
 _PLAN_ID_ALLOWLIST: dict[str, int] = {
     "src": 175,
     "android/MobileTransformers/MobileTransformers/src": 383,
-    "scripts": 18,
+    # 18 -> 17: `device_package.sh` printed one to an operator's terminal on every run, which made it
+    # program output rather than an internal comment. Fixed at the source and the allowance lowered
+    # with it, which is the only way this ratchet stays honest.
+    "scripts": 17,
 }
 
 #: File types this guard reads.
@@ -729,21 +732,38 @@ def test_no_plan_identifiers_in_user_visible_strings() -> None:
     """The strongest form of this rule: a *user* must never see one.
 
     Three did reach here — one of them inside `ModelNotInstalledException`'s message, which is a
-    string an integrator hits on their first wrong call. Scoped to double-quoted Kotlin literals in
-    `main` source sets, which is where every user-facing message in the SDK lives.
+    string an integrator hits on their first wrong call.
+
+    Two output surfaces, because a user is a user whichever one they are looking at:
+
+    - **Kotlin string literals** in `main` source sets, where every user-facing SDK message lives.
+    - **`echo` in shell scripts.** `device_package.sh` printed "staging the #10 GenAI spike dir" to
+      an operator's terminal on every run. That is output, not a comment — so the decision to leave
+      the *comments* alone does not cover it, and the Kotlin-only scan could never have seen it.
     """
     android = REPO_ROOT / "android"
-    if not android.is_dir():
-        pytest.skip("Android sources not present in this checkout")
+    scripts = REPO_ROOT / "scripts"
+    if not android.is_dir() and not scripts.is_dir():
+        pytest.skip("neither Android sources nor scripts present in this checkout")
 
     literal = re.compile(r'"[^"\n]*"')
     hits: list[str] = []
-    for path in sorted(android.rglob("src/main/**/*.kt")):
+
+    for path in sorted(android.rglob("src/main/**/*.kt")) if android.is_dir() else []:
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             for match in literal.findall(line):
                 # `"#$rank"` and friends are Kotlin string templates rendering a real number.
                 if _PLAN_ID.search(match) and "$" not in match:
                     hits.append(f"  {path.relative_to(REPO_ROOT)}:{lineno}: {match[:100]}")
+
+    # Whole `echo`/`printf` lines rather than quoted spans: shell quoting is too varied to parse,
+    # and an unquoted `echo >> #12 ...` is just as visible to the operator as a quoted one.
+    emits = re.compile(r"^\s*(echo|printf)\s")
+    for path in sorted(scripts.rglob("*.sh")) if scripts.is_dir() else []:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if emits.match(line) and _PLAN_ID.search(line):
+                hits.append(f"  {path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()[:100]}")
+
     assert not hits, "a plan identifier is reachable in a user-visible string:\n" + "\n".join(hits)
 
 
@@ -756,19 +776,17 @@ def test_no_dead_references_to_the_untracked_planning_material() -> None:
 
     `tests/` is exempt because several of its comments *explain* the untracking and necessarily name
     the directory — the same unavoidable self-reference the machine-path guard has.
+
+    **Scans EVERY tracked file.** It used to scan `src`, `docs`, `scripts`, `android` and two files at
+    the root, and three live dead pointers survived in the gap: `research/genai/README.md` (a shipped
+    README citing a plan document), `third_party/onnxruntime/BUILD.md`, and a CHANGELOG line telling
+    the reader to "see" a file nobody who clones can open. A guard whose scope is an enumerated list
+    of the places you happened to think of reports green about everywhere else.
     """
-    hits: list[str] = []
-    for area in ("src", "docs", "scripts", "android", "."):
-        if area == ".":
-            # CHANGELOG.md is exempt: it is a historical record, and the 0.2.0 entry that *announces*
-            # the untracking cannot describe it without naming the directory. Its one genuinely dead
-            # pointer (an older entry citing `agent_docs/HANDOFF.md` for a parameter count) was
-            # removed rather than exempted.
-            hits += [
-                h for h in _scan_tracked(".", _PLAN_PATH) if h.strip().startswith(("README.md", "Makefile"))
-            ]
-        elif (REPO_ROOT / area).is_dir():
-            hits += _scan_tracked(area, _PLAN_PATH)
+    # `.gitignore` and CHANGELOG describe the untracking itself and cannot do so without naming the
+    # directory. Everything else in the tree is fair game.
+    exempt_prefixes = ("tests/", ".gitignore", "CHANGELOG.md")
+    hits = [h for h in _scan_tracked(".", _PLAN_PATH) if not h.strip().startswith(exempt_prefixes)]
     assert not hits, (
         "reference(s) to the untracked planning material from shipped files. That tree is not in the "
         "repository, so these point at nothing for anyone who clones it:\n" + "\n".join(hits)
@@ -789,3 +807,63 @@ def test_plan_identifier_debt_only_shrinks() -> None:
             f"{area}: down to {actual} plan identifiers (allowance {allowed}) — lower "
             "_PLAN_ID_ALLOWLIST so the ratchet holds"
         )
+
+
+# --- every `uv run` in a workflow must be `--frozen` -------------------------------------------
+
+#: A `uv run` invocation whose flags do not include `--frozen`.
+#:
+#: Deliberately matches the *invocation*, not the words "uv run" anywhere: the `#` lines in
+#: `checks.yml` and the `Makefile` explain this exact trap in prose, and a guard that fires on its
+#: own rationale is a guard nobody can keep.
+_BARE_UV_RUN = re.compile(r"(?<!\S)uv run(?!\S)")
+
+
+def _uv_run_invocations(text: str) -> list[tuple[int, str]]:
+    """`(lineno, line)` for each YAML line that RUNS `uv run` — comments excluded."""
+    found: list[tuple[int, str]] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith("#") or not _BARE_UV_RUN.search(line):
+            continue
+        found.append((lineno, stripped))
+    return found
+
+
+def test_every_uv_run_in_a_workflow_is_frozen() -> None:
+    """A bare `uv run` in CI fails on a wheel the job never needed.
+
+    `[tool.uv.sources]` points `onnxruntime-training` at `third_party/wheels/…whl`, which is
+    git-ignored and 662 MB. A bare `uv run` validates every source in the lock *before* executing,
+    so a runner without that wheel dies with "failed to query metadata of file … No such file or
+    directory" — on the docs gate, which has nothing to do with training. That is exactly how the
+    `python (lint, typecheck, parity, guards, tests)` job failed on 2026-08-17.
+
+    The Makefile solved this with `$(UVRUN) := uv run --frozen`; the workflows call `uv` directly
+    and had no equivalent. This is that equivalent.
+
+    Verified able to fail: dropping `--frozen` from either docs-gate step turns this red.
+    """
+    workflows = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
+    assert workflows, ".github/workflows holds no .yml files — this guard is scanning the void"
+    violations: list[str] = []
+    for path in workflows:
+        for lineno, line in _uv_run_invocations(path.read_text(encoding="utf-8")):
+            if "--frozen" not in line:
+                violations.append(f"  .github/workflows/{path.name}:{lineno}: {line[:110]}")
+    assert not violations, (
+        "`uv run` without `--frozen` in a workflow. The lock is committed and covers every profile, "
+        "so there is nothing to re-resolve — and re-resolving reads a git-ignored 662 MB wheel that "
+        "no runner has:\n" + "\n".join(violations)
+    )
+
+
+def test_the_uv_run_guard_can_actually_fail() -> None:
+    """The guard's own matcher, exercised. A pattern that silently stopped matching passes forever."""
+    assert _uv_run_invocations("        run: uv run pytest -q\n")
+    assert _uv_run_invocations("        run: uv run --frozen pytest -q\n")
+    # A comment explaining the trap must not register as an invocation, or the two files that
+    # document it could never mention it.
+    assert not _uv_run_invocations("# a bare `uv run` validates every source in the lock\n")
+    # Nor may a longer flag swallow the match.
+    assert not _uv_run_invocations("        run: uv running-shoes\n")

@@ -55,7 +55,7 @@ android {
 }
 ```
 
-A worked example lives in [`examples/consumer-app/`](../examples/consumer-app/), which is built against
+A worked example lives in [`examples/consumer-app/`](https://github.com/martinkorelic/mobiletransformers/tree/main/examples/consumer-app), which is built against
 mavenLocal by `make consumer-app` — the proof that the published artifact is actually consumable from
 outside this repo.
 
@@ -204,7 +204,9 @@ all. It is also the only way to judge retrieval on its own: inside a grounded an
 a model ignoring good retrieval are indistinguishable.
 
 `generateWithRag` returns a `GroundedResult` whose `prompt` is the text that was actually assembled —
-without it a bad grounded answer is undebuggable.
+without it a bad grounded answer is undebuggable. It takes the same optional `GenerateCallback` as
+`generate`, and a UI should pass one: the grounded path is the slowest thing here, and its first
+callback event is what tells you retrieval is over.
 
 Backed by ObjectBox HNSW with cosine distance. The encoder's output dimension must be one the on-device
 store can index (64/128/256/384/512/768/1024/1536) — the exporter fails closed rather than shipping an

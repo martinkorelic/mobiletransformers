@@ -219,10 +219,16 @@ val grounded = model.generateWithRag(
     rag = RagConfig(topK = 5, minScore = 0.2),
     generation = GenerationConfig(maxNewTokens = 200),
     promptStrategy = PromptAssembler.DEFAULT,
+    // Optional, and worth passing in any UI: a grounded turn does an embedding pass, a vector search
+    // and then a long decode, so without this the screen shows nothing until all three are done.
+    callback = object : GenerateCallback {
+        override fun onPartialResult(progress: GenerateProgress) = append(progress.token)
+    },
 )
 
 Log.i("rag", grounded.text)
-grounded.matches.forEach { Log.i("rag", "${it.score} ${it.text}") }
+// `title` is the ingested file the passage came from; several matches can share one.
+grounded.matches.forEach { Log.i("rag", "${it.score} ${it.title} ${it.text}") }
 Log.i("rag", "asked: ${grounded.prompt}")   // the assembled prompt, for when the answer is wrong
 ```
 

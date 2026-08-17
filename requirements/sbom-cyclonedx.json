@@ -2,9 +2,9 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
   "version": 1,
-  "serialNumber": "urn:uuid:55a3a620-ab3f-47bc-b2a7-a9fe808d7d8f",
+  "serialNumber": "urn:uuid:a37a5f62-12df-483e-8cc4-43bc74ea43d0",
   "metadata": {
-    "timestamp": "2026-07-13T17:56:12.652868856Z",
+    "timestamp": "2026-08-17T11:29:23.325574262Z",
     "tools": [
       {
         "vendor": "Astral Software Inc.",
@@ -14,9 +14,9 @@
     ],
     "component": {
       "type": "library",
-      "bom-ref": "mobiletransformers-1@0.1.0",
+      "bom-ref": "mobiletransformers-1@0.2.0",
       "name": "mobiletransformers",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "properties": [
         {
           "name": "uv:package:is_project_root",
@@ -294,10 +294,10 @@
     },
     {
       "type": "library",
-      "bom-ref": "tokenizers-34@0.20.3",
+      "bom-ref": "tokenizers-34@0.22.2",
       "name": "tokenizers",
-      "version": "0.20.3",
-      "purl": "pkg:pypi/tokenizers@0.20.3"
+      "version": "0.22.2",
+      "purl": "pkg:pypi/tokenizers@0.22.2"
     },
     {
       "type": "library",
@@ -403,23 +403,6 @@
       ]
     },
     {
-      "ref": "mobiletransformers-1@0.1.0",
-      "dependsOn": [
-        "huggingface-hub-11@0.36.2",
-        "mypy-16@2.3.0",
-        "numpy-18@2.2.6",
-        "numpy-19@2.4.6",
-        "numpy-20@2.5.1",
-        "onnx-21@1.22.0",
-        "pydantic-26@2.13.4",
-        "pytest-29@9.1.1",
-        "python-dotenv-30@1.2.2",
-        "pyyaml-31@6.0.3",
-        "ruff-33@0.15.21",
-        "tokenizers-34@0.20.3"
-      ]
-    },
-    {
       "ref": "mypy-16@2.3.0",
       "dependsOn": [
         "ast-serialize-3@0.6.0",
@@ -514,7 +497,7 @@
       "ref": "ruff-33@0.15.21"
     },
     {
-      "ref": "tokenizers-34@0.20.3",
+      "ref": "tokenizers-34@0.22.2",
       "dependsOn": [
         "huggingface-hub-11@0.36.2"
       ]

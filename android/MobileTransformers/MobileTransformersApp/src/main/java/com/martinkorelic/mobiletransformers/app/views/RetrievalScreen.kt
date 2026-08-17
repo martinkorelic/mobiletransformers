@@ -182,7 +182,13 @@ private fun MatchCard(rank: Int, match: RetrievalMatch, bestScore: Double) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("#$rank", style = MaterialTheme.typography.labelSmall)
+                // The source file, not only the rank: "which of my documents did this come from" is
+                // the first question asked of any hit, and the store has carried the answer since
+                // ingestion. Blank for a hit from a store that predates the provenance fields.
+                Text(
+                    if (match.title.isBlank()) "#$rank" else "#$rank · ${match.title}",
+                    style = MaterialTheme.typography.labelSmall,
+                )
                 Text("score %.3f".format(match.score), style = MaterialTheme.typography.labelSmall)
             }
             val fraction = if (bestScore > 0.0) (match.score / bestScore).coerceIn(0.0, 1.0) else 0.0

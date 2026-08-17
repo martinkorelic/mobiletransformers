@@ -68,12 +68,58 @@ data class GenerationResult(
         get() = if (contextLimit > 0) contextUsedTokens.toFloat() / contextLimit else null
 }
 
-data class RetrievalMatch(val text: String, val score: Double)
+/**
+ * One retrieved passage: the chunk text, how close it was, and **where it came from**.
+ *
+ * ### Why the provenance fields exist
+ *
+ * A match is a *chunk*, not a document — ingestion splits each file into `chunkSize` pieces and
+ * stores each one separately, keeping the source file's name as its title and `<docId>#<n>` as its
+ * id. Both survive all the way into the vector store and were then dropped at this boundary, which
+ * left every caller able to show the retrieved text and unable to say what it was retrieved *from*.
+ * "Found in 2 documents" is not derivable from text and score alone, and neither is the far more
+ * important question a user actually asks of a grounded answer: which of my files did this come from.
+ *
+ * Both default to empty so a caller constructing a match by hand (a test, a fake store) keeps
+ * compiling, and so a hit from a store that predates them degrades to "unattributed" rather than
+ * failing.
+ */
+data class RetrievalMatch(
+    val text: String,
+    val score: Double,
+    /** The source document's title — the ingested file's name (`notes.md`), when it is known. */
+    val title: String = "",
+    /** The chunk's own id, `<documentId>#<chunkIndex>`, e.g. `notes#3`. */
+    val chunkId: String = "",
+) {
+    /**
+     * The id of the DOCUMENT this chunk came from, i.e. [chunkId] without its `#<n>` suffix.
+     *
+     * `substringBeforeLast`, because an ingested id may legitimately contain a `#` of its own (a
+     * JSONL record may name itself anything) and only the last one is the chunk index.
+     */
+    val documentId: String get() = chunkId.substringBeforeLast('#', chunkId)
+}
 
 data class RetrievalResult(
     val matches: List<RetrievalMatch> = emptyList(),
     val queryTimeMs: Long = 0L,
-)
+) {
+    /**
+     * How many distinct documents these passages came from.
+     *
+     * Grouped by [RetrievalMatch.title] rather than by id: the title is what a user recognises, and
+     * two chunks of one file share it. Falls back to counting unattributed matches individually,
+     * since nothing lets us claim they are the same source.
+     */
+    val documentCount: Int
+        get() = matches.count { it.title.isBlank() } +
+            matches.mapNotNull { it.title.takeIf(String::isNotBlank) }.distinct().size
+
+    /** The distinct source titles, in the order their best-scoring passage appeared. */
+    val documentTitles: List<String>
+        get() = matches.mapNotNull { it.title.takeIf(String::isNotBlank) }.distinct()
+}
 
 /** Result of pushing a trained adapter to the Hub (#19 surface; real upload lands with #22). */
 data class PushResult(

@@ -180,7 +180,7 @@ name, so the resolver considers the requirement satisfied and the training impor
 It needs `HF_TOKEN_ORG` in `.env` — a token with `repo.write` on the target org. A fine-grained
 personal token scoped to one repo returns `RepositoryNotFoundError` for every other repo, and the Hub
 returns that identically for "does not exist" and "you cannot see it", so a permissions problem reads
-as a typo. See [`.env.example`](../.env.example) and [CATALOG.md](CATALOG.md).
+as a typo. See [`.env.example`](https://github.com/martinkorelic/mobiletransformers/blob/main/.env.example) and [CATALOG.md](CATALOG.md).
 
 > The script leaves the tree on the training profile. Reset with
 > `uv sync --frozen --group dev --python 3.10` before running `make check`.

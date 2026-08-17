@@ -58,7 +58,10 @@ jobs:
       - name: Guards (secret reads, registry dispatch, plan identifiers, machine paths)
         run: make guard
       - name: Docs gate (markdown links, CLI table, Kotlin facade symbols)
-        run: uv run pytest tests/unit/test_docs.py -q
+        # `--frozen` is load-bearing, not a nicety: a bare `uv run` validates every source in the
+        # lock before executing, and `onnxruntime-training` resolves to a git-ignored 662 MB wheel
+        # that no runner has. Without it this step dies on a missing training wheel it never needed.
+        run: uv run --frozen pytest tests/unit/test_docs.py -q
       - name: Unit tests
         run: make test
 

@@ -202,14 +202,82 @@ private fun MessageCard(
 ) {
     when {
         m.toolCall != null -> ToolCallBubble(m.toolCall, m.turnStats, onSimulate, onRun)
+        m.retrieval != null -> RetrievalBubble(m.retrieval)
         else -> Bubble(
             fromUser = m.fromUser,
             text = m.text,
-            sources = m.sources,
             assembledPrompt = m.assembledPrompt,
             stats = m.stats,
             turnStats = m.turnStats,
         )
+    }
+}
+
+/**
+ * What retrieval found, as its own turn above the answer it produced.
+ *
+ * ### Why it does not look like either speaker
+ *
+ * It is neither the user's turn nor the model's — it is the app reporting on a step it took, so it
+ * takes the full width, a `tertiaryContainer` tint and no "you"/"model" caption. A reader should be
+ * able to tell at a glance that this line is machinery rather than conversation.
+ *
+ * ### Why it is collapsed
+ *
+ * Retrieved chunks are long — `chunkSize` is 512 characters — and several of them between the
+ * question and the answer would push the answer off the screen, which is the opposite of what
+ * showing the sources is for. The headline is the claim; the passages are there when you want them.
+ */
+@Composable
+private fun RetrievalBubble(card: com.martinkorelic.mobiletransformers.app.viewmodels.RetrievalCard) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Card(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 3.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        ),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("retrieval", style = MaterialTheme.typography.labelSmall)
+            Text(card.headline, style = MaterialTheme.typography.bodyMedium)
+
+            // The file names, which are what a user recognises — the passage text is the detail
+            // behind them, not the headline.
+            if (card.documents.isNotEmpty()) {
+                Text(
+                    card.documents.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (card.queryTimeMs > 0) {
+                Text("search %d ms".format(card.queryTimeMs), style = MaterialTheme.typography.labelSmall)
+            }
+
+            if (card.passages.isNotEmpty()) {
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "Hide passages" else "Show passages")
+                }
+                if (expanded) {
+                    card.passages.forEach { p ->
+                        Column(Modifier.padding(bottom = 8.dp)) {
+                            Text(
+                                // Source first: "which file, how close" is the pair that makes a
+                                // passage judgeable. A bare score says nothing about provenance.
+                                if (p.title.isBlank()) {
+                                    "score %.3f".format(p.score)
+                                } else {
+                                    "%s · score %.3f".format(p.title, p.score)
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                            Text(p.text, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -230,12 +298,10 @@ private fun Bubble(
     fromUser: Boolean,
     text: String,
     streaming: Boolean = false,
-    sources: List<com.martinkorelic.mobiletransformers.app.viewmodels.SourceCard> = emptyList(),
     assembledPrompt: String? = null,
     stats: String? = null,
     turnStats: com.martinkorelic.mobiletransformers.app.viewmodels.TurnStats? = null,
 ) {
-    var showSources by remember { mutableStateOf(false) }
     var showPrompt by remember { mutableStateOf(false) }
 
     Row(
@@ -282,24 +348,6 @@ private fun Bubble(
                     it,
                     style = MaterialTheme.typography.labelSmall,
                 )
-            }
-
-            if (sources.isNotEmpty()) {
-                TextButton(onClick = { showSources = !showSources }) {
-                    Text(if (showSources) "Hide sources" else "${sources.size} sources")
-                }
-                if (showSources) {
-                    sources.forEach { s ->
-                        Column(Modifier.padding(bottom = 6.dp)) {
-                            Text(
-                                "score %.3f".format(s.score),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(s.text, style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
             }
 
             assembledPrompt?.let { p ->

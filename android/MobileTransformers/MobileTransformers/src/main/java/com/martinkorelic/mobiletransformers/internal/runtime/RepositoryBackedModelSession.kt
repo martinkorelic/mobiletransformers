@@ -277,11 +277,18 @@ internal class RepositoryBackedModelSession(
         rag: RagConfig,
         generation: GenerationConfig,
         promptStrategy: PromptStrategy,
+        callback: GenerateCallback?,
+        retrieveCallback: RetrieveCallback?,
     ): GroundedResult {
         // #27: reuse the existing retrieve + generate legs — retrieve → assemble → generate.
-        val retrieval = retrieve(query, rag, null)
+        // The retrieve callback is forwarded for the same reason the generate one is: the matches
+        // exist here, long before the answer does, and a caller that only learns them from the return
+        // value cannot show what it retrieved until the generation it is waiting on has finished.
+        val retrieval = retrieve(query, rag, retrieveCallback)
         val prompt = PromptAssembler.assemble(query, retrieval.matches, promptStrategy)
-        val generated = generate(prompt, generation, null)
+        // Forwarded, so the grounded answer streams exactly like an ungrounded one. It was hardcoded
+        // to `null` here, which is the whole reason a grounded turn showed nothing while it ran.
+        val generated = generate(prompt, generation, callback)
         return GroundedResult(
             text = generated.text,
             matches = retrieval.matches,
@@ -388,6 +395,15 @@ private fun InferenceProgress.toPublic(): GenerateProgress =
 
 private fun RagResult.toPublic(): RetrievalResult =
     RetrievalResult(
-        matches = documents?.map { RetrievalMatch(it.document.text, it.score) } ?: emptyList(),
+        // Title and id carried across, not dropped: the store has held both since ingestion, and
+        // without them a caller can show a passage but not say which file it came from.
+        matches = documents?.map {
+            RetrievalMatch(
+                text = it.document.text,
+                score = it.score,
+                title = it.document.title,
+                chunkId = it.document.id,
+            )
+        } ?: emptyList(),
         queryTimeMs = queryTimeMs,
     )

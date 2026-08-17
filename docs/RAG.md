@@ -91,15 +91,35 @@ at the matches directly separates them, which is why this is a screen in the sam
 debug flag.
 
 ```kotlin
-val hits = model.retrieve("how do I merge an adapter?", RagConfig(topK = 4, minScore = 0.2f))
-hits.matches.forEach { println("%.3f  %s".format(it.score, it.content)) }
+val hits = model.retrieve("how do I merge an adapter?", RagConfig(topK = 4, minScore = 0.2))
+hits.matches.forEach { println("%.3f  %s  %s".format(it.score, it.title, it.text)) }
+
+println("${hits.matches.size} passages from ${hits.documentCount} documents")
 ```
+
+A match is a **chunk**, not a document: ingestion splits each file into `chunkSize` pieces and each is
+stored, ranked and returned separately, so several matches routinely come from one file. `title` is
+that file's name, `chunkId` is `<documentId>#<n>`, and `RetrievalResult.documentCount` /
+`documentTitles` do the grouping — which is how the sample app can say "found 4 passages in 2
+documents" rather than conflating the two counts.
 
 ## Grounded generation
 
-`model.generateWithRag(query, rag, generation, promptStrategy)` runs retrieve → assemble → generate and
-returns a `GroundedResult` carrying the answer, the matches, **and the assembled prompt** so the exact
-context sent to the model is inspectable. `PromptAssembler` is overridable via `PromptStrategy`.
+`model.generateWithRag(query, rag, generation, promptStrategy, callback)` runs retrieve → assemble →
+generate and returns a `GroundedResult` carrying the answer, the matches, **and the assembled prompt**
+so the exact context sent to the model is inspectable. `PromptAssembler` is overridable via
+`PromptStrategy`.
+
+Pass a `GenerateCallback` to stream the answer. It observes the generation leg, so its first event is
+also the signal that retrieval finished. A grounded turn is the slowest operation in the SDK — an
+embedding pass, a vector search, then a decode over a prompt several hundred tokens longer than a plain
+one — and without a callback it produces nothing at all until it is completely done, which is not
+distinguishable from a hang.
+
+Pass a `RetrieveCallback` to receive the matches **when they are found**, rather than in the returned
+`GroundedResult` after the answer is complete. The two arrive tens of seconds apart, so a UI that wants
+to show what it retrieved before the answer built on it — as the sample app's Chat screen does, as its
+own turn above the reply — needs them at that moment.
 
 `RagConfig` carries `topK`, `minScore` (a similarity floor applied during search), `searchType` and
 `indexingMode`. A changed config applies on every call: query-shaping fields are pushed onto the live

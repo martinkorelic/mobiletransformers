@@ -257,7 +257,7 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
                 val nextPositionId = positionIds.last() + 1
                 positionIds = mutableListOf(nextPositionId)
 
-                var decodedToken = tokenizer.decodeToken(nextTokenId)
+                val decodedToken = tokenizer.decodeToken(nextTokenId)
 
                 // Append the new token to the decoded text
                 isEosToken = this.tokenizer.isEosToken(inputIds.last().toInt())
@@ -265,10 +265,19 @@ class ORTGeneratorNative(val cacheDir : String, private var tokenizer: ORTTokeni
                 // Let's not append eosToken
                 if (!isEosToken)
                     decodedText.append(decodedToken)
+
+                // The end-of-turn marker is scaffolding, not content, and it must not reach a caller
+                // as TEXT. `decodedText` above has always excluded it — but the public
+                // `GenerationResult.text` is rebuilt by the facade from these partials, so emitting
+                // the raw piece put "<|im_end|>" both into the streaming bubble and into the final
+                // answer for every chat model whose eos_token is its turn marker (SmolLM2, Qwen2.5).
+                // The token id is still reported, so a caller that wants to know it ended on EOS can.
+                val emittedToken = if (isEosToken) "" else decodedToken
+
                 // Emit token if needed
                 callback?.onPartialResult(
                     InferenceProgress(
-                        token = decodedToken,
+                        token = emittedToken,
                         tokenId = inputIds.last().toInt(),
                         totalDecodedTokens = decoded,
                         prefillTimeMs = prefillTimeMs,

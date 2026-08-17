@@ -125,7 +125,10 @@ class ORTGeneratorGenAI(
 
                 callback?.onPartialResult(
                     InferenceProgress(
-                        token = piece, tokenId = tokenId, totalDecodedTokens = decoded,
+                        // Suppressed on EOS for the same reason as Native (see ORTGeneratorNative):
+                        // the facade rebuilds the public text from these partials, so an emitted
+                        // turn marker becomes part of the answer. The two engines must agree.
+                        token = if (isEos) "" else piece, tokenId = tokenId, totalDecodedTokens = decoded,
                         prefillTimeMs = prefillTimeMs, timeToLoadModelMs = modelLoadTimeMs,
                         generationTimeMs = genMs, avgTokensPerSecond = avgTps, isCompleted = isEos,
                     ),

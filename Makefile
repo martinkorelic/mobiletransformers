@@ -7,7 +7,7 @@
 
 .PHONY: help setup setup-export setup-train setup-genai doctor fetch-native-deps \
         lint format typecheck parity guard test test-smoke test-train test-jvm test-cpp test-integration check consumer-app \
-        export-model package-model publish-catalog android-build device-package device-test device-hub-test device-rss device-federated build-aar publish-local docs requirements clean-generated
+        export-model package-model publish-catalog publish-artifacts android-build device-package device-test device-hub-test device-rss device-federated build-aar publish-local docs docs-build docs-serve requirements clean-generated
 
 # Overridable export knobs (used by `export-model`).
 MODEL   ?=
@@ -163,14 +163,26 @@ publish-local:  ## Publish the library to mavenLocal (scripts/publish_local_mave
 	scripts/publish_local_maven.sh
 
 docs:  ## Regenerate the derived docs (compatibility matrix) and check every page's links/tables.
-	uv run mobiletransformers support-matrix --md docs/COMPATIBILITY_MATRIX.md
+	uv run --frozen mobiletransformers support-matrix --md docs/COMPATIBILITY_MATRIX.md
 	$(UVRUN) pytest tests/unit/test_docs.py -q
+
+docs-build:  ## Build the documentation site. `--strict` fails on any unresolved internal link.
+	uv run --frozen --group docs mkdocs build --strict
+
+docs-serve:  ## Serve the documentation site locally with live reload (http://127.0.0.1:8000).
+	uv run --frozen --group docs mkdocs serve
+
+publish-artifacts:  ## Upload the gitignored build artifacts to the Hub (needs HF_TOKEN_ORG).
+	uv run --frozen python scripts/publish_build_artifacts.py $(if $(DRY_RUN),--dry-run,)
 
 requirements:  ## Regenerate requirements/*.lock.txt from uv.lock (they had no producer and rotted).
 	uv export --no-emit-project --group dev --format requirements.txt -o requirements/requirements-dev.lock.txt
 	uv export --no-emit-project --extra export --format requirements.txt -o requirements/requirements-export.lock.txt
 	uv export --no-emit-project --extra rag --format requirements.txt -o requirements/requirements-rag.lock.txt
 	uv export --python 3.12 --no-emit-project --group ort-training-local --format requirements.txt -o requirements/requirements-train-local.lock.txt
+	# The SBOM had no producer at all, so it sat at 0.1.0 for a month while the project moved on.
+	# A dependency inventory nobody regenerates is a claim that quietly stops being true.
+	uv export --no-emit-project --group dev --format cyclonedx1.5 -o requirements/sbom-cyclonedx.json
 
 # --- cleanup (generated artifacts ONLY; never user caches / cache_dir/) --------------------------
 clean-generated:  ## Remove generated build/model artifacts ONLY (never user caches).
