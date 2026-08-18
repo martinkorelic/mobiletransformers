@@ -146,7 +146,7 @@ and what you should see.
 
 ## Documentation
 
-Documentation site is available at [martinkorelic.github.io/mobiletransformers](https://martinkorelic.github.io/mobiletransformers/).**
+Documentation site is available at [**martinkorelic.github.io/mobiletransformers**](https://martinkorelic.github.io/mobiletransformers/).
 
 | Page | Covers |
 | --- | --- |
