@@ -2,13 +2,14 @@
 
 ## This project
 
-- [Source code on GitHub](https://github.com/martinkorelic/mobiletransformers) — where to get it, and
+- [**Source code on GitHub**](https://github.com/martinkorelic/mobiletransformers) — where to get it, and
   what these docs are built from
-- [The original codebase](https://gitlab.fri.uni-lj.si/lrk/mobiletransformers) — the address the work
+- [**The original codebase**](https://gitlab.fri.uni-lj.si/lrk/mobiletransformers) — the address the work
   was published under, and the one the [citation](citation.md) names
-- [Model packages on Hugging Face](https://huggingface.co/mobiletransformers) — six exported
+- [**Model packages on Hugging Face**](https://huggingface.co/mobiletransformers) — six exported
   packages, each shipping both an inference and a training stage
 - [*Parameter-Efficient Tuning of Large Language Models on Mobile Devices*](https://repozitorij.uni-lj.si/IzpisGradiva.php?lang=eng&id=175561) — the master's thesis this framework accompanies
+- [**SELLMA: Semantic Location through On-Device LLMs and WiFi Sensing**](https://dl.acm.org/doi/10.1145/3721888.3722091) — On-device semantic location recognition through privacy-preserving local LLMs with WiFi sensing.
 - [**AI health agents on mobile**](https://link.springer.com/article/10.1186/s12919-026-00367-3#Sec27),
   *BMC Proceedings* 2026, 20(12):A7 (EHRCON25 — openEHR International Conference).
   On-device RAG prototype over openEHR personal health records: a small language model, an
